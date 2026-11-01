@@ -114,7 +114,7 @@ enum TerritoryOutcome {
 
 impl TerritoryOutcome {
     fn from_report(report: &MissionReport, player: &Player) -> Option<Self> {
-        if report.hidden || report.planet_destroyed {
+        if report.hidden || report.planet_destroyed || report.is_space_encounter() {
             return None;
         }
         let controlled_before =

@@ -24,6 +24,10 @@ pub enum Icon {
     #[default]
     /// The attack value.
     Attack,
+    /// Fights for resources and returns without changing ownership or control.
+    Raid,
+    /// Searches a fixed area of space and attacks every detected foreign fleet.
+    Patrol,
     /// The spy value.
     Spy,
     /// The missile strike value.
@@ -67,7 +71,7 @@ impl Icon {
 
     /// Handles the planet only interaction.
     pub fn on_planet_only(&self) -> bool {
-        matches!(self, Icon::Colonize | Icon::MissileStrike)
+        matches!(self, Icon::Colonize | Icon::Raid | Icon::MissileStrike)
     }
 
     /// Returns whether this value mission.
@@ -77,6 +81,8 @@ impl Icon {
             Icon::Deploy
                 | Icon::Colonize
                 | Icon::Attack
+                | Icon::Raid
+                | Icon::Patrol
                 | Icon::Spy
                 | Icon::MissileStrike
                 | Icon::Destroy
@@ -91,6 +97,8 @@ impl Icon {
             Icon::Deploy
                 | Icon::Colonize
                 | Icon::Attack
+                | Icon::Raid
+                | Icon::Patrol
                 | Icon::Spy
                 | Icon::Destroy
                 | Icon::Protect
@@ -108,6 +116,7 @@ impl Icon {
             self,
             Icon::Colonize
                 | Icon::Attack
+                | Icon::Raid
                 | Icon::Spy
                 | Icon::MissileStrike
                 | Icon::Destroy
@@ -132,6 +141,7 @@ impl Icon {
         match self {
             Icon::Colonize => Some(2),
             Icon::Attack => Some(1),
+            Icon::Raid => Some(1),
             Icon::Spy => Some(4),
             Icon::MissileStrike => Some(5),
             Icon::Destroy => Some(3),
@@ -154,8 +164,14 @@ impl Icon {
         } else if already_protecting {
             vec![Icon::Protect]
         } else {
-            let mut objectives =
-                vec![Icon::Colonize, Icon::Attack, Icon::Spy, Icon::MissileStrike, Icon::Destroy];
+            let mut objectives = vec![
+                Icon::Colonize,
+                Icon::Attack,
+                Icon::Raid,
+                Icon::Spy,
+                Icon::MissileStrike,
+                Icon::Destroy,
+            ];
             if protection_allowed {
                 objectives.insert(1, Icon::Protect);
             }
@@ -173,7 +189,9 @@ impl Icon {
             Icon::Fleet | Icon::Deploy | Icon::Protect => origin.has_fleet(),
             Icon::Defenses => origin.has_defense(),
             Icon::Colonize => origin.has(&Unit::colony_ship()),
-            Icon::Attack => origin.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship()),
+            Icon::Attack | Icon::Raid | Icon::Patrol => {
+                origin.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship())
+            },
             Icon::Spy => origin.army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
             Icon::MissileStrike => origin.has(&Unit::interplanetary_missile()),
             Icon::Destroy => origin.has(&Unit::war_sun()),
@@ -185,7 +203,9 @@ impl Icon {
     pub fn condition_for_army(&self, army: &Army) -> bool {
         match self {
             Icon::Colonize => army.amount(&Unit::colony_ship()) > 0,
-            Icon::Attack => army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship()),
+            Icon::Attack | Icon::Raid | Icon::Patrol => {
+                army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
+            },
             Icon::Spy => army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
             Icon::MissileStrike => army.amount(&Unit::interplanetary_missile()) > 0,
             Icon::Destroy => army.amount(&Unit::war_sun()) > 0,
@@ -212,7 +232,7 @@ impl Icon {
             Self::Deploy | Self::Protect => only(Unit::is_ship),
             Self::Colonize => only(Unit::is_ship) && army.amount(&Unit::colony_ship()) > 0,
             Self::Destroy => only(Unit::is_ship) && army.amount(&Unit::war_sun()) > 0,
-            Self::Attack => {
+            Self::Attack | Self::Raid | Self::Patrol => {
                 only(Unit::is_ship)
                     && army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
             },
@@ -226,23 +246,17 @@ impl Icon {
         }
     }
 
-    /// Returns a user-facing explanation when this objective is unavailable.
-    pub fn requirement(&self) -> &str {
+    /// Returns the explanation when this objective lacks its required origin units.
+    pub fn requirement(&self) -> &'static str {
         match self {
-            Icon::Colonize => {
-                "No Colony Ship on the origin planet, maximum number of colonized planets \
-                reached or destination is a moon."
-            },
-            Icon::Attack => "No combat ships on the origin planet.",
+            Icon::Colonize => "No Colony Ship on the origin planet.",
+            Icon::Attack | Icon::Raid => "No combat ships on the origin planet.",
+            Icon::Patrol => "Select combat ships and a patrol zone in empty space.",
             Icon::Spy => "A minimum of 5 Probes are required for a Spy mission.",
-            Icon::MissileStrike => {
-                "No Interplanetary Missiles on the origin planet or destination is a moon."
-            },
+            Icon::MissileStrike => "No Interplanetary Missiles on the origin planet.",
             Icon::Destroy => "No War Suns on the origin planet.",
             Icon::Deploy => "No ships on the origin planet.",
-            Icon::Protect => {
-                "No ships on the origin planet or the target controller has not granted protection access."
-            },
+            Icon::Protect => "No ships on the origin planet.",
             Icon::RailgunStrike => {
                 "At least one owned Orbital Railgun must have this world in range."
             },
@@ -255,6 +269,7 @@ impl Description for Icon {
     /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
+            Icon::Patrol => "Patrol a fixed area of space and attack every detected foreign fleet. Detection improves with route exposure and combined ship production. Each complete patrol turn costs deuterium; recall or insufficient fuel sends survivors home.",
             Icon::Colonize => {
                 "A successful mission that contains at least one Colony Ship, colonizes the target \
                 planet (the player gains ownership). The Colony Ship is consumed in the process. \
@@ -270,6 +285,11 @@ impl Description for Icon {
                 the planet was owned by another player, they lose ownership. Buildings on the \
                 target planet remain. Unclaimed planets can reveal Independent Populations when \
                 that game setting is enabled."
+            },
+            Icon::Raid => {
+                "Fight normal combat, steal resources on victory, and return without taking \
+                ownership or control. Moons cannot be raided. Resources raided are chosen \
+                randomly, limited by the colony owner's shared stockpile."
             },
             Icon::Spy => {
                 "Send at least 5 Probes to gather intelligence on a target planet. Probes leave \

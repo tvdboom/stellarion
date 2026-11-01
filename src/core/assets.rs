@@ -309,6 +309,7 @@ impl WorldAssets {
             ("beam fire", "death ray"),
             ("bomb release", "launch"),
             ("probe retreat", "booster"),
+            ("raid loot", "message"),
             // A short, pitched-up booster pass reads as a missile crossing the target and
             // continuing into the distance without adding another sourced audio asset.
             ("missile miss", "booster"),
@@ -622,6 +623,10 @@ impl WorldAssets {
                 "colonize cover",
                 "attack",
                 "attack cover",
+                "raid",
+                "raid cover",
+                "patrol",
+                "deep space",
                 "spy",
                 "spy cover",
                 "missile strike",

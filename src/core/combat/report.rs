@@ -91,6 +91,9 @@ pub struct MissionReport {
     /// Whether the planet was destroyed
     pub planet_destroyed: bool,
 
+    /// Resources seized by a victorious raid; its returning fleet must deliver them.
+    pub raid_loot: Resources,
+
     /// Owner of the planet after mission resolution
     #[serde(deserialize_with = "crate::serialization::required_option")]
     pub destination_owned: Option<PlayerId>,
@@ -108,6 +111,17 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    #[cfg(feature = "app")]
+    /// Resource gains presented over the surviving raider or defending Crawler.
+    pub(crate) fn conclusion_resources(&self) -> Option<(Side, Resources)> {
+        if !self.raid_loot.is_empty() {
+            Some((Side::Attacker, self.raid_loot))
+        } else {
+            let salvage = self.defender_salvage();
+            (!salvage.is_empty()).then_some((Side::Defender, salvage))
+        }
+    }
+
     /// Original forces and the single combined plan used by each commander.
     pub fn battle_plan_fleets(
         &self,
@@ -212,6 +226,11 @@ impl MissionReport {
     /// Returns whether this report records combat against neutral space fauna.
     pub fn is_space_fauna_encounter(&self) -> bool {
         self.planet.army.combined().keys().any(Unit::is_fauna)
+    }
+
+    /// Space encounters have no real destination planet and must not reveal planetary data.
+    pub fn is_space_encounter(&self) -> bool {
+        self.is_space_fauna_encounter() || self.mission.objective == Icon::Patrol
     }
 
     /// Returns the encounter formation's generated title.
@@ -453,7 +472,10 @@ impl MissionReport {
     /// Both combat armies remain after the bounded round limit; neither side conquered the world.
     pub fn is_stalemate(&self) -> bool {
         (self.is_space_fauna_encounter()
-            || matches!(self.mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy))
+            || matches!(
+                self.mission.objective,
+                Icon::Attack | Icon::Raid | Icon::Patrol | Icon::Colonize | Icon::Destroy
+            ))
             && self.surviving_attacker.iter().any(|(unit, count)| {
                 *unit != Unit::colony_ship()
                     && *count

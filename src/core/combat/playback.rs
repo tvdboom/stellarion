@@ -37,7 +37,7 @@ fn combatant(unit: Unit) -> bool {
 }
 
 fn conclusion_phase(report: &MissionReport) -> CombatState {
-    if report.defender_salvage() == default() {
+    if report.conclusion_resources().is_none() {
         CombatState::EndCombat
     } else {
         CombatState::Salvage

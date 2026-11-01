@@ -40,6 +40,8 @@ mod environment;
 mod formation;
 #[path = "cinematic_motion.rs"]
 mod motion;
+#[path = "cinematic_rewards.rs"]
+mod rewards;
 /// Planet-sized blasts linger longer than ship wrecks; soundtrack peaks use the same clock.
 pub(crate) const PLANET_BLAST_TIME_SCALE: f32 = 1.25;
 /// The texture swap occurs inside the opaque core of the planet's detonation.
@@ -67,6 +69,7 @@ pub(crate) struct CinematicPlayback {
     show_planet: bool,
     gas_planet: bool,
     missile_strike: bool,
+    resource_pickup: Option<rewards::ResourcePickup>,
 }
 
 struct ActorVisual {
@@ -137,7 +140,11 @@ impl Scene {
 
 impl CinematicPlayback {
     pub fn new(report: &MissionReport) -> Self {
-        let timeline = CinematicTimeline::new(report);
+        let mut timeline = CinematicTimeline::new(report);
+        let resource_pickup = rewards::ResourcePickup::new(report, &timeline);
+        if let Some(pickup) = &resource_pickup {
+            timeline.duration = timeline.duration.max(pickup.ends_at());
+        }
         let gas_planet = report.planet.kind == PlanetKind::Gas;
         let missile_strike = report.mission.objective == Icon::MissileStrike;
         let visible: Vec<_> = timeline
@@ -321,9 +328,10 @@ impl CinematicPlayback {
             },
             planet_uv,
             atmosphere_color: environment::atmosphere_color(report.planet.kind),
-            show_planet: !report.is_space_fauna_encounter(),
+            show_planet: !report.is_space_encounter(),
             gas_planet,
             missile_strike,
+            resource_pickup,
         }
     }
 
@@ -477,6 +485,7 @@ impl CinematicPlayback {
         }
         self.paint_level_losses(&painter, scene, images);
         self.paint_planet_attacks(&painter, scene, images);
+        self.paint_resource_pickups(&painter, scene, images);
         painter.ctx().graphics_mut(|graphics| {
             let shapes = graphics.entry(painter.layer_id());
             shapes.transform_range(first_world_shape, shapes.next_idx(), transform);
@@ -1207,7 +1216,12 @@ impl CinematicPlayback {
             return;
         }
         let visual = &self.visuals[index];
-        let pose = self.actor_pose(scene, index, self.elapsed);
+        let mut pose = self.actor_pose(scene, index, self.elapsed);
+        if let Some(pickup) = &self.resource_pickup {
+            if !pickup.resources_for(index).is_empty() {
+                pose.size *= pickup.scale_at(self.elapsed);
+            }
+        }
         // The painter clip is already in camera-space world coordinates. Culling against
         // the original canvas made arriving ships disappear while panning or zooming out.
         if !painter.clip_rect().expand(pose.size * 1.5).contains(pose.center) {

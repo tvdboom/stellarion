@@ -54,7 +54,6 @@ const COMBAT_IDENTITY_EDGE_INSET: f32 = 18.0;
 const SPACE_FAUNA_BACKGROUND_TINT: Color = Color::srgb(0.72, 0.72, 0.72);
 const COMBAT_SHIELD_DEFENSE_GAP: f32 = 12.0;
 const COMBAT_STATUS_FONT_SIZE: f32 = 36.0;
-const COMBAT_STATUS_OFFSET: f32 = -120.0;
 // Use the displayed size directly so Bevy does not allocate a huge glyph atlas and scale it down.
 const COMBAT_COUNT_FONT_SIZE: f32 = 30.0;
 const COMBAT_COUNT_SEPARATOR: &str = "  ";
@@ -67,11 +66,11 @@ const COMBAT_DEFENDER_Y_OFFSET_FACTOR: f32 = -0.12;
 const COMBAT_BUILDING_SIZE_FACTOR: f32 = 0.65;
 const COMBAT_BUILDING_SPACING_FACTOR: f32 = 1.1;
 const COMBAT_BUILDING_CENTER_FACTOR: f32 = 8.25;
-const SALVAGE_HIGHLIGHT_TIME_MS: u64 = 500;
-const SALVAGE_RETURN_TIME_MS: u64 = 900;
-const SALVAGE_PICKUP_REVEAL_TIME_MS: u64 = 1_200;
+pub(super) const SALVAGE_HIGHLIGHT_TIME_MS: u64 = 500;
+pub(super) const SALVAGE_RETURN_TIME_MS: u64 = 900;
+pub(super) const SALVAGE_PICKUP_REVEAL_TIME_MS: u64 = 1_200;
 const SALVAGE_PICKUP_DRIFT_TIME_MS: u64 = 1_500;
-const SALVAGE_PICKUP_TIME_MS: u64 =
+pub(super) const SALVAGE_PICKUP_TIME_MS: u64 =
     SALVAGE_PICKUP_REVEAL_TIME_MS * 2 + SALVAGE_PICKUP_DRIFT_TIME_MS;
 const FLEET_RETREAT_TIME_MS: u64 = 900;
 const VOLLEY_RESOLUTION_PAUSE_MS: u64 = 1_000;
@@ -141,33 +140,17 @@ const INDIVIDUAL_CARD_LOWER_EXTENT: f32 = 0.75;
 const INDIVIDUAL_FLEET_SEPARATION_FACTOR: f32 = 0.115;
 const INDIVIDUAL_DEFENDER_FRONT_FACTOR: f32 = 0.075;
 
-/// Positions round banners according to the active formation presentation.
-fn combat_status_node(individual_units: bool) -> Node {
+/// Shares one viewport-centered anchor between round and pause banners.
+fn combat_status_node() -> Node {
     Node {
         position_type: PositionType::Absolute,
+        left: Val::ZERO,
+        top: Val::ZERO,
         width: Val::Percent(100.),
-        height: Val::Percent(if individual_units {
-            100.0
-        } else {
-            105.0
-        }),
+        height: Val::Percent(100.),
         align_items: AlignItems::Center,
         justify_content: JustifyContent::Center,
         ..default()
-    }
-}
-
-fn combat_status_transform(individual_units: bool) -> UiTransform {
-    if individual_units {
-        UiTransform::default()
-    } else {
-        // The old percentage offset was relative to the text itself. The status content is now a
-        // full-width band, so preserve the same visual placement with the equivalent font-sized
-        // pixel offset instead of shifting by more than the entire band height.
-        UiTransform::from_translation(Val2::new(
-            Val::ZERO,
-            Val::Px(COMBAT_STATUS_OFFSET * COMBAT_STATUS_FONT_SIZE / 100.0),
-        ))
     }
 }
 
@@ -303,12 +286,6 @@ pub struct BackgroundImageCmp;
 #[derive(Component)]
 /// Marker for the pause overlay fixed at the center of the viewport.
 pub struct CombatPausedCmp;
-
-#[derive(Component)]
-pub(crate) struct CombatRoundAnchorCmp;
-
-#[derive(Component)]
-pub(crate) struct CombatRoundContentCmp;
 
 #[derive(Component)]
 pub(crate) struct CombatStatusBandCmp;
@@ -915,10 +892,11 @@ pub struct EmptyShieldCmp;
 pub struct DeathRayCmp;
 
 #[derive(Component)]
-/// The existing surviving Crawler card while it presents recovered resources.
+/// A surviving Crawler or raider card while it presents resource pickups.
 pub struct SalvageCrawlerCmp {
     home_scale: Vec3,
     phase: SalvageCrawlerPhase,
+    resources: Resources,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -928,12 +906,14 @@ enum SalvageCrawlerPhase {
 }
 
 #[derive(Component)]
-/// Invisible animation target timing the floating Crawler resource pickups.
+/// Invisible animation target timing the floating resource pickups.
 pub struct SalvageTimerCmp;
 
 #[derive(Component)]
-/// One non-zero resource gain floating upward from the highlighted Crawler.
+/// One non-zero resource amount floating from its highlighted survivor.
 pub struct SalvagePickupCmp {
+    /// Card that carried or recovered these resources.
+    pub source: Entity,
     /// Resource represented by the pickup icon.
     pub resource: ResourceName,
     /// Amount recovered of this resource.
@@ -1236,13 +1216,14 @@ fn combat_identity_forces(
     forces
 }
 
-/// Fans non-zero salvage gains above the surviving Crawler card. Each pickup owns its icon,
-/// amount, and motion so the recovery reads as part of combat instead of a result-screen banner.
+/// Crawler gains fan upward; raided cargo stacks below each ship and drifts downward.
 fn spawn_salvage_pickups(
     commands: &mut Commands,
+    source: Entity,
     crawler_position: Vec3,
     size: f32,
     salvage: Resources,
+    raiding: bool,
     assets: &WorldAssets,
 ) {
     let gains = ResourceName::iter()
@@ -1256,11 +1237,26 @@ fn spawn_salvage_pickups(
     for (index, (resource, amount)) in gains.into_iter().enumerate() {
         let lane = index as f32 - middle;
         let start = Vec3::new(
-            crawler_position.x + lane * size * 0.82,
-            crawler_position.y + size * 0.66,
+            crawler_position.x
+                + if raiding {
+                    0.0
+                } else {
+                    lane * size * 0.82
+                },
+            crawler_position.y
+                + if raiding {
+                    -size * (0.66 + index as f32 * 0.5)
+                } else {
+                    size * 0.66
+                },
             COMBAT_SHIP_Z + 1.0,
         );
-        let end = start + Vec3::new(lane * size * 0.2, size * 1.35, 0.0);
+        let end = start
+            + if raiding {
+                Vec3::new(0.0, -size * 1.35, 0.0)
+            } else {
+                Vec3::new(lane * size * 0.2, size * 1.35, 0.0)
+            };
         let icon = match resource {
             ResourceName::Metal => "metal",
             ResourceName::Crystal => "crystal",
@@ -1300,6 +1296,7 @@ fn spawn_salvage_pickups(
                 },
             )),
             SalvagePickupCmp {
+                source,
                 resource,
                 amount,
             },
@@ -1441,7 +1438,16 @@ pub fn setup_combat(
             }),
             _ => None,
         })
-        .map_or_else(|| format!("{} large", destination.kind.to_lowername()), str::to_owned);
+        .map_or_else(
+            || {
+                if report.mission.objective == Icon::Patrol {
+                    "combat".to_owned()
+                } else {
+                    format!("{} large", destination.kind.to_lowername())
+                }
+            },
+            str::to_owned,
+        );
 
     commands.spawn((
         Sprite {
@@ -2437,16 +2443,7 @@ pub fn setup_combat(
 
     commands
         .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::ZERO,
-                top: Val::ZERO,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
+            combat_status_node(),
             if settings.combat_paused {
                 Visibility::Inherited
             } else {
@@ -2474,22 +2471,6 @@ pub fn setup_combat(
         .observe(|_: On<Pointer<Click>>, mut next_game_state: ResMut<NextState<GameState>>| {
             next_game_state.set(GameState::CombatMenu);
         });
-}
-
-/// Keeps round banners at their mode-specific anchors when settings change.
-pub(crate) fn update_combat_status_layout(
-    settings: Res<Settings>,
-    mut anchors: Query<&mut Node, With<CombatRoundAnchorCmp>>,
-    mut contents: Query<&mut UiTransform, With<CombatRoundContentCmp>>,
-) {
-    let node = combat_status_node(settings.combat_individual_units);
-    for mut anchor in &mut anchors {
-        anchor.height = node.height;
-    }
-    let translation = combat_status_transform(settings.combat_individual_units).translation;
-    for mut transform in &mut contents {
-        transform.translation = translation;
-    }
 }
 
 /// Animates every exact combatant between its responsive slot and its aggregate type card.
@@ -3120,7 +3101,7 @@ pub fn animate_combat(
         // committed to the fleet for the entire fight, matching deterministic resolution.
         if state.combat_round == 0
             && combat.rounds.len() > 1
-            && !report.is_space_fauna_encounter()
+            && !report.is_space_encounter()
             && retreating_probe_q.is_empty()
         {
             if let Some((unit_e, unit_t, _)) = unit_q.iter_mut().find(|(_, _, cu)| {
@@ -3253,7 +3234,7 @@ pub fn animate_combat(
         }
 
         next_combat_state.set(if state.combat_round == combat.rounds.len() - 1 {
-            if report.defender_salvage() == default() {
+            if report.conclusion_resources().is_none() {
                 CombatState::EndCombat
             } else {
                 CombatState::Salvage
@@ -3335,15 +3316,12 @@ pub fn animate_combat(
                 }
 
                 commands.spawn((
-                    combat_status_node(settings.combat_individual_units),
+                    combat_status_node(),
                     Pickable::IGNORE,
                     ZIndex(7),
-                    CombatRoundAnchorCmp,
                     children![(
                         combat_status_band_node(),
                         BackgroundColor(Color::BLACK.with_alpha(0.0)),
-                        combat_status_transform(settings.combat_individual_units),
-                        CombatRoundContentCmp,
                         CombatStatusBandCmp,
                         TweenAnim::new(
                             Tween::new(
@@ -3719,11 +3697,10 @@ pub fn animate_combat(
             }
         },
         CombatState::Salvage => {
-            let salvage = report.defender_salvage();
-            if salvage == default() {
+            let Some((reward_side, salvage)) = report.conclusion_resources() else {
                 next_combat_state.set(CombatState::EndCombat);
                 return;
-            }
+            };
 
             if let Some(timer_e) = salvage_timer_q.iter().next() {
                 if completed.contains(&timer_e) {
@@ -3739,10 +3716,16 @@ pub fn animate_combat(
                 return;
             }
 
-            if let Some((crawler_e, crawler)) = salvage_crawler_q.iter().next() {
-                if crawler.phase == SalvageCrawlerPhase::Highlighting
-                    && completed.contains(&crawler_e)
-                {
+            if !salvage_crawler_q.is_empty() {
+                let mut all_revealed = true;
+                for (crawler_e, crawler) in &salvage_crawler_q {
+                    if crawler.phase != SalvageCrawlerPhase::Highlighting {
+                        continue;
+                    }
+                    if !completed.contains(&crawler_e) {
+                        all_revealed = false;
+                        continue;
+                    }
                     let crawler_transform = unit_q
                         .get(crawler_e)
                         .map(|(_, transform, _)| (*transform, size))
@@ -3759,6 +3742,7 @@ pub fn animate_combat(
                         SalvageCrawlerCmp {
                             home_scale: crawler.home_scale,
                             phase: SalvageCrawlerPhase::Returning,
+                            resources: crawler.resources,
                         },
                         TweenAnim::new(Tween::new(
                             EaseFunction::QuarticIn,
@@ -3771,11 +3755,15 @@ pub fn animate_combat(
                     ));
                     spawn_salvage_pickups(
                         &mut commands,
+                        crawler_e,
                         crawler_t.translation,
                         crawler_size,
-                        salvage,
+                        crawler.resources,
+                        reward_side == Side::Attacker,
                         &assets,
                     );
+                }
+                if all_revealed {
                     commands.spawn((
                         Transform::default(),
                         TweenAnim::new(Tween::new(
@@ -3789,40 +3777,89 @@ pub fn animate_combat(
                         SalvageTimerCmp,
                         CombatCmp,
                     ));
-                    play_audio_msg.write(PlayAudioMsg::new("construction").rate(1.15));
+                    play_audio_msg
+                        .write(super::rewards::resource_pickup_cue(reward_side == Side::Attacker));
                 }
                 return;
             }
 
-            let individual_crawler = individual_mode.then(|| {
-                individual_q.iter().find_map(|(entity, transform, unit)| {
-                    (unit.side == Side::Defender && unit.unit == Unit::crawler() && unit.hull > 0)
-                        .then_some((entity, *transform))
-                })
-            });
-            let grouped_crawler = unit_q.iter().find_map(|(entity, transform, unit)| {
-                (unit.side == Side::Defender && unit.unit == Unit::crawler() && unit.hull > 0)
-                    .then_some((entity, *transform))
-            });
-            let Some((crawler_e, crawler_t)) = individual_crawler.flatten().or(grouped_crawler)
-            else {
-                next_combat_state.set(CombatState::EndCombat);
-                return;
+            let raiding = reward_side == Side::Attacker;
+            let eligible = |side: &Side, unit: Unit, hull: usize| {
+                *side == reward_side
+                    && hull > 0
+                    && if raiding {
+                        unit.is_ship()
+                    } else {
+                        unit == Unit::crawler()
+                    }
             };
-            commands.entity(crawler_e).insert((
-                SalvageCrawlerCmp {
-                    home_scale: crawler_t.scale,
-                    phase: SalvageCrawlerPhase::Highlighting,
-                },
-                TweenAnim::new(Tween::new(
-                    EaseFunction::QuadraticInOut,
-                    Duration::from_millis(SALVAGE_HIGHLIGHT_TIME_MS),
-                    TransformScaleLens {
-                        start: crawler_t.scale,
-                        end: crawler_t.scale * 1.3,
+            let mut sources = if individual_mode {
+                individual_q
+                    .iter()
+                    .filter_map(|(entity, transform, unit)| {
+                        eligible(&unit.side, unit.unit, unit.hull).then_some((
+                            entity,
+                            *transform,
+                            unit.unit,
+                            1,
+                            unit.id.unwrap_or(entity.to_bits()),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                unit_q
+                    .iter()
+                    .filter_map(|(entity, transform, unit)| {
+                        eligible(&unit.side, unit.unit, unit.hull).then_some((
+                            entity,
+                            *transform,
+                            unit.unit,
+                            report.surviving_attacker.amount(&unit.unit).max(1),
+                            0,
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            sources.sort_by_key(|(_, _, unit, _, id)| (*unit, *id));
+            if !raiding {
+                sources.truncate(1);
+            }
+            let weights = sources
+                .iter()
+                .map(|(_, _, unit, count, _)| {
+                    unit.production().saturating_mul(*count).saturating_mul(10)
+                })
+                .collect::<Vec<_>>();
+            let gains = if raiding {
+                super::rewards::resource_shares(salvage, &weights)
+            } else {
+                vec![salvage; sources.len()]
+            };
+            let mut has_pickups = false;
+            for ((crawler_e, crawler_t, _, _, _), resources) in sources.into_iter().zip(gains) {
+                if resources.is_empty() {
+                    continue;
+                }
+                has_pickups = true;
+                commands.entity(crawler_e).insert((
+                    SalvageCrawlerCmp {
+                        home_scale: crawler_t.scale,
+                        phase: SalvageCrawlerPhase::Highlighting,
+                        resources,
                     },
-                )),
-            ));
+                    TweenAnim::new(Tween::new(
+                        EaseFunction::QuadraticInOut,
+                        Duration::from_millis(SALVAGE_HIGHLIGHT_TIME_MS),
+                        TransformScaleLens {
+                            start: crawler_t.scale,
+                            end: crawler_t.scale * 1.3,
+                        },
+                    )),
+                ));
+            }
+            if !has_pickups {
+                next_combat_state.set(CombatState::EndCombat);
+            }
         },
         CombatState::EndCombat => {},
     }

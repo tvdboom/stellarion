@@ -18,8 +18,8 @@ use crate::core::camera::{
 use crate::core::combat::systems::{
     animate_combat, draw_combat_identity_tooltips, exit_combat, exit_combat_menu,
     restore_combat_camera, run_combat_animations, setup_combat, setup_combat_menu,
-    shake_combat_camera, update_combat_formation, update_combat_stats, update_combat_status_layout,
-    CombatCmp, CombatMenuCmp, SpawnShotMsg,
+    shake_combat_camera, update_combat_formation, update_combat_stats, CombatCmp, CombatMenuCmp,
+    SpawnShotMsg,
 };
 use crate::core::loading::{
     begin_gameplay_loading, finish_boot, finish_gameplay_loading, refresh_gameplay_projection,
@@ -53,7 +53,7 @@ use crate::core::menu::systems::{
 };
 use crate::core::messages::MessageMsg;
 use crate::core::mission_systems::{
-    animate_jump_gate_missions, animate_mission_recalls, recall_protection,
+    animate_jump_gate_missions, animate_mission_recalls, recall_protection, update_patrol_zones,
 };
 use crate::core::missions::{
     recall_mission, send_mission, update_mission_route_arrow, update_missions,
@@ -317,6 +317,7 @@ impl Plugin for GamePlugin {
                             .after(recall_mission)
                             .after(recall_protection),
                         animate_jump_gate_missions.after(update_missions),
+                        update_patrol_zones.after(update_missions),
                         animate_mission_recalls.after(update_missions).after(recall_mission),
                         update_mission_route_arrow,
                     )
@@ -381,7 +382,6 @@ impl Plugin for GamePlugin {
                     run_combat_animations,
                     shake_combat_camera,
                     update_combat_stats,
-                    update_combat_status_layout,
                 )
                     .chain()
                     .run_if(in_state(GameState::Combat))

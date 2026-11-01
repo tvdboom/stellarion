@@ -194,6 +194,38 @@ for (const kind of ["send_mission", "set_battle_plan", "set_mission_battle_plan"
   }
 }
 console.log("All Rust battle plans, required snapshot/report orders, and malformed command rejection passed.");
+const patrolSnapshot = fixtures.patrol_game.turns.find(({resolved}) => resolved.state.missions.length).resolved;
+await db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [patrolSnapshot, patrolSnapshot.state.turn]);
+for (const corrupt of [
+  mission => { delete mission.patrol; },
+  mission => { mission.patrol = null; },
+  mission => { mission.patrol.center = ["NaN", 0]; },
+  mission => { mission.patrol.phase = "Unknown"; },
+  mission => { mission.patrol.remaining_turns = -1; },
+  mission => { mission.patrol.remaining_turns = 1.5; },
+  mission => { mission.patrol.extra = true; },
+  mission => { mission.objective = "Attack"; },
+]) {
+  const malformed = structuredClone(patrolSnapshot);
+  corrupt(malformed.state.missions[0]);
+  await assert.rejects(db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [malformed, malformed.state.turn]), /STLR_INVALID_DATA:mission_patrol/);
+}
+const patrolSubmission = { player_id: 1, turn: 1, generation: 0, commands: [fixtures.patrol_game.launch] };
+await db.query("select * from public.stellarion_submission_ids($1)", [patrolSubmission]);
+for (const corrupt of [
+  command => { command.turns = 0; },
+  command => { command.turns = -1; },
+  command => { delete command.turns; },
+  command => { command.center = [0]; },
+  command => { command.center = ["Infinity", 0]; },
+  command => { command.army = {}; },
+  command => { command.extra = true; },
+]) {
+  const malformed = structuredClone(patrolSubmission);
+  corrupt(malformed.commands[0]);
+  await assert.rejects(db.query("select * from public.stellarion_submission_ids($1)", [malformed]), /STLR_INVALID_DATA:patrol_command/);
+}
+console.log("Patrol snapshot phases, space destinations, durations and command shapes passed.");
 for (const route of fixtures.trade_routes) {
   const result = await db.query(
     `select public.stellarion_trade_route_valid($1, $2) as valid,
@@ -363,7 +395,8 @@ for (const signature of [
   "stellarion_load_trades(uuid)",
   "stellarion_set_protection_permission(uuid,bigint,bigint,boolean)",
   "stellarion_set_player_color(uuid,smallint)",
-  "stellarion_save_game(uuid,bigint,jsonb)",
+  "stellarion_save_game(uuid,bigint,jsonb,jsonb)",
+  "stellarion_load_game_preferences(uuid)",
   "stellarion_submit_turn(uuid,jsonb)",
   "stellarion_withdraw_turn(uuid,bigint,bigint)",
   "stellarion_publish_resolution(uuid,bigint,bigint,jsonb)",
@@ -376,6 +409,7 @@ for (const signature of [
   }
 }
 for (const signature of [
+  "stellarion_game_preferences_valid(jsonb)",
   "stellarion_submission_ids(jsonb)",
   "stellarion_freeze_joint_attack_launches(uuid,jsonb,bigint,bigint)",
 ]) {
@@ -387,6 +421,20 @@ for (const signature of [
 const joined = await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result",
   ["ABCDEF", "Guest", guestRecovery]);
 assert.equal(joined.recovery_code, guestRecovery);
+const preferences = (actor, gameId = id, role = "authenticated") => rpc(actor,
+  "select public.stellarion_load_game_preferences($1) as result", [gameId], role);
+assert.equal(await preferences(host), null);
+assert.equal(await preferences(guest), null);
+await assert.rejects(preferences(outsider), /STLR_FORBIDDEN/);
+await assert.rejects(preferences(null), /STLR_UNAUTHENTICATED/);
+await assert.rejects(preferences(null, id, "anon"), /permission denied/);
+const configuredPreferences = {
+  ...fixtures.game_preferences,
+  show_cells: false, show_info: true, brief_hover_info: true, show_menu: false,
+  audio: "Sound", volume: 0.35, unmuted_audio: "Sound", unmuted_volume: 0.35,
+  combat_speed: 8, combat_volley_fire: true, combat_individual_units: true,
+  combat_view: "cinematic",
+};
 const setColor = (actor, color) => rpc(actor,
   "select public.stellarion_set_player_color($1, $2) as result", [id, color]);
 let lobby = joined.game;
@@ -479,9 +527,9 @@ for (const invalidSubmission of [
 const summaries = await rpc(host, "select public.stellarion_list_games() as result");
 assert.equal(summaries.length, 1);
 assert.equal(summaries[0].saved_at, startedSavedAt);
-const save = (actor, record, player, turn = 1, commands = [], generation = 0) => rpc(actor,
-  "select public.stellarion_save_game($1, $2, $3) as result",
-  [id, record.revision, { player_id: player, turn, commands, generation }]);
+const save = (actor, record, player, turn = 1, commands = [], generation = 0, settings = null) => rpc(actor,
+  "select public.stellarion_save_game($1, $2, $3, $4) as result",
+  [id, record.revision, { player_id: player, turn, commands, generation }, settings]);
 await assert.rejects(save(guest, active, 1), /STLR_FORBIDDEN/);
 await assert.rejects(save(outsider, active, 1), /STLR_FORBIDDEN/);
 await assert.rejects(save(host, active, 1, 2), /STLR_STALE_SUBMISSION/);
@@ -489,7 +537,23 @@ await assert.rejects(save(host, { ...active, revision: active.revision - 1 }, 1)
 await assert.rejects(rpc(host,
   "select public.stellarion_save_game($1, $2, $3) as result",
   [id, active.revision, { player_id: 1, turn: 1, commands: [] }]), /STLR_INVALID_DATA:submission/);
-const acknowledgement = await save(host, active, 1);
+let acknowledgement = await save(host, active, 1, 1, [], 0, configuredPreferences);
+assert.deepEqual(await preferences(host), configuredPreferences);
+assert.equal(await preferences(guest), null, "settings belong to the caller's slot");
+for (const invalid of [
+  {}, { ...configuredPreferences, unknown: true },
+  { ...configuredPreferences, volume: 1.01 },
+  { ...configuredPreferences, unmuted_volume: 0 },
+  { ...configuredPreferences, combat_speed: 0.1 },
+  { ...configuredPreferences, combat_speed: 65 },
+  { ...configuredPreferences, show_cells: "false" },
+  { ...configuredPreferences, combat_view: "unknown" },
+]) {
+  await assert.rejects(save(host, active, 1, 1, [], 0, invalid), /STLR_INVALID_DATA:game_preferences/);
+  assert.deepEqual(await preferences(host), configuredPreferences, "failed saves preserve settings");
+}
+acknowledgement = await save(host, active, 1);
+assert.deepEqual(await preferences(host), configuredPreferences, "internal checkpoints preserve settings");
 assert.equal(acknowledgement.revision, active.revision);
 active = { ...active, ...acknowledgement };
 assert(active.saved_at >= startedSavedAt);
@@ -674,6 +738,15 @@ for (const [departed, observer] of [[host, guest], [guest, host]]) {
   assert(reconnected.members.every(member => member.connected));
 }
 await rpc(guest, "select public.stellarion_set_connected($1, false) as result", [id]);
+const guestPreferences = { ...fixtures.game_preferences, combat_speed: 0.5 };
+const beforeRecovery = await rpc(guest, "select public.stellarion_load_game($1) as result", [id]);
+const guestDraft = (await rpc(guest,
+  "select public.stellarion_load_turn_submissions($1, $2, 'mine') as result",
+  [id, beforeRecovery.persisted.state.turn]))[0]?.submission ?? {
+    player_id: 2, turn: beforeRecovery.persisted.state.turn, commands: [], generation: 0,
+  };
+await rpc(guest, "select public.stellarion_save_game($1, $2, $3, $4) as result",
+  [id, beforeRecovery.revision, guestDraft, guestPreferences]);
 const recovered = await rpc(
   outsider,
   "select public.stellarion_recover_player($1, $2) as result",
@@ -681,6 +754,7 @@ const recovered = await rpc(
 );
 assert.equal(recovered.membership.user_id, outsider);
 assert.equal(recovered.recovery_code, guestRecovery);
+assert.deepEqual(await preferences(outsider), guestPreferences, "recovery preserves game settings");
 await rpc(outsider, "select public.stellarion_set_connected($1, false) as result", [id]);
 const recoveredAgain = await rpc(
   guest,
@@ -692,6 +766,7 @@ assert.equal(recoveredAgain.recovery_code, guestRecovery);
 
 // Submitted trade offers bind acceptance to their current revision.
 const tradeLobby = await create(host, "TRADE1");
+assert.equal(await preferences(host, tradeLobby.game.id), null, "new games have no previous game settings");
 const joinedTrade = (await rpc(guest,
   "select public.stellarion_join_game($1, $2, $3) as result",
   ["TRADE1", "Trader", "4444-4444-4444-4444"])).game;
@@ -1232,6 +1307,29 @@ await rpc(host, "select public.stellarion_resume_game($1) as result", [combatGam
 assert.deepEqual((await rpc(outsider,
   "select public.stellarion_load_game($1) as result", [combatGame.id])).persisted, combatGame.persisted);
 console.log("Normal-game battle plans: saved drafts, dispatch, in-flight changes, automatic/manual orders, deterministic combat, full reports, recovery and resume passed through authenticated SQL RPCs.");
+const patrolLobbyState = structuredClone(fixtures.lobby);
+patrolLobbyState.state.rules.space_fauna_percent = fixtures.patrol_game.initial.state.rules.space_fauna_percent;
+const patrolLobby = await create(host, "PTRX01", "authenticated", patrolLobbyState);
+const patrolJoined = await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result", [patrolLobby.game.code, "Guest", guestRecovery]);
+let patrolGame = await snapshotWrite(host, "select public.stellarion_start_game($1, $2, $3) as result", [patrolLobby.game.id, patrolJoined.game.revision, fixtures.patrol_game.initial]);
+const patrolPhases = new Set();
+for (const { submissions, resolved } of fixtures.patrol_game.turns) {
+  const turn = patrolGame.persisted.state.turn;
+  for (const [index, actor] of [host, guest].entries()) {
+    await rpc(actor, "select public.stellarion_save_game($1, $2, $3) as result", [patrolGame.id, patrolGame.revision, submissions[index]]);
+    const saved = await rpc(actor, "select public.stellarion_load_turn_submissions($1, $2, 'mine') as result", [patrolGame.id, turn]);
+    assert.deepEqual(saved[0].submission, submissions[index]);
+    for (const disposition of ["inserted", "duplicate"]) {
+      assert.equal((await rpc(actor, "select public.stellarion_submit_turn($1, $2) as result", [patrolGame.id, submissions[index]])).disposition, disposition);
+    }
+  }
+  patrolGame = await snapshotWrite(host, "select public.stellarion_publish_resolution($1, $2, $3, $4) as result", [patrolGame.id, patrolGame.revision, turn, resolved]);
+  for (const mission of resolved.state.missions) patrolPhases.add(mission.patrol.phase);
+  assert.deepEqual((await rpc(guest, "select public.stellarion_load_game($1) as result", [patrolGame.id])).persisted, resolved);
+}
+assert(patrolPhases.has("OnStation") && patrolPhases.has("Returning"));
+assert.equal(patrolGame.persisted.state.missions.length, 0);
+console.log("Patrol dispatch, operating duration, upkeep, return and docking passed through authenticated SQL RPCs.");
 console.log("Host and guest presence expires after 15 seconds; read-only refreshes, resume guards, reconnects, and saved games remain consistent.");
 console.log("Direct authenticated SQL RPCs: create/join/recovery/start/save/ready/continue/resolve, stable recovery codes, permissions, lobby colors, readiness retries, revision races, events, and lobby deletion passed.");
 await db.close();

@@ -328,6 +328,12 @@ fn render_readme_screenshots() {
         "Set STELLARION_BACKEND=mock for this offline fixture"
     );
     std::fs::create_dir_all("target/readme-screenshots").unwrap();
+    let mut app = capture_app();
+    app.add_systems(Last, capture_views);
+    app.run();
+}
+
+fn capture_app() -> App {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -371,9 +377,115 @@ fn render_readme_screenshots() {
         })
         .after(EguiPreUpdateSet::ProcessInput)
         .before(EguiPreUpdateSet::BeginPass),
-    )
-    .add_systems(Last, capture_views);
+    );
+    app
+}
+
+#[test]
+#[ignore = "requires generated assets and a GPU; captures patrol controls and map offline"]
+fn render_patrol_screenshots() {
+    assert_eq!(std::env::var("STELLARION_BACKEND").as_deref(), Ok("mock"));
+    std::fs::create_dir_all("target/patrol-preview").unwrap();
+    let mut app = capture_app();
+    app.add_systems(Last, capture_patrol_views);
     app.run();
+}
+
+fn capture_patrol_views(world: &mut World) {
+    if *world.resource::<State<AppState>>().get() != AppState::Game {
+        return;
+    }
+    let frame = {
+        let mut scene = world.resource_mut::<CaptureScene>();
+        scene.frame += 1;
+        scene.frame
+    };
+    let (origin, turn) = {
+        let scene = world.resource::<CaptureScene>();
+        (scene.origin, scene.model.turn as usize)
+    };
+    if frame == 60 {
+        world.insert_resource(crate::core::messages::Messages::default());
+        let map = world.resource::<Map>();
+        let point = (1..20)
+            .flat_map(|x| (1..20).map(move |y| (x, y)))
+            .map(|(x, y)| {
+                map.rect.min + map.rect.size() * Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
+            })
+            .filter(|point| crate::core::patrols::valid_patrol_target(map, origin, *point, Some(5)))
+            .min_by(|a, b| {
+                a.distance_squared(map.get(origin).position)
+                    .total_cmp(&b.distance_squared(map.get(origin).position))
+            })
+            .unwrap();
+        let mission = Mission::new_patrol(
+            9909,
+            turn,
+            1,
+            map.get(origin),
+            point,
+            fleet(&[(Ship::LightFighter, 6), (Ship::Cruiser, 2)]),
+            Some(5),
+        );
+        let mut ui = world.resource_mut::<UiState>();
+        ui.planet_selected = None;
+        ui.mission = true;
+        ui.mission_tab = MissionTab::NewMission;
+        ui.mission_info = mission;
+        ui.patrol_center = Some(point);
+    }
+    if frame == 150 {
+        let mut query = world.query::<&mut Window>();
+        for mut window in query.iter_mut(world) {
+            window.resolution.set(800.0, 600.0);
+        }
+    }
+    if frame == 230 {
+        world.resource_mut::<UiState>().begin_patrol_selection();
+    }
+    if frame == 280 {
+        let mut query = world.query::<&mut Window>();
+        for mut window in query.iter_mut(world) {
+            window.resolution.set(1600.0, 900.0);
+        }
+        let mut mission = world.resource::<UiState>().mission_info.clone();
+        let point = mission.patrol.as_ref().unwrap().center;
+        mission.position = point;
+        mission.travel_turns = 1;
+        mission.patrol.as_mut().unwrap().phase = crate::core::patrols::PatrolPhase::OnStation;
+        world.resource_mut::<crate::core::missions::Missions>().0.push(mission);
+        let mut ui = world.resource_mut::<UiState>();
+        ui.patrol_center = Some(point);
+        ui.selecting_patrol_zone = false;
+        ui.mission = true;
+        ui.mission_tab = MissionTab::ActiveMissions;
+        let mut query = world.query_filtered::<&mut Transform, With<MainCamera>>();
+        for mut transform in query.iter_mut(world) {
+            transform.translation.x = point.x;
+            transform.translation.y = point.y;
+        }
+    }
+    if frame == 380 {
+        world.resource_mut::<UiState>().mission = false;
+    }
+    let name = match frame {
+        120 => "launch",
+        210 => "launch-small",
+        260 => "zone-selection-small",
+        340 => "active",
+        420 => "map",
+        _ => return,
+    };
+    let path = format!("{}/target/patrol-preview/{name}.png", env!("CARGO_MANIFEST_DIR"));
+    let mut capture = world.spawn(Screenshot::primary_window());
+    capture.observe(save_to_disk(path));
+    if frame == 420 {
+        capture.observe(
+            |_: On<ScreenshotCaptured>, mut exit: MessageWriter<bevy::app::AppExit>| {
+                exit.write(bevy::app::AppExit::Success);
+            },
+        );
+    }
 }
 
 fn install_scene(world: &mut World) {

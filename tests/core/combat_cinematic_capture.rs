@@ -368,12 +368,14 @@ fn render_cinematic_preview() {
     .insert_resource(playback)
     .insert_resource(UiState {
         in_combat: Some(report_id),
-        combat_view: CombatView::Cinematic,
         ..default()
     })
     // No advance system is installed: fixed sample times stay still while the HUD reflects
     // normal playback rather than covering every captured scene with the pause banner.
-    .init_resource::<Settings>()
+    .insert_resource(Settings {
+        combat_view: CombatView::Cinematic,
+        ..default()
+    })
     .insert_resource(State::new(AppState::Game))
     .insert_resource(State::new(GameState::Combat))
     .init_resource::<ImageIds>()

@@ -54,6 +54,7 @@ use crate::core::map::utils::{
     cursor, spawn_main_button, MainButtonLabelCmp, TransformOrbitLens, TransformSpinLens,
     MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT, MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH,
 };
+use crate::core::messages::MessageMsg;
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::recycling::{
@@ -122,16 +123,14 @@ const SOLAR_SATELLITE_DEPTH_STEP: f32 = 0.001;
 const RECYCLER_DEPTH: f32 = DEBRIS_DEPTH + 0.01;
 const RECYCLER_DEPTH_STEP: f32 = 0.001;
 const RECYCLER_SCAN_DEPTH: f32 = DEBRIS_DEPTH + 0.009;
-// Asteroid workers are children of their home planet. Use a negative local depth so their global
-// depth remains just above the belt but below every planet, naturally occluding crossing routes.
+// Asteroid workers cruise just above the belt and below planets. Near home they smoothly rise to
+// RECYCLER_DEPTH so their shrinking landing and growing launch remain visible over the surface.
 const RECYCLER_ASTEROID_DEPTH: f32 = VORONOI_Z + 0.21 - PLANET_Z;
 const RECYCLER_ASTEROID_SCAN_DEPTH: f32 = VORONOI_Z + 0.209 - PLANET_Z;
 const RECYCLER_CYCLE_SECONDS: f32 = 12.0;
-const RECYCLER_DOCKING_START: f32 = 0.84;
+const RECYCLER_LANDING_CYCLE: f32 = 0.92;
 const SOLAR_STAR_ANGULAR_SPEED: f32 = 0.024;
 const RECYCLER_PHASE_OFFSETS: [f32; Building::MAX_LEVEL] = [0.0, 0.43, 0.78, 0.21, 0.62];
-const RECYCLER_HOME_RADIUS: f32 = 0.82;
-const RECYCLER_HOME_ANGLE_OFFSETS: [f32; Building::MAX_LEVEL] = [0.0, -0.22, 0.22, -0.44, 0.44];
 const RECYCLER_TARGET_OFFSETS: [usize; Building::MAX_LEVEL] = [0, 2, 1, 3, 0];
 const JUMP_GATE_DEPTH: f32 = 0.15;
 const COMMAND_RELAY_DEPTH: f32 = 0.16;
@@ -607,7 +606,6 @@ pub struct RecyclerCmp {
     planet: PlanetId,
     level: usize,
     phase: f32,
-    gate_angle: f32,
 }
 
 #[derive(Component, Debug)]
@@ -645,113 +643,41 @@ fn recycler_smoothstep(amount: f32) -> f32 {
     amount * amount * (3.0 - 2.0 * amount)
 }
 
-fn recycler_angular_delta(from: f32, to: f32) -> f32 {
-    (to - from + PI).rem_euclid(TAU) - PI
-}
-
-fn recycler_avoid_angle(angle: f32, reserved: f32, clearance: f32, level: usize) -> f32 {
-    let delta = recycler_angular_delta(reserved, angle);
-    if delta.abs() >= clearance {
-        angle
-    } else {
-        let side = if delta.abs() > 0.001 {
-            delta.signum()
-        } else if level.is_multiple_of(2) {
-            -1.0
-        } else {
-            1.0
-        };
-        reserved + side * clearance
-    }
-}
-
-fn recycler_home(source_anchor: Vec2, recycler: &RecyclerCmp, planet: &Planet) -> Vec2 {
-    let destination_angle = (source_anchor - planet.position).to_angle();
-    let mut angle = destination_angle + RECYCLER_HOME_ANGLE_OFFSETS[recycler.level - 1];
-    // Recheck the short list because moving away from one station can approach its neighbor.
-    for _ in 0..2 {
-        for (reserved, clearance) in [
-            (ORBITAL_RAILGUN_ANGLE, 0.20),
-            (PI * 0.75, 0.38),
-            (PI * 1.25, 0.45),
-            (recycler.gate_angle, 0.40),
-        ] {
-            angle = recycler_avoid_angle(angle, reserved, clearance, recycler.level);
-        }
-    }
-    Vec2::from_angle(angle) * planet.size() * RECYCLER_HOME_RADIUS
-}
-
 fn recycler_progress(cycle: f32) -> f32 {
+    // Departure spans the trip boundary. Ease once from the center all the way to the target,
+    // without stopping or switching routes beside the planet when the cycle wraps to zero.
+    let launch_before_wrap = 1.0 - RECYCLER_LANDING_CYCLE;
+    let outbound_duration = launch_before_wrap + 0.30;
     if cycle < 0.30 {
-        recycler_smoothstep(cycle / 0.30)
+        recycler_smoothstep((launch_before_wrap + cycle) / outbound_duration)
     } else if cycle < 0.62 {
         1.0
-    } else if cycle < RECYCLER_DOCKING_START {
-        1.0 - recycler_smoothstep((cycle - 0.62) / (RECYCLER_DOCKING_START - 0.62))
+    } else if cycle < RECYCLER_LANDING_CYCLE {
+        1.0 - recycler_smoothstep((cycle - 0.62) / (RECYCLER_LANDING_CYCLE - 0.62))
     } else {
-        0.0
+        recycler_smoothstep((cycle - RECYCLER_LANDING_CYCLE) / outbound_duration)
     }
 }
 
-fn recycler_route_position(home: Vec2, target: Vec2, progress: f32) -> Vec2 {
-    let angle =
-        home.to_angle() + recycler_angular_delta(home.to_angle(), target.to_angle()) * progress;
-    let radius = home.length() + (target.length() - home.length()) * progress;
-    Vec2::from_angle(angle) * radius
-}
-
-fn recycler_docking_position(home: Vec2, next_home: Vec2, cycle: f32) -> Vec2 {
-    if cycle < RECYCLER_DOCKING_START {
-        home
+fn recycler_position(target: Vec2, next_target: Vec2, cycle: f32) -> Vec2 {
+    let destination = if cycle >= RECYCLER_LANDING_CYCLE {
+        next_target
     } else {
-        // Enter radially instead of sliding around the visible rim in either direction. The
-        // planet occludes the turn at its center before the craft leaves for its next dock.
-        let crossing = recycler_docking_progress(cycle);
-        if crossing < 0.5 {
-            home * (1.0 - recycler_smoothstep(crossing * 2.0))
-        } else {
-            next_home * recycler_smoothstep((crossing - 0.5) * 2.0)
-        }
-    }
+        target
+    };
+    destination * recycler_progress(cycle)
 }
 
-fn recycler_docking_progress(cycle: f32) -> f32 {
-    ((cycle - RECYCLER_DOCKING_START) / (1.0 - RECYCLER_DOCKING_START)).clamp(0.0, 1.0)
-}
-
-fn recycler_heading(
-    outbound: Vec2,
-    next_outbound: Vec2,
-    home: Vec2,
-    next_home: Vec2,
-    cycle: f32,
-) -> f32 {
-    let outbound_angle = outbound.to_angle();
+fn recycler_heading(target: Vec2, next_target: Vec2, cycle: f32) -> f32 {
+    let outbound_angle = target.to_angle();
     if cycle < 0.49 {
         outbound_angle
     } else if cycle < 0.62 {
         outbound_angle + recycler_smoothstep((cycle - 0.49) / 0.13) * PI
-    } else if cycle < RECYCLER_DOCKING_START {
+    } else if cycle < RECYCLER_LANDING_CYCLE {
         outbound_angle + PI
     } else {
-        let crossing = recycler_docking_progress(cycle);
-        let homeward_angle = outbound_angle + PI;
-        let inward_angle = (-home).to_angle();
-        let outward_angle = next_home.to_angle();
-        if crossing < 0.3 {
-            homeward_angle
-                + recycler_angular_delta(homeward_angle, inward_angle)
-                    * recycler_smoothstep(crossing / 0.3)
-        } else if crossing < 0.7 {
-            inward_angle
-                + recycler_angular_delta(inward_angle, outward_angle)
-                    * recycler_smoothstep((crossing - 0.3) / 0.4)
-        } else {
-            outward_angle
-                + recycler_angular_delta(outward_angle, next_outbound.to_angle())
-                    * recycler_smoothstep((crossing - 0.7) / 0.3)
-        }
+        next_target.to_angle()
     }
 }
 
@@ -1014,45 +940,34 @@ pub(crate) fn animate_recyclers(
         } else {
             recycler_animation_target(source, None, recycler, planet, trip.saturating_add(1))
         };
-        let source_anchor = match source {
-            RecyclerSource::Debris {
-                target,
-                ..
-            }
-            | RecyclerSource::AsteroidField {
-                target,
-            } => target,
-        };
         let target = target_world - planet.position;
         let next_target = next_target_world - planet.position;
-        let home = recycler_home(source_anchor, recycler, planet);
-        let next_home = recycler_home(next_target_world, recycler, planet);
-        let position = if cycle < RECYCLER_DOCKING_START {
-            recycler_route_position(home, target, recycler_progress(cycle))
-        } else {
-            recycler_docking_position(home, next_home, cycle)
-        };
-        let tangent = Vec2::new(-position.y, position.x).normalize_or_zero();
-        let position = position + tangent * (elapsed * 2.2 + recycler.phase * TAU).sin() * 1.4;
-        let depth = match source {
+        let position = recycler_position(target, next_target, cycle);
+        // Stay full-sized until crossing the visible boundary, then descend toward the center.
+        let landing_scale = (position.length() / (planet.size() * 0.5)).clamp(0.0, 1.0);
+        let cruise_depth = match source {
             RecyclerSource::AsteroidField {
                 ..
             } => RECYCLER_ASTEROID_DEPTH,
             RecyclerSource::Debris {
                 ..
             } => RECYCLER_DEPTH,
-        } + (recycler.level - 1) as f32 * RECYCLER_DEPTH_STEP;
+        };
+        // Change layers only after the full craft clears the planet, using distance so there is
+        // no depth reset at the trip boundary during launch.
+        let cruise_blend = recycler_smoothstep((position.length() / planet.size() - 0.70) / 0.20);
+        let depth = RECYCLER_DEPTH
+            + (cruise_depth - RECYCLER_DEPTH) * cruise_blend
+            + (recycler.level - 1) as f32 * RECYCLER_DEPTH_STEP;
         transform.translation = position.extend(depth);
-        let outbound = target - home;
         let scan_sway = if scanning {
             ((cycle - 0.30) / 0.32 * TAU * 2.0).sin() * 0.12
         } else {
             0.0
         };
-        transform.rotation = Quat::from_rotation_z(
-            recycler_heading(outbound, next_target - next_home, home, next_home, cycle) + scan_sway,
-        );
-        transform.scale = Vec3::ONE;
+        transform.rotation =
+            Quat::from_rotation_z(recycler_heading(target, next_target, cycle) + scan_sway);
+        transform.scale = Vec3::splat(landing_scale);
     }
 }
 
@@ -2220,6 +2135,9 @@ pub fn draw_map(
              mut state: ResMut<UiState>,
              window_e: Single<Entity, With<Window>>| {
                 if event.button == PointerButton::Primary {
+                    if state.selecting_patrol_zone {
+                        return;
+                    }
                     state.planet_selected = None;
                     state.focus_planet = None;
                     state.focus_position = None;
@@ -2263,10 +2181,44 @@ pub fn draw_map(
                 }
             },
         )
-        .observe(|_: On<Pointer<Click>>, mut state: ResMut<UiState>| {
-            state.mission = false;
-            state.combat_report = None;
-        });
+        .observe(
+            |event: On<Pointer<Click>>,
+             mut state: ResMut<UiState>,
+             camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+             map: Res<Map>,
+             player: Res<Player>,
+             settings: Res<Settings>,
+             mut messages: MessageWriter<MessageMsg>| {
+                if event.button == PointerButton::Secondary
+                    || (state.selecting_patrol_zone && event.button == PointerButton::Primary)
+                {
+                    let (camera, transform) = camera.into_inner();
+                    if let Some(center) = camera
+                        .viewport_to_world_2d(transform, event.pointer_location.position)
+                        .ok()
+                        .or_else(|| event.hit.position.map(|position| position.truncate()))
+                    {
+                        if event.button == PointerButton::Secondary {
+                            if let Some(origin) = state
+                                .planet_selected
+                                .and_then(|id| map.try_get(id))
+                                .filter(|planet| planet.can_launch_mission(player.id))
+                            {
+                                state.mission_info.origin = origin.id;
+                            }
+                        }
+                        if !state.choose_patrol_zone(&map, &player, settings.turn, center) {
+                            messages.write(MessageMsg::error(
+                                "Choose a patrol center in empty space inside the map.",
+                            ));
+                        }
+                    }
+                } else {
+                    state.mission = false;
+                    state.combat_report = None;
+                }
+            },
+        );
 
     spawn_ambient_stars(&mut commands);
     spawn_background_landmarks(&mut commands, &assets, &map);
@@ -2313,6 +2265,9 @@ pub fn draw_map(
                       mut settings: ResMut<Settings>,
                       map: Res<Map>,
                       player: Res<Player>| {
+                    if state.selecting_patrol_zone {
+                        return;
+                    }
                     let planet = map.get(planet_id);
                     if event.button == PointerButton::Primary {
                         select_planet(planet, &mut state, &player);
@@ -2320,6 +2275,10 @@ pub fn draw_map(
                             settings.show_menu = true;
                         }
                     } else if event.button == PointerButton::Secondary && !planet.is_destroyed {
+                        if state.mission_info.objective == Icon::Patrol {
+                            state.mission_info.patrol = None;
+                            state.mission_info.objective = Icon::Attack;
+                        }
                         state.mission = true;
                         state.combat_report = None;
                         state.mission_tab = MissionTab::NewMission;
@@ -2388,7 +2347,7 @@ pub fn draw_map(
 
                 // Destroyed planets have no resources nor icons
                 if !planet.is_destroyed {
-                    for (i, icon) in Icon::iter().enumerate() {
+                    for (i, icon) in Icon::iter().filter(|icon| *icon != Icon::Patrol).enumerate() {
                         parent
                             .spawn((
                                 Sprite {
@@ -2539,7 +2498,7 @@ pub fn draw_map(
                                                             Unit::probe(),
                                                             origin_army.amount(&Unit::probe()),
                                                         )]),
-                                                        Icon::Attack | Icon::Destroy => origin_army
+                                                        Icon::Attack | Icon::Raid | Icon::Destroy => origin_army
                                                             .iter()
                                                             .filter_map(|(u, c)| {
                                                                 (*c > 0 && u.is_combat_ship())
@@ -2821,9 +2780,8 @@ pub fn draw_map(
                         ));
                     }
 
-                    // Spawn one worker for every possible Recycler level. Animation places each
-                    // visible worker beyond the orbital stack on the side facing its destination,
-                    // where staggered phases keep the fleet from moving as one stacked sprite.
+                    // Spawn one worker for every possible Recycler level. Staggered phases keep
+                    // the fleet from moving as one stacked sprite along its salvage routes.
                     for index in 0..Building::MAX_LEVEL {
                         let level = index + 1;
                         parent.spawn((
@@ -2846,7 +2804,6 @@ pub fn draw_map(
                                 planet: planet.id,
                                 level,
                                 phase: recycler_phase(planet.id, level),
-                                gate_angle,
                             },
                         ));
                         for pulse in 0..3 {
@@ -3358,7 +3315,7 @@ pub fn update_planet_info(
                                                 && !planet.is_moon()
                                                 && n_owned < n_max_owned
                                         },
-                                        Icon::MissileStrike => {
+                                        Icon::MissileStrike | Icon::Raid => {
                                             !player.controls(planet) && !planet.is_moon()
                                         },
                                         _ => !player.controls(planet),

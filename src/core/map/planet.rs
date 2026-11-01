@@ -435,6 +435,8 @@ pub struct Planet {
     pub position: Vec2,
     /// Resource production for a world or stockpile for a player.
     pub resources: Resources,
+    /// Finite independent-world loot, initialized at first contact and never replenished.
+    pub raid_cache: Resources,
     /// Jump-gate capacity consumed during the current turn.
     pub jump_gate: usize,
 
@@ -579,6 +581,7 @@ impl Planet {
             temperature,
             position,
             resources,
+            raid_cache: Resources::default(),
             jump_gate: 0,
 
             operations: BuildingOperations::default(),
@@ -661,6 +664,7 @@ impl Planet {
 
     /// Removes invalid or zero-count unit entries from this planet.
     pub fn clean(&mut self) {
+        self.raid_cache = Resources::default();
         self.battle_plan = BattlePlan::default();
         // Foreign survivors return home after controller cleanup; retain their orders
         // until that recall snapshots the fleet, then prune them with the departing army.
@@ -679,6 +683,7 @@ impl Planet {
 
     /// Claims this planet for a player and initializes empty-world infrastructure.
     pub fn colonize(&mut self, player_id: PlayerId) {
+        self.raid_cache = Resources::default();
         if self.controlled != Some(player_id) {
             self.battle_plan = BattlePlan::default();
             self.protector_battle_plans.clear();
@@ -701,6 +706,7 @@ impl Planet {
 
     /// Transfers control to another player.
     pub fn control(&mut self, player_id: PlayerId) {
+        self.raid_cache = Resources::default();
         if self.controlled != Some(player_id) {
             self.battle_plan = BattlePlan::default();
             self.protector_battle_plans.clear();
@@ -716,6 +722,7 @@ impl Planet {
 
     /// Removes ownership and owner-only infrastructure from this planet.
     pub fn abandon(&mut self) {
+        self.raid_cache = Resources::default();
         self.shield_overload = ShieldOverloadState::Ready;
         self.operations.space_dock = Default::default();
         self.operations.space_dock_locked_until = 0;
@@ -1125,6 +1132,7 @@ impl Planet {
 
     /// Permanently destroys this planet and clears all ownership and stationed units.
     pub fn destroy(&mut self) {
+        self.raid_cache = Resources::default();
         self.battle_plan = BattlePlan::default();
         self.protector_battle_plans.clear();
         self.owned = None;

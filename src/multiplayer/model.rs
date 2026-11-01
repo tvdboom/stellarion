@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::core::settings::{CombatView, GamePreferences};
+
 use crate::core::identity::{GameCode, GameId, PlayerId, UserId};
 use crate::core::map::icon::Icon;
 use crate::core::missions::BombingRaid;

@@ -501,6 +501,7 @@ fn spy_report_notifications_distinguish_success_and_failure_and_open_the_report(
         surviving_defender: destination.army.clone(),
         planet_colonized: false,
         planet_destroyed: false,
+        raid_loot: Default::default(),
         destination_owned: destination.owned,
         destination_controlled: destination.controlled,
         combat_report: Some(CombatReport::default()),
@@ -749,6 +750,7 @@ fn planet_destruction_animation_only_starts_for_a_public_transition() {
         id: 91,
         turn: 4,
         planet_destroyed: true,
+        raid_loot: Default::default(),
         combat_report: Some(CombatReport::default()),
         ..crate::test_support::empty_report(mission, destination.clone())
     };

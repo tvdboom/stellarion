@@ -10,6 +10,7 @@ fn gameplay_writes_use_authenticated_postgrest_rpcs() {
         "stellarion_start_game",
         "stellarion_set_player_color",
         "stellarion_save_game",
+        "stellarion_load_game_preferences",
         "stellarion_submit_turn",
         "stellarion_publish_resolution",
     ];
@@ -642,6 +643,7 @@ fn schema_contains_the_complete_secure_contract() {
         "stellarion_resume_game",
         "stellarion_set_player_color",
         "stellarion_save_game",
+        "stellarion_load_game_preferences",
         "stellarion_submit_turn",
         "stellarion_withdraw_turn",
         "stellarion_load_turn_submissions",

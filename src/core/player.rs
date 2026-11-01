@@ -300,6 +300,9 @@ impl Player {
             })
         };
         let reports = self.reports.iter().filter_map(|r| {
+            if r.mission.objective == Icon::Patrol {
+                return None;
+            }
             if r.mission.origin == planet.id {
                 departure(&r.mission)
             } else if r.mission.destination == planet.id

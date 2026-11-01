@@ -10,35 +10,6 @@ pub(super) struct ProfileWrites {
     retry_after: f32,
 }
 
-/// Starts fresh matches at normal speed without changing resumed matches or other preferences.
-pub(super) fn reset_new_game_combat_speed(
-    session: Res<MultiplayerSession>,
-    settings: Option<ResMut<crate::core::settings::Settings>>,
-) {
-    // Multiplayer enters an unstarted lobby; Local Practice goes straight to gameplay loading.
-    let new_game = session.local_practice
-        || session.active_game.as_ref().is_some_and(|game| game.status == MatchStatus::Lobby);
-    if new_game {
-        if let Some(mut settings) = settings {
-            settings.combat_speed = crate::core::settings::CombatPreferences::default().speed;
-        }
-    }
-}
-
-/// Mirrors combat presentation changes into the current authenticated player's local profile.
-pub(super) fn sync_combat_preferences(
-    settings: Option<Res<crate::core::settings::Settings>>,
-    mut runtime: ResMut<ClientRuntime>,
-) {
-    let Some(settings) = settings else {
-        return;
-    };
-    let preferences = settings.combat_preferences();
-    if runtime.profile.combat_preferences != preferences {
-        runtime.profile.combat_preferences = preferences;
-    }
-}
-
 /// Coalesces changes into one off-frame write, retrying failed saves after five seconds.
 pub(super) fn flush_profile(
     runtime: Res<ClientRuntime>,

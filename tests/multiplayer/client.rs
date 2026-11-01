@@ -1,5 +1,4 @@
 use crate::core::simulation::{TurnCommand, MAX_COMMANDS_PER_SUBMISSION};
-use bevy::ecs::system::RunSystemOnce;
 use std::collections::{BTreeMap, HashSet};
 
 use super::*;
@@ -1146,6 +1145,22 @@ fn manual_save_persists_the_exact_editable_turn_draft_without_advancing_the_worl
         .add_message::<RefreshTurnDraft>()
         .add_systems(Update, (process_requests, poll_backend_tasks).chain());
 
+    let preferences = GamePreferences {
+        show_cells: false,
+        show_info: true,
+        brief_hover_info: true,
+        show_menu: false,
+        volume: 0.35,
+        unmuted_volume: 0.35,
+        combat_speed: 8.0,
+        combat_volley_fire: true,
+        combat_individual_units: true,
+        combat_view: crate::core::settings::CombatView::Cinematic,
+        ..default()
+    };
+    let mut settings = crate::core::settings::Settings::default();
+    settings.apply_game_preferences(preferences.clone());
+    app.insert_resource(settings);
     app.world_mut().write_message(MultiplayerRequest::SaveGame);
     for _ in 0..1000 {
         app.update();
@@ -1171,6 +1186,29 @@ fn manual_save_persists_the_exact_editable_turn_draft_without_advancing_the_worl
         serde_json::to_value([command]).unwrap()
     );
     assert_eq!(block_on(backend.load_game(&guest, &active.id)).unwrap().revision, active.revision);
+    assert_eq!(
+        block_on(backend.load_game_preferences(&host, &active.id)).unwrap(),
+        Some(preferences.clone())
+    );
+    assert_eq!(block_on(backend.load_game_preferences(&guest, &active.id)).unwrap(), None);
+
+    // A fresh program begins with defaults, then loading restores the saved game's choices.
+    app.insert_resource(crate::core::settings::Settings::default());
+    let output =
+        block_on(load_game_for_resume(backend, host, active.id, "0123-4567-89AB-CDEF".into()));
+    spawn_backend_task(&mut app.world_mut().resource_mut::<BackendTasks>(), async move { output });
+    for _ in 0..1000 {
+        app.update();
+        if app.world().resource::<BackendTasks>().0.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(app.world().resource::<BackendTasks>().0.is_empty());
+    assert_eq!(
+        app.world().resource::<crate::core::settings::Settings>().game_preferences(),
+        preferences
+    );
 }
 
 #[test]
@@ -1294,7 +1332,7 @@ fn already_linked_recovery_opens_the_saved_game() {
     ));
 
     match output {
-        BackendOutput::ResumeLoaded(record, recovery_code) => {
+        BackendOutput::ResumeLoaded(record, recovery_code, _) => {
             assert_eq!(record.id, saved.id);
             assert_eq!(record.revision, saved.revision);
             assert_eq!(recovery_code, host_code.expose());
@@ -1379,6 +1417,7 @@ fn recovered_host_and_player_resume_the_same_saved_game() {
                 operation: Operation::Recover,
                 result,
                 color_notice: None,
+                preferences: None,
             },
             &mut runtime,
             &mut session,
@@ -1453,6 +1492,7 @@ fn created_player_name_is_available_for_later_joins() {
             operation: Operation::Create,
             result,
             color_notice: None,
+            preferences: None,
         },
         &mut runtime,
         &mut session,
@@ -1488,133 +1528,46 @@ fn created_player_name_is_available_for_later_joins() {
 }
 
 #[test]
-fn new_games_reset_combat_speed_and_keep_changes_within_the_match() {
-    use crate::core::settings::{CombatPreferences, Settings};
-
-    for local_practice in [false, true] {
-        let mut settings = Settings::default();
-        settings.apply_combat_preferences(CombatPreferences {
-            speed: 0.5,
-            volley_fire: true,
-            individual_units: true,
-        });
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
-            .insert_state(AppState::MainMenu)
-            .insert_resource(settings)
-            .insert_resource(MultiplayerSession {
-                active_game: Some(record(
-                    "new-game",
-                    0,
-                    1,
-                    if local_practice {
-                        MatchStatus::Active
-                    } else {
-                        MatchStatus::Lobby
-                    },
-                )),
-                local_practice,
-                ..default()
-            })
-            .add_systems(OnEnter(AppState::Lobby), profile::reset_new_game_combat_speed)
-            .add_systems(OnEnter(AppState::LoadingGame), profile::reset_new_game_combat_speed);
-        app.update();
-        app.world_mut().resource_mut::<NextState<AppState>>().set(if local_practice {
-            AppState::LoadingGame
-        } else {
-            AppState::Lobby
-        });
-        app.update();
-        let settings = app.world().resource::<Settings>();
-        assert_eq!(settings.combat_speed, 1.0);
-        assert!(settings.combat_volley_fire);
-        assert!(settings.combat_individual_units);
-
-        if !local_practice {
-            app.world_mut()
-                .resource_mut::<MultiplayerSession>()
-                .active_game
-                .as_mut()
-                .unwrap()
-                .status = MatchStatus::Active;
-            app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::LoadingGame);
-            app.update();
-        }
-        app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Game);
-        app.update();
-        app.world_mut().resource_mut::<Settings>().combat_speed = 4.0;
-        for _ in 0..3 {
-            app.update();
-        }
-        assert_eq!(app.world().resource::<Settings>().combat_speed, 4.0);
-
-        app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::MainMenu);
-        app.update();
-        app.world_mut().resource_mut::<MultiplayerSession>().active_game = Some(record(
-            "another-new-game",
-            0,
-            1,
-            if local_practice {
-                MatchStatus::Active
-            } else {
-                MatchStatus::Lobby
-            },
-        ));
-        app.world_mut().resource_mut::<NextState<AppState>>().set(if local_practice {
-            AppState::LoadingGame
-        } else {
-            AppState::Lobby
-        });
-        app.update();
-        assert_eq!(app.world().resource::<Settings>().combat_speed, 1.0);
-    }
-}
-
-#[test]
-fn resuming_games_preserves_combat_speed() {
-    use crate::core::settings::Settings;
-
-    for status in [MatchStatus::Active, MatchStatus::Finished] {
-        let mut app = App::new();
-        app.insert_resource(Settings {
-            combat_speed: 0.5,
-            ..default()
-        })
-        .insert_resource(MultiplayerSession {
-            active_game: Some(record("resumed-game", 1, 1, status)),
-            ..default()
-        });
-
-        app.world_mut().run_system_once(profile::reset_new_game_combat_speed).unwrap();
-
-        assert_eq!(app.world().resource::<Settings>().combat_speed, 0.5);
-    }
-}
-
-#[test]
-fn combat_preferences_are_copied_into_the_local_player_profile() {
+fn new_games_inherit_session_settings_and_a_fresh_program_uses_defaults() {
+    use crate::core::settings::{CombatView, Settings};
     let mut app = App::new();
-    app.insert_resource(crate::core::settings::Settings {
-        combat_speed: 8.0,
-        combat_volley_fire: true,
-        combat_individual_units: true,
-        ..default()
-    })
-    .insert_resource(ClientRuntime {
-        backend: None,
-        realtime_config: None,
-        storage: Arc::new(MemoryStorage::default()),
-        profile: ClientProfile::default(),
-        practice_return: None,
-        practice_players: Vec::new(),
-    });
-
-    app.world_mut().run_system_once(profile::sync_combat_preferences).unwrap();
-
-    let profile = &app.world().resource::<ClientRuntime>().profile;
-    assert_eq!(profile.combat_preferences.speed, 8.0);
-    assert!(profile.combat_preferences.volley_fire);
-    assert!(profile.combat_preferences.individual_units);
+    app.add_plugins(bevy::state::app::StatesPlugin)
+        .init_state::<AppState>()
+        .init_resource::<Settings>()
+        .add_plugins(MultiplayerClientPlugin);
+    let expected = {
+        let mut settings = app.world_mut().resource_mut::<Settings>();
+        assert!(settings.show_cells);
+        settings.show_cells = false;
+        settings.show_info = true;
+        settings.brief_hover_info = true;
+        settings.show_menu = false;
+        settings.set_audio_mode(crate::core::states::AudioState::Sound);
+        settings.set_volume(0.35);
+        settings.combat_speed = 8.0;
+        settings.combat_volley_fire = true;
+        settings.combat_individual_units = true;
+        settings.combat_view = CombatView::Cinematic;
+        settings.game_preferences()
+    };
+    for local_practice in [false, true] {
+        {
+            let mut session = app.world_mut().resource_mut::<MultiplayerSession>();
+            session.local_practice = local_practice;
+            session.active_game = Some(record("new-game", 0, 1, MatchStatus::Lobby));
+        }
+        for state in [AppState::Lobby, AppState::LoadingGame, AppState::Game, AppState::MainMenu] {
+            app.world_mut().resource_mut::<NextState<AppState>>().set(state);
+            app.world_mut().run_schedule(StateTransition);
+            assert_eq!(app.world().resource::<Settings>().game_preferences(), expected);
+        }
+    }
+    drop(app);
+    let mut restarted = App::new();
+    restarted.init_resource::<Settings>();
+    let settings = restarted.world().resource::<Settings>();
+    assert!(settings.show_cells);
+    assert_eq!(settings.game_preferences(), GamePreferences::default());
 }
 
 #[test]

@@ -677,8 +677,8 @@ fn space_encounter_position(
                 .reports
                 .iter()
                 .rev()
-                .find(|report| report.mission.id == mission_id && report.is_space_fauna_encounter())
-                .map(|report| report.mission.position)
+                .find(|report| report.mission.id == mission_id && report.is_space_encounter())
+                .map(|report| report.planet.position)
         },
     )
 }

@@ -13,6 +13,7 @@ use crate::core::simulation::{
 use crate::multiplayer::backend::{
     BackendError, BackendFuture, MultiplayerBackend, TurnSubmissionScope,
 };
+use crate::multiplayer::model::GamePreferences;
 use crate::multiplayer::model::{
     AuthSession, CreateGameRequest, EventBatch, GameMembership, GameRecord, GameSummary, GameSync,
     JoinGameRequest, JointAttackInvitation, JointAttackResponse, MembershipResult,
@@ -460,8 +461,12 @@ impl MultiplayerBackend for SupabaseBackend {
         game_id: &'a GameId,
         expected_revision: u64,
         draft: TurnSubmission,
+        preferences: Option<GamePreferences>,
     ) -> BackendFuture<'a, SaveAcknowledgement> {
         Box::pin(async move {
+            if let Some(preferences) = &preferences {
+                preferences.validate().map_err(|error| BackendError::InvalidData(error.into()))?;
+            }
             validate_submission(&draft, None)?;
             let acknowledgement: SaveAcknowledgement = self
                 .rpc(
@@ -471,6 +476,7 @@ impl MultiplayerBackend for SupabaseBackend {
                         game_id: &game_id.0,
                         expected_revision,
                         draft,
+                        preferences,
                     },
                 )
                 .await?;
@@ -480,6 +486,28 @@ impl MultiplayerBackend for SupabaseBackend {
                 );
             }
             Ok(acknowledgement)
+        })
+    }
+
+    fn load_game_preferences<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, Option<GamePreferences>> {
+        Box::pin(async move {
+            let preferences: Option<GamePreferences> = self
+                .rpc(
+                    session,
+                    "stellarion_load_game_preferences",
+                    GameIdRpc {
+                        game_id: &game_id.0,
+                    },
+                )
+                .await?;
+            if let Some(preferences) = &preferences {
+                preferences.validate().map_err(|error| BackendError::Protocol(error.into()))?;
+            }
+            Ok(preferences)
         })
     }
 
@@ -798,7 +826,7 @@ struct StateWriteRpc<'a> {
 }
 
 #[derive(Serialize)]
-/// Compact manual-save request containing only the caller's draft and snapshot revision.
+/// Compact manual-save request containing the caller's draft, settings, and snapshot revision.
 struct SaveRpc<'a> {
     #[serde(rename = "p_game_id")]
     game_id: &'a str,
@@ -806,6 +834,8 @@ struct SaveRpc<'a> {
     expected_revision: u64,
     #[serde(rename = "p_submission")]
     draft: TurnSubmission,
+    #[serde(rename = "p_preferences")]
+    preferences: Option<GamePreferences>,
 }
 
 #[derive(Serialize)]

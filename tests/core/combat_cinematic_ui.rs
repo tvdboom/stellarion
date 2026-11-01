@@ -36,11 +36,13 @@ fn app() -> App {
     let mut app = App::new();
     app.init_resource::<Time>()
         .init_resource::<ButtonInput<KeyCode>>()
-        .init_resource::<Settings>()
+        .insert_resource(Settings {
+            combat_view: CombatView::Cinematic,
+            ..default()
+        })
         .insert_resource(player)
         .insert_resource(UiState {
             in_combat: Some(report_id),
-            combat_view: CombatView::Cinematic,
             ..Default::default()
         })
         .add_message::<PlayAudioMsg>()
@@ -87,11 +89,33 @@ fn planet_strike_app(destroyed: bool) -> App {
 fn schematic_is_the_default_selection_and_cinematic_is_explicit() {
     let mut world = World::new();
     assert!(!world.run_system_once(cinematic_selected).unwrap());
-    world.init_resource::<UiState>();
-    assert_eq!(world.resource::<UiState>().combat_view, CombatView::Schematic);
+    world.init_resource::<Settings>();
+    assert_eq!(world.resource::<Settings>().combat_view, CombatView::Schematic);
     assert!(!world.run_system_once(cinematic_selected).unwrap());
-    world.resource_mut::<UiState>().combat_view = CombatView::Cinematic;
+    world.resource_mut::<Settings>().combat_view = CombatView::Cinematic;
     assert!(world.run_system_once(cinematic_selected).unwrap());
+}
+
+#[test]
+fn cinematic_raid_chime_plays_once_when_the_loot_is_revealed() {
+    let mut app = app();
+    {
+        let mut player = app.world_mut().resource_mut::<Player>();
+        player.reports[0].mission.objective = Icon::Raid;
+        player.reports[0].raid_loot = crate::core::resources::Resources::new(12, 0, 34);
+    }
+    app.world_mut().run_system_once(setup_cinematic).unwrap();
+    let playback = app.world().resource::<CinematicPlayback>();
+    let (at, _) = playback.resource_pickup_cue().unwrap();
+    let mut soundtrack = CinematicSoundtrack::new(playback);
+    assert_eq!(soundtrack.cues.iter().filter(|(_, cue)| cue.name == "raid loot").count(), 1);
+    let mut audio = Messages::<PlayAudioMsg>::default();
+    soundtrack.advance(at - 0.01, &mut audio);
+    assert!(audio.drain().all(|cue| cue.name != "raid loot"));
+    soundtrack.advance(at, &mut audio);
+    assert_eq!(audio.drain().filter(|cue| cue.name == "raid loot").count(), 1);
+    soundtrack.advance(at + 0.1, &mut audio);
+    assert!(audio.drain().all(|cue| cue.name != "raid loot"));
 }
 
 #[test]

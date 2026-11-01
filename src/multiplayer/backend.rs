@@ -8,6 +8,7 @@ use thiserror::Error;
 use crate::core::identity::{GameId, PlayerId};
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{PersistedGame, TurnSubmission};
+use crate::multiplayer::model::GamePreferences;
 use crate::multiplayer::model::{
     AuthSession, CreateGameRequest, EventBatch, GameRecord, GameSummary, GameSync, JoinGameRequest,
     JointAttackInvitation, JointAttackResponse, MembershipResult, ProtectionPermissionUpdate,
@@ -274,13 +275,22 @@ pub trait MultiplayerBackend: Send + Sync {
 
     /// Saves the caller's unfinished commands and renews the canonical checkpoint timestamp.
     /// The shared snapshot is guarded by, but does not advance, its revision.
+    /// Manual saves include settings; internal checkpoints pass `None` to retain them.
     fn save_game<'a>(
         &'a self,
         session: &'a AuthSession,
         game_id: &'a GameId,
         expected_revision: u64,
         draft: TurnSubmission,
+        preferences: Option<GamePreferences>,
     ) -> BackendFuture<'a, SaveAcknowledgement>;
+
+    /// Loads only the authenticated player's saved presentation settings for this game.
+    fn load_game_preferences<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, Option<GamePreferences>>;
 
     /// Marks a command draft ready, with idempotent retries for each readiness generation.
     fn submit_turn<'a>(

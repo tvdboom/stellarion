@@ -76,6 +76,7 @@ mod battle_plan_controls;
 use battle_plan::{can_edit_garrison_plan, draw_garrison_plan_modal};
 
 mod missions;
+mod patrols;
 use missions::{
     draw_joint_attack_notifications, draw_mission, mission_arrival_tooltip, mission_arrival_turn,
     mission_movement_tooltip,
@@ -197,6 +198,12 @@ pub struct UiState {
     pub mission: bool,
     pub mission_tab: MissionTab,
     pub mission_info: Mission,
+    /// The next empty-space map click selects a patrol center instead of closing its draft.
+    pub(crate) selecting_patrol_zone: bool,
+    /// Selected patrol center, retained while the launch panel is temporarily hidden.
+    pub(crate) patrol_center: Option<Vec2>,
+    /// Planet destination restored when switching from Patrol to another objective.
+    pub(crate) patrol_previous_destination: Option<PlanetId>,
     /// Player slots selected for the current joint-attack invitation.
     pub(crate) joint_attack_invitees: std::collections::BTreeSet<PlayerId>,
     /// Last drawn invite picker bounds and UI pass, for crossing from the icon into the panel.
@@ -230,8 +237,6 @@ pub struct UiState {
     pub combat_report_round: usize,
     pub combat_report_hover: Option<(Unit, Side)>,
     pub in_combat: Option<ReportId>,
-    /// Local replay presentation; schematic remains the default for every new game.
-    pub(crate) combat_view: crate::core::combat::cinematic_ui::CombatView,
     pub combat_round: usize,
     pub end_turn: bool,
 }
@@ -2538,19 +2543,15 @@ fn combat_report_shows_salvage(total: bool, round: usize, round_count: usize) ->
     total || round == round_count
 }
 
-/// Draws the final resources recovered by the defending Crawlers when that outcome is visible.
-fn draw_crawler_salvage(
+/// Draws defender salvage or raid cargo with the same resource icons and amounts.
+fn draw_combat_resource_gains(
     ui: &mut Ui,
     report: &MissionReport,
     player: &Player,
     images: &ImageIds,
 ) -> Option<Response> {
-    if !report.can_see(&Side::Defender, player.id) {
-        return None;
-    }
-
-    let salvage = report.defender_salvage();
-    if salvage == Resources::default() {
+    let (side, salvage) = report.conclusion_resources()?;
+    if !report.can_see(&side, player.id) {
         return None;
     }
 
@@ -2558,7 +2559,12 @@ fn draw_crawler_salvage(
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = CRAWLER_SALVAGE_RESOURCE_GAP;
             let label = ui.painter().layout_no_wrap(
-                "Recovered:".to_string(),
+                if side == Side::Attacker {
+                    "Raided:"
+                } else {
+                    "Recovered:"
+                }
+                .to_string(),
                 TextStyle::Body.resolve(ui.style()),
                 ui.visuals().text_color(),
             );
@@ -2581,9 +2587,11 @@ fn draw_crawler_salvage(
             }
         })
         .response
-        .on_hover_small_ext(
-            "Resources recovered from destroyed ground defenses by the surviving Crawlers.",
-        ),
+        .on_hover_small_ext(if side == Side::Attacker {
+            "Resources seized by the raiders. Credited only when their returning fleet docks."
+        } else {
+            "Resources recovered from destroyed ground defenses by the surviving Crawlers."
+        }),
     )
 }
 
@@ -3993,6 +4001,7 @@ fn abandon_planet(
             surviving_defender: Army::new().into(),
             planet_colonized: false,
             planet_destroyed: false,
+            raid_loot: Default::default(),
             destination_owned: None,
             destination_controlled: None,
             combat_report: None,
@@ -4665,7 +4674,7 @@ fn encounter_image_corner_radius(report: &MissionReport, size: f32) -> egui::Cor
 }
 
 fn mission_report_destination_name<'a>(report: &MissionReport, destination: &'a Planet) -> &'a str {
-    if report.is_space_fauna_encounter() {
+    if report.is_space_encounter() {
         "Space Encounter"
     } else {
         &destination.name
@@ -4892,7 +4901,7 @@ fn draw_combat_report(
 
         ui.add_space(25.);
 
-        let destination_name = if report.is_space_fauna_encounter() {
+        let destination_name = if report.is_space_encounter() {
             &report.planet.name
         } else {
             &destination.name
@@ -5275,13 +5284,17 @@ fn draw_combat_report(
             Layout::left_to_right(Align::Center),
             |ui| {
                 // Match the defender grid's first unit rather than the divider itself.
-                ui.add_space(60. + attacker_w);
+                ui.add_space(if report.raid_loot.is_empty() {
+                    60. + attacker_w
+                } else {
+                    40.
+                });
                 if combat_report_shows_salvage(
                     state.combat_report_total,
                     state.combat_report_round,
                     combat.rounds.len(),
                 ) {
-                    draw_crawler_salvage(ui, report, player, images);
+                    draw_combat_resource_gains(ui, report, player, images);
                 }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -5323,11 +5336,26 @@ fn draw_mission_info_hover(
 
     ui.horizontal(|ui| {
         ui.add_space(25.);
-        ui.small("Destination:");
-
-        ui.spacing_mut().item_spacing.x = 4.;
-        ui.add_image(images.get(destination.image()), [25.; 2]);
-        ui.small(destination.name.to_name());
+        if let Some(patrol) = mission
+            .patrol
+            .as_ref()
+            .filter(|patrol| patrol.phase != crate::core::patrols::PatrolPhase::Returning)
+        {
+            if mission.owner == player.id {
+                ui.small(format!(
+                    "Patrol zone: ({:.1}, {:.1}) AU",
+                    patrol.center.x / Planet::SIZE,
+                    patrol.center.y / Planet::SIZE
+                ));
+            } else {
+                ui.small("Destination: Deep space");
+            }
+        } else {
+            ui.small("Destination:");
+            ui.spacing_mut().item_spacing.x = 4.;
+            ui.add_image(images.get(destination.image()), [25.; 2]);
+            ui.small(destination.name.to_name());
+        }
     });
 
     ui.add(Separator::default().shrink(20.));
@@ -5352,6 +5380,10 @@ fn draw_mission_info_hover(
             ui.small(format!("🚀 Movement: {:.2} AU", mission.next_turn_movement(map)))
                 .on_hover_small(mission_movement_tooltip(mission.jump_gate));
 
+            if mission.is_patrolling() && mission.owner == player.id {
+                ui.small("Patrolling");
+                return;
+            }
             let duration = mission.duration(map);
             ui.small(format!(
                 "⏱ Duration: +{} turn{} ({})",
@@ -5551,6 +5583,9 @@ fn mission_objective_label(objective: Icon) -> String {
 
 /// Uses the pre-mission world artwork so selection cannot reveal the resolved outcome.
 fn combat_selection_planet_image(report: &MissionReport) -> String {
+    if report.mission.objective == Icon::Patrol {
+        return "mission".to_owned();
+    }
     report
         .planet
         .army
@@ -5564,7 +5599,7 @@ fn combat_selection_planet_image(report: &MissionReport) -> String {
 }
 
 fn combat_selection_title(report: &MissionReport, map: &Map) -> String {
-    if report.is_space_fauna_encounter() {
+    if report.is_space_encounter() {
         "Deep Space Encounter".to_owned()
     } else {
         format!("Battle of {}", map.get(report.mission.destination).name)
@@ -5886,7 +5921,7 @@ pub fn draw_ui(
     }
 
     if *game_state.get() == GameState::Combat
-        && state.combat_view == crate::core::combat::cinematic_ui::CombatView::Cinematic
+        && settings.combat_view == crate::core::combat::cinematic_ui::CombatView::Cinematic
     {
         planet_panel_slide.hide();
         planet_panel_hover_hold.clear();
@@ -5903,6 +5938,11 @@ pub fn draw_ui(
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
+            patrols::draw_selection_toast(
+                context,
+                &mut state,
+                keyboard.just_pressed(KeyCode::Escape),
+            );
             draw_joint_attack_notifications(
                 context,
                 &mut state,

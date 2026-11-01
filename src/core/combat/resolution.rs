@@ -194,6 +194,7 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
             planet_colonized: mission.objective == Icon::Colonize
                 && destination.owned != Some(mission.owner),
             planet_destroyed: false,
+            raid_loot: Default::default(),
             destination_owned: destination.owned,
             destination_controlled: destination.controlled,
             combat_report: None,
@@ -211,7 +212,10 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
             *home != destination.id
                 && !destination.is_moon()
                 && destination.controlled.is_some()
-                && matches!(mission.objective, Icon::Attack | Icon::Colonize | Icon::Destroy)
+                && matches!(
+                    mission.objective,
+                    Icon::Attack | Icon::Raid | Icon::Colonize | Icon::Destroy
+                )
                 && administration >= destination.fleet_withdrawal.minimum_level()
         });
     let threshold =
@@ -755,6 +759,7 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
         surviving_defender: surviving_defense,
         planet_colonized: defend_army.is_empty() && mission.objective == Icon::Colonize,
         planet_destroyed,
+        raid_loot: Default::default(),
         destination_owned: None, // Filled in turns.rs after changes have been made to the planet
         destination_controlled: None, // Filled in turns.rs as well
         combat_report: (combat_report

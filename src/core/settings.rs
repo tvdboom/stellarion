@@ -5,32 +5,73 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::states::AudioState;
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-/// Presentation preferences retained in the client-local player profile.
-pub struct CombatPreferences {
-    /// Playback multiplier for combat presentation.
-    pub speed: f32,
-    /// Whether each side presents all firing unit kinds together.
-    pub volley_fire: bool,
-    /// Whether combat renders every combatant instead of one aggregated card per unit kind.
-    #[serde(default)]
-    pub individual_units: bool,
+/// Local combat renderer selected before a replay begins.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CombatView {
+    /// Tactical cards and phase animations.
+    #[default]
+    Schematic,
+    /// Cinematic fleet replay.
+    Cinematic,
 }
 
-impl Default for CombatPreferences {
+/// Player-specific choices saved with a game on the backend, never on disk.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GamePreferences {
+    /// Enabled audio channels.
+    pub audio: AudioState,
+    /// Master output level in the inclusive range zero to one.
+    pub volume: f32,
+    /// Audio mode restored after mute.
+    pub unmuted_audio: AudioState,
+    /// Positive output level restored after mute.
+    pub unmuted_volume: f32,
+    /// Whether map territory cells and boundaries are visible.
+    pub show_cells: bool,
+    /// Whether planet information is always visible.
+    pub show_info: bool,
+    /// Whether hover cards use the shorter presentation.
+    pub brief_hover_info: bool,
+    /// Whether the planet shop is shown when selecting a world.
+    pub show_menu: bool,
+    /// Combat playback multiplier, from 0.25 to 64.
+    pub combat_speed: f32,
+    /// Whether unit kinds fire together.
+    pub combat_volley_fire: bool,
+    /// Whether combatants use individual cards.
+    pub combat_individual_units: bool,
+    /// Preferred replay renderer.
+    pub combat_view: CombatView,
+}
+
+impl Default for GamePreferences {
     fn default() -> Self {
-        Self {
-            speed: 1.0,
-            volley_fire: false,
-            individual_units: false,
+        Settings::default().game_preferences()
+    }
+}
+
+impl GamePreferences {
+    /// Rejects invalid numeric values at the persistence boundary.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.volume.is_finite()
+            || !(0.0..=1.0).contains(&self.volume)
+            || !self.unmuted_volume.is_finite()
+            || !(0.0..=1.0).contains(&self.unmuted_volume)
+            || self.unmuted_volume == 0.0
+            || !self.combat_speed.is_finite()
+            || !(0.25..=64.0).contains(&self.combat_speed)
+        {
+            return Err("game preferences contain invalid volume or combat speed");
         }
+        Ok(())
     }
 }
 
 #[derive(Resource, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Local preferences and map-generation values; deterministic values are copied into game rules.
+/// Session preferences and map-generation values; fresh program sessions always use defaults.
 pub struct Settings {
     pub audio: AudioState,
     /// Master output level from zero (silent) to one (full volume).
@@ -54,28 +95,44 @@ pub struct Settings {
     /// Renders each combatant as its own card rather than aggregating equal unit kinds.
     #[serde(default)]
     pub combat_individual_units: bool,
+    /// Replay renderer retained across games in this program session.
+    pub combat_view: CombatView,
     pub turn: usize,
 }
 
 impl Settings {
-    /// Returns the combat preferences suitable for client-local persistence.
-    pub fn combat_preferences(&self) -> CombatPreferences {
-        CombatPreferences {
-            speed: self.combat_speed,
-            volley_fire: self.combat_volley_fire,
-            individual_units: self.combat_individual_units,
+    /// Captures preferences for a game save, excluding transient playback and turn state.
+    pub fn game_preferences(&self) -> GamePreferences {
+        GamePreferences {
+            audio: self.audio,
+            volume: self.volume,
+            unmuted_audio: self.unmuted_audio,
+            unmuted_volume: self.unmuted_volume,
+            show_cells: self.show_cells,
+            show_info: self.show_info,
+            brief_hover_info: self.brief_hover_info,
+            show_menu: self.show_menu,
+            combat_speed: self.combat_speed,
+            combat_volley_fire: self.combat_volley_fire,
+            combat_individual_units: self.combat_individual_units,
+            combat_view: self.combat_view,
         }
     }
 
-    /// Restores persisted combat preferences while rejecting invalid playback speeds.
-    pub fn apply_combat_preferences(&mut self, preferences: CombatPreferences) {
-        self.combat_speed = if preferences.speed.is_finite() {
-            preferences.speed.clamp(0.25, 64.0)
-        } else {
-            CombatPreferences::default().speed
-        };
-        self.combat_volley_fire = preferences.volley_fire;
-        self.combat_individual_units = preferences.individual_units;
+    /// Restores saved-game preferences without replacing game rules or the turn.
+    pub fn apply_game_preferences(&mut self, preferences: GamePreferences) {
+        self.audio = preferences.audio;
+        self.volume = preferences.volume;
+        self.unmuted_audio = preferences.unmuted_audio;
+        self.unmuted_volume = preferences.unmuted_volume;
+        self.show_cells = preferences.show_cells;
+        self.show_info = preferences.show_info;
+        self.brief_hover_info = preferences.brief_hover_info;
+        self.show_menu = preferences.show_menu;
+        self.combat_speed = preferences.combat_speed;
+        self.combat_volley_fire = preferences.combat_volley_fire;
+        self.combat_individual_units = preferences.combat_individual_units;
+        self.combat_view = preferences.combat_view;
     }
 
     /// Changes audio mode while preserving the level and mode across mute.
@@ -154,6 +211,7 @@ impl Default for Settings {
             combat_speed: 1.0,
             combat_volley_fire: false,
             combat_individual_units: false,
+            combat_view: CombatView::default(),
             turn: 1,
         }
     }
@@ -162,3 +220,7 @@ impl Default for Settings {
 fn default_volume() -> f32 {
     1.0
 }
+
+#[cfg(test)]
+#[path = "../../tests/core/settings.rs"]
+mod tests;

@@ -615,6 +615,125 @@ fn cinematic_weapon_meshes_preserve_distinct_barrels_masks_and_shared_colors() {
     }
 }
 
+#[test]
+fn cinematic_raid_pickups_pulse_a_survivor_and_show_only_nonzero_loot_at_the_end() {
+    use crate::core::resources::Resources;
+    let mut report = bombing_report();
+    report.mission.objective = Icon::Raid;
+    report.raid_loot = Resources::new(12, 0, 14);
+    report.combat_report.as_mut().unwrap().rounds[0].attacker.truncate(1);
+    let base = CinematicTimeline::new(&report);
+    let mut movie = CinematicPlayback::new(&report);
+    let pickup = movie.resource_pickup.as_ref().unwrap();
+    assert_eq!(pickup.actors.len(), 1);
+    let actor = pickup.actors[0];
+    assert_eq!(movie.timeline.actors[actor].side, Side::Attacker);
+    assert!(movie.timeline.actors[actor].unit.is_combat_ship());
+    assert!(movie.timeline.duration > base.duration);
+    let start = base.duration - super::super::cinematic_timeline::CLOSING_HOLD;
+    assert_eq!(pickup.scale_at(start), 1.0);
+    assert!((pickup.scale_at(start + 0.5) - 1.3).abs() < 0.001);
+    let context = bevy_egui::egui::Context::default();
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 720.0));
+    let mut previous_offset = None;
+    for (time, visible) in [
+        (start - 0.1, false),
+        (start + 1.7, true),
+        (start + 2.2, true),
+        (movie.timeline.duration, false),
+    ] {
+        movie.elapsed = time;
+        let mut output = context.run_ui(
+            bevy_egui::egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            },
+            |ui| {
+                movie.paint(ui.painter(), rect, &ImageIds::default());
+            },
+        );
+        output.textures_delta.clear();
+        for amount in ["+12", "+14"] {
+            assert_eq!(output.shapes.iter().any(|shape| matches!(&shape.shape, Shape::Text(text) if text.galley.text() == amount)), visible);
+        }
+        if visible {
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    Shape::Text(text) if text.galley.text() == "+12" => Some(text),
+                    _ => None,
+                })
+                .unwrap();
+            let offset = text.pos.y - movie.actor_pose(Scene::new(rect), actor, time).center.y;
+            assert!(offset > 0.0, "Raid gains must stay below the ship");
+            if let Some(previous) = previous_offset {
+                assert!(offset > previous);
+            }
+            previous_offset = Some(offset);
+        }
+        assert!(!output
+            .shapes
+            .iter()
+            .any(|shape| matches!(&shape.shape, Shape::Text(text) if text.galley.text() == "+0")));
+    }
+}
+
+#[test]
+fn cinematic_raid_distributes_recorded_loot_across_surviving_ships_only() {
+    use crate::core::resources::Resources;
+    let mut report = bombing_report();
+    report.mission.objective = Icon::Raid;
+    report.raid_loot = Resources::new(12, 9, 9);
+    let attackers = &mut report.combat_report.as_mut().unwrap().rounds[0].attacker;
+    attackers[1].unit = Unit::Ship(Ship::LightFighter);
+    attackers[2].hull = 0;
+    let mut movie = CinematicPlayback::new(&report);
+    let pickups = movie.resource_pickup.as_ref().unwrap();
+    assert_eq!(pickups.actors.len(), 2);
+    let mut total = Resources::default();
+    for (index, actor) in movie.timeline.actors.iter().enumerate() {
+        let share = pickups.resources_for(index);
+        if share.is_empty() {
+            continue;
+        }
+        assert_eq!(actor.side, Side::Attacker);
+        assert!(actor.death_at.is_none());
+        assert!(actor.retreat_at.is_none());
+        assert!(share.total() <= actor.unit.production() * 10);
+        total += share;
+    }
+    assert_eq!(total, report.raid_loot);
+    let (at, cue) = movie.resource_pickup_cue().unwrap();
+    assert!(at < movie.timeline.duration);
+    assert_eq!(cue.name, "raid loot");
+    movie.elapsed = at + 1.4;
+    for size in [vec2(1280.0, 720.0), vec2(640.0, 360.0)] {
+        let rect = Rect::from_min_size(Pos2::ZERO, size);
+        let context = bevy_egui::egui::Context::default();
+        let mut output = context.run_ui(
+            bevy_egui::egui::RawInput {
+                screen_rect: Some(rect),
+                ..Default::default()
+            },
+            |ui| movie.paint_resource_pickups(ui.painter(), Scene::new(rect), &ImageIds::default()),
+        );
+        output.textures_delta.clear();
+        let labels = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                Shape::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels.len(), 6);
+        for text in labels {
+            assert!(rect.contains_rect(Rect::from_min_size(text.pos, text.galley.size())));
+        }
+    }
+}
+
 fn bombing_replay() -> CinematicPlayback {
     CinematicPlayback::new(&bombing_report())
 }

@@ -184,6 +184,16 @@ fn report_notification(
     origin: &Planet,
     destination: &Planet,
 ) -> MessageMsg {
+    if report.mission.objective == Icon::Patrol && !report.is_space_fauna_encounter() {
+        let notification = if report.is_stalemate() {
+            MessageMsg::warning("Deep-space interception ended in a draw.")
+        } else if report.won_by(player.id) {
+            MessageMsg::info("Your fleet won a deep-space interception.")
+        } else {
+            MessageMsg::warning("Your fleet was lost in a deep-space interception.")
+        };
+        return notification.with_action(MessageAction::OpenMissionReport(report.id));
+    }
     if report.is_space_fauna_encounter() {
         let notification = if !report.surviving_attacker.has_army() {
             MessageMsg::warning("Mission destroyed during a deep-space encounter.")
@@ -196,6 +206,9 @@ fn report_notification(
     }
     let local_victory = report.won_by(player.id);
     let notification = match report.mission.objective {
+        Icon::Deploy if report.mission.return_objective == Some(Icon::Patrol) => {
+            MessageMsg::info(format!("Patrol returned to planet {}.", destination.name))
+        },
         Icon::Deploy if report.mission.is_returning() => {
             let probes_only =
                 report.mission.army.len() == 1 && report.mission.army.contains_key(&Unit::probe());
@@ -242,6 +255,16 @@ fn report_notification(
             } else {
                 MessageMsg::warning(text)
             }
+        },
+        Icon::Raid if local_victory => {
+            MessageMsg::info(format!("Raid at planet {} successful.", destination.name))
+        },
+        Icon::Raid if report.winner() == Some(report.mission.owner) => {
+            let loot = report.raid_loot;
+            MessageMsg::warning(format!(
+                "Planet {} was raided: {} metal, {} crystal, and {} deuterium stolen.",
+                destination.name, loot.metal, loot.crystal, loot.deuterium,
+            ))
         },
         Icon::MissileStrike => {
             let own = report.mission.owner == player.id;

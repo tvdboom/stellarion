@@ -24,6 +24,7 @@ use crate::multiplayer::authority::{
 use crate::multiplayer::backend::{
     BackendError, BackendFuture, MultiplayerBackend, TurnSubmissionScope, PLAYER_CONNECTION_TIMEOUT,
 };
+use crate::multiplayer::model::GamePreferences;
 use crate::multiplayer::model::{
     AuthSession, BackendEvent, BackendEventKind, CreateGameRequest, EventBatch, GameMembership,
     GameRecord, GameSummary, GameSync, JoinDisposition, JoinGameRequest, JointAttackInvitation,
@@ -78,6 +79,7 @@ struct StoredGame {
     record: GameRecord,
     finished_at: Option<Instant>,
     recovery_codes: HashMap<PlayerId, String>,
+    preferences: HashMap<PlayerId, GamePreferences>,
     submissions: BTreeMap<(u64, PlayerId), StoredTurnSubmission>,
     joint_attacks: BTreeMap<u64, JointAttackInvitation>,
     trades: BTreeMap<u64, TradeInvitation>,
@@ -205,6 +207,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 record,
                 finished_at: None,
                 recovery_codes: HashMap::from([(1, request.recovery_code.clone())]),
+                preferences: HashMap::new(),
                 submissions: BTreeMap::new(),
                 joint_attacks: BTreeMap::new(),
                 trades: BTreeMap::new(),
@@ -1150,8 +1153,12 @@ impl MultiplayerBackend for InMemoryBackend {
         game_id: &'a GameId,
         expected_revision: u64,
         draft: TurnSubmission,
+        preferences: Option<GamePreferences>,
     ) -> BackendFuture<'a, SaveAcknowledgement> {
         Box::pin(async move {
+            if let Some(preferences) = &preferences {
+                preferences.validate().map_err(|error| BackendError::InvalidData(error.into()))?;
+            }
             if draft.player_id == 0
                 || draft.player_id > 4
                 || draft.turn == 0
@@ -1230,11 +1237,28 @@ impl MultiplayerBackend for InMemoryBackend {
                     },
                 );
             }
+            if let Some(preferences) = preferences {
+                stored.preferences.insert(player_id, preferences);
+            }
             stored.record.saved_at = current_unix_timestamp();
             Ok(SaveAcknowledgement {
                 revision: stored.record.revision,
                 saved_at: stored.record.saved_at,
             })
+        })
+    }
+
+    fn load_game_preferences<'a>(
+        &'a self,
+        session: &'a AuthSession,
+        game_id: &'a GameId,
+    ) -> BackendFuture<'a, Option<GamePreferences>> {
+        Box::pin(async move {
+            let state = self.lock()?;
+            let user_id = authenticated_user(&state, session)?;
+            let stored = state.games.get(game_id).ok_or(BackendError::GameNotFound)?;
+            let player_id = authorize_member(stored, &user_id)?.player_id;
+            Ok(stored.preferences.get(&player_id).cloned())
         })
     }
 

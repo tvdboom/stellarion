@@ -479,15 +479,35 @@ fn gameplay_draft_projection(
     pending: &PendingTurnCommands,
     session: &MultiplayerSession,
 ) -> Option<crate::core::simulation::GameModel> {
-    (pending.turn == state.turn
-        && (!pending.commands.is_empty()
-            || state.trade_outgoing(player_id).total() > 0
-            || session
-                .joint_attacks
-                .iter()
-                .any(|invitation| invitation.launched && invitation.turn == state.turn)))
-    .then(|| session.preview_commands(state, player_id, &pending.commands))
+    let patrol_upkeep =
+        state.missions.iter().any(|mission| mission.owner == player_id && mission.is_patrolling());
+    let current_turn = pending.turn == state.turn;
+    (patrol_upkeep
+        || (current_turn
+            && (!pending.commands.is_empty()
+                || state.trade_outgoing(player_id).total() > 0
+                || session
+                    .joint_attacks
+                    .iter()
+                    .any(|invitation| invitation.launched && invitation.turn == state.turn))))
+    .then(|| {
+        session.preview_commands(
+            state,
+            player_id,
+            if current_turn {
+                &pending.commands
+            } else {
+                &[]
+            },
+        )
+    })
     .and_then(Result::ok)
+    .map(|mut preview| {
+        if !current_turn || pending.commands.is_empty() {
+            preview.orbital_strikes.clone_from(&state.orbital_strikes);
+        }
+        preview
+    })
 }
 
 /// Rebuilds recovered orders while preserving the planet/mission the player just opened.

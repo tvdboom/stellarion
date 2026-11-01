@@ -915,7 +915,7 @@ fn battle_chooser_gear_selects_image_modes_and_yields_to_volume() {
         ]));
         let mut state = UiState::default();
         let mut settings = Settings::default();
-        let frame = |events, state: &mut UiState, settings: &mut Settings| {
+        let frame = |events, _state: &mut UiState, settings: &mut Settings| {
             let mut controls = None;
             let mut output = context.run_ui(
                 egui::RawInput {
@@ -930,7 +930,7 @@ fn battle_chooser_gear_selects_image_modes_and_yields_to_volume() {
                         false,
                         false,
                         false,
-                        Some((&mut state.combat_view, &images)),
+                        Some(&images),
                     ));
                 },
             );
@@ -976,14 +976,14 @@ fn battle_chooser_gear_selects_image_modes_and_yields_to_volume() {
                     &mut settings,
                 );
             }
-            assert_eq!(state.combat_view, expected);
+            assert_eq!(settings.combat_view, expected);
             assert!(state.in_combat.is_none(), "choosing a view must not begin combat");
         }
         let (output, _, _) =
             frame(vec![egui::Event::PointerMoved(audio.center())], &mut state, &mut settings);
         assert!(image_tile(&output.shapes, egui::TextureId::User(71)).is_none());
         assert!(image_tile(&output.shapes, egui::TextureId::User(72)).is_none());
-        assert_eq!(state.combat_view, CombatView::Schematic);
+        assert_eq!(settings.combat_view, CombatView::Schematic);
         assert_eq!(settings.combat_speed, 1.0);
     }
 }

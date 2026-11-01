@@ -163,6 +163,7 @@ fn zero_damage_stalemate_terminates() {
         temperature: (0, 10),
         position: Vec2::X,
         resources: Default::default(),
+        raid_cache: Default::default(),
         jump_gate: 0,
 
         operations: Default::default(),
@@ -619,6 +620,7 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         temperature: (0, 10),
         position: Vec2::X,
         resources: Default::default(),
+        raid_cache: Default::default(),
         jump_gate: 0,
 
         operations: Default::default(),

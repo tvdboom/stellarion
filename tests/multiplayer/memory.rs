@@ -976,6 +976,7 @@ fn saving_or_reconnecting_does_not_restart_finished_game_retention() {
             &loaded.id,
             loaded.revision,
             TurnSubmission::new(1, loaded.persisted.state.turn, vec![]),
+            None
         )),
         Err(BackendError::InvalidGameStatus)
     ));
@@ -1033,6 +1034,7 @@ fn only_snapshot_saves_extend_save_retention() {
         &loaded.id,
         loaded.revision,
         TurnSubmission::new(1, active.persisted.state.turn, vec![]),
+        None,
     ))
     .unwrap();
     assert!(backend.lock().unwrap().games[&created.game.id].record.saved_at > old_save);
@@ -1255,6 +1257,7 @@ fn saves_by_multiple_players_keep_the_world_revision_and_reject_stale_snapshots(
         &created.game.id,
         loaded.revision,
         TurnSubmission::new(1, loaded.persisted.state.turn, vec![]),
+        None,
     ))
     .unwrap();
     let saved = block_on(backend.save_game(
@@ -1262,6 +1265,7 @@ fn saves_by_multiple_players_keep_the_world_revision_and_reject_stale_snapshots(
         &created.game.id,
         creator_saved.revision,
         TurnSubmission::new(2, loaded.persisted.state.turn, vec![]),
+        None,
     ))
     .unwrap();
     assert_eq!(creator_saved.revision, loaded.revision);
@@ -1272,7 +1276,7 @@ fn saves_by_multiple_players_keep_the_world_revision_and_reject_stale_snapshots(
             &creator,
             &created.game.id,
             stale_revision,
-            TurnSubmission::new(1, loaded.persisted.state.turn, vec![]),
+            TurnSubmission::new(1, loaded.persisted.state.turn, vec![]), None
         )),
         Err(BackendError::Conflict { expected, actual })
             if expected == stale_revision && actual == loaded.revision
@@ -1301,6 +1305,7 @@ fn resumes_exact_saved_state() {
         &created.game.id,
         started.revision,
         TurnSubmission::new(1, started.persisted.state.turn, vec![]),
+        None,
     ))
     .unwrap();
 
@@ -1445,7 +1450,7 @@ fn rejects_malformed_saved_draft() {
     let active = start_with_guest(&backend, &creator, &created.game);
     let malformed = TurnSubmission::new(0, active.persisted.state.turn, vec![]);
     assert!(matches!(
-        block_on(backend.save_game(&creator, &created.game.id, active.revision, malformed,)),
+        block_on(backend.save_game(&creator, &created.game.id, active.revision, malformed, None)),
         Err(BackendError::InvalidData(_))
     ));
     assert_eq!(
@@ -1479,6 +1484,7 @@ fn simultaneous_saves_do_not_conflict_or_advance_the_world() {
                 &game_id,
                 revision,
                 TurnSubmission::new(1, turn, vec![]),
+                None,
             ))
         }));
     }
@@ -2047,7 +2053,7 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
                 .collect(),
         }],
     );
-    block_on(backend.save_game(&host, &active.id, active.revision, submission)).unwrap();
+    block_on(backend.save_game(&host, &active.id, active.revision, submission, None)).unwrap();
     assert!(respond(base_revision + 2, JointAttackResponse::Pending, guest_fleet).is_err());
     assert!(block_on(backend.respond_joint_attack(
         &guests[1],
@@ -2228,7 +2234,7 @@ fn local_practice_declines_open_trades_and_missions_but_preserves_committed_orde
     assert_eq!(block_on(backend.load_trades(&players[2].0, &game.id)).unwrap(), vec![finalized]);
 
     let current = block_on(backend.load_game(&host, &game.id)).unwrap();
-    block_on(backend.save_game(&host, &game.id, current.revision, draft)).unwrap();
+    block_on(backend.save_game(&host, &game.id, current.revision, draft, None)).unwrap();
     block_on(close_local_practice_negotiations(&backend, &game.id, &players, &submissions))
         .unwrap();
     let launched = block_on(backend.load_joint_attacks(&host, &game.id)).unwrap();
@@ -2392,4 +2398,69 @@ fn trade_edits_are_live_reset_both_sides_and_require_current_consent_to_finalize
         TradeResponse::Pending
     ))
     .is_err());
+}
+
+#[test]
+fn saved_preferences_are_private_game_scoped_and_survive_identity_recovery() {
+    let backend = InMemoryBackend::new();
+    let (host, recovery) = identity(&backend);
+    let created = create(&backend, &host, &recovery, 2);
+    let game = start_with_guest(&backend, &host, &created.game);
+    let (outsider, _) = identity(&backend);
+    let other = create(&backend, &host, &recovery, 2);
+    assert_eq!(block_on(backend.load_game_preferences(&host, &game.id)).unwrap(), None);
+    let preferences = GamePreferences {
+        show_cells: false,
+        combat_speed: 8.0,
+        ..Default::default()
+    };
+    let save = |revision, preferences| {
+        block_on(backend.save_game(
+            &host,
+            &game.id,
+            revision,
+            TurnSubmission::new(1, game.persisted.state.turn, vec![]),
+            preferences,
+        ))
+    };
+    save(game.revision, Some(preferences.clone())).unwrap();
+    // Internal coordination checkpoints do not erase settings from the last explicit save.
+    save(game.revision, None).unwrap();
+    assert_eq!(
+        block_on(backend.load_game_preferences(&host, &game.id)).unwrap(),
+        Some(preferences.clone())
+    );
+    assert_eq!(block_on(backend.load_game_preferences(&host, &other.game.id)).unwrap(), None);
+    assert_eq!(
+        block_on(backend.load_game_preferences(&outsider, &game.id)),
+        Err(BackendError::Forbidden)
+    );
+    let mut invalid = preferences.clone();
+    invalid.combat_speed = f32::NAN;
+    assert!(matches!(save(game.revision, Some(invalid)), Err(BackendError::InvalidData(_))));
+    assert!(matches!(
+        save(game.revision - 1, Some(GamePreferences::default())),
+        Err(BackendError::Conflict { .. })
+    ));
+    assert_eq!(
+        block_on(backend.load_game_preferences(&host, &game.id)).unwrap(),
+        Some(preferences.clone())
+    );
+    let recovered = block_on(backend.recover_player(
+        &outsider,
+        RecoverPlayerRequest {
+            code: game.code,
+            recovery_code: recovery.expose().into(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(recovered.membership.player_id, 1);
+    assert_eq!(
+        block_on(backend.load_game_preferences(&outsider, &game.id)).unwrap(),
+        Some(preferences)
+    );
+    assert_eq!(
+        block_on(backend.load_game_preferences(&host, &game.id)),
+        Err(BackendError::Forbidden)
+    );
 }

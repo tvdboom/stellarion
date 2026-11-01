@@ -12,6 +12,9 @@ use strum::IntoEnumIterator;
 #[path = "spy_missions.rs"]
 mod spy_missions;
 
+#[path = "raid_missions.rs"]
+mod raid_missions;
+
 #[path = "operations.rs"]
 mod operations;
 
@@ -1222,6 +1225,7 @@ fn protection_is_an_additional_hostile_world_objective_until_a_fleet_is_statione
             Icon::Colonize,
             Icon::Protect,
             Icon::Attack,
+            Icon::Raid,
             Icon::Spy,
             Icon::MissileStrike,
             Icon::Destroy,

@@ -118,12 +118,56 @@ create index stellarion_finished_games_expiry
 create index stellarion_saved_games_expiry
     on public.stellarion_games (saved_at);
 
+-- Presentation settings belong to a player slot in a saved game, never to a device.
+-- They do not participate in deterministic turns, revisions, presence, or retention renewal.
+create function public.stellarion_game_preferences_valid(p_preferences jsonb)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog, public
+as $$
+begin
+    if jsonb_typeof(p_preferences) is distinct from 'object' then
+        return false;
+    end if;
+    if (select array_agg(key order by key) from jsonb_object_keys(p_preferences) as keys(key))
+       is distinct from array['audio', 'brief_hover_info', 'combat_individual_units', 'combat_speed', 'combat_view', 'combat_volley_fire', 'show_cells', 'show_info', 'show_menu', 'unmuted_audio', 'unmuted_volume', 'volume']::text[] then
+        return false;
+    end if;
+    return coalesce(
+        p_preferences ->> 'audio' in ('Mute', 'NoMusic', 'Sound')
+        and p_preferences ->> 'unmuted_audio' in ('Mute', 'NoMusic', 'Sound')
+        and p_preferences ->> 'combat_view' in ('schematic', 'cinematic')
+        and jsonb_typeof(p_preferences -> 'show_cells') = 'boolean'
+        and jsonb_typeof(p_preferences -> 'show_info') = 'boolean'
+        and jsonb_typeof(p_preferences -> 'brief_hover_info') = 'boolean'
+        and jsonb_typeof(p_preferences -> 'show_menu') = 'boolean'
+        and jsonb_typeof(p_preferences -> 'combat_volley_fire') = 'boolean'
+        and jsonb_typeof(p_preferences -> 'combat_individual_units') = 'boolean'
+        and jsonb_typeof(p_preferences -> 'volume') = 'number'
+        and jsonb_typeof(p_preferences -> 'unmuted_volume') = 'number'
+        and jsonb_typeof(p_preferences -> 'combat_speed') = 'number'
+        and (p_preferences ->> 'volume')::numeric between 0 and 1
+        and (p_preferences ->> 'unmuted_volume')::numeric > 0
+        and (p_preferences ->> 'unmuted_volume')::numeric <= 1
+        and (p_preferences ->> 'combat_speed')::numeric between 0.25 and 64,
+        false
+    );
+exception when invalid_text_representation or numeric_value_out_of_range then
+    return false;
+end;
+$$;
+revoke all on function public.stellarion_game_preferences_valid(jsonb) from public, anon, authenticated;
+
 create table public.stellarion_game_players (
     game_id uuid not null references public.stellarion_games(id) on delete cascade,
     player_id bigint not null,
     user_id uuid not null references auth.users(id) on delete restrict,
     display_name text not null,
     recovery_code text not null,
+    -- A manual save atomically stores this caller's settings alongside their draft.
+    -- Recovery changes user_id on this same slot, preserving its saved settings.
+    preferences jsonb check (preferences is null or public.stellarion_game_preferences_valid(preferences)),
     is_creator boolean not null default false,
     identity_version bigint not null default 1,
     connected boolean not null default false,
@@ -336,6 +380,35 @@ create policy stellarion_events_member_select
 -- Local Practice uses the same Rust simulation with an in-memory backend.
 -- Priorities are balanced fire or light/medium/heavy target classes spanning ships and defenses.
 -- Protection names the ship class drawing extra fire; ground-defense exposure never changes.
+-- Patrols use ordinary mission snapshots. Rust resolves movement, operating costs,
+-- contact rolls and combat; SQL checks the current transport shape. Patrol setup is
+-- fully contained in this reset and needs no additional scheduler or server.
+create function public.stellarion_patrol_valid(p_patrol jsonb)
+returns boolean
+language sql immutable
+set search_path = pg_catalog, public
+as $$
+    select coalesce(case
+        when p_patrol = 'null'::jsonb then true
+        when jsonb_typeof(p_patrol) <> 'object'
+          or not (p_patrol ?& array['center', 'remaining_turns', 'phase'])
+          or p_patrol - array['center', 'remaining_turns', 'phase'] <> '{}'::jsonb
+          or jsonb_typeof(p_patrol -> 'center') <> 'array' then false
+        when jsonb_array_length(p_patrol -> 'center') <> 2 then false
+        when jsonb_typeof(p_patrol #> '{center,0}') <> 'number'
+          or jsonb_typeof(p_patrol #> '{center,1}') <> 'number' then false
+        else abs((p_patrol #>> '{center,0}')::numeric) <= 3.4028235e38
+          and abs((p_patrol #>> '{center,1}')::numeric) <= 3.4028235e38
+          and p_patrol ->> 'phase' in ('Outbound', 'OnStation', 'Returning')
+          and case when p_patrol -> 'remaining_turns' = 'null'::jsonb then true
+              when jsonb_typeof(p_patrol -> 'remaining_turns') = 'number' then
+                (p_patrol ->> 'remaining_turns')::numeric between 0 and 10000
+                and trunc((p_patrol ->> 'remaining_turns')::numeric) = (p_patrol ->> 'remaining_turns')::numeric
+              else false end
+        end, false)
+$$;
+revoke all on function public.stellarion_patrol_valid(jsonb) from public, anon, authenticated;
+
 create function public.stellarion_battle_plan_valid(p_plan jsonb)
 returns boolean
 language sql
@@ -587,6 +660,18 @@ begin
         union all
         select value from jsonb_path_query(p_persisted, '$.state.players[*].reports[*].mission') as entries(value)
     loop
+        if not (v_item ? 'patrol') or not public.stellarion_patrol_valid(v_item -> 'patrol')
+           or (case when v_item -> 'patrol' = 'null'::jsonb then
+                v_item ->> 'objective' = 'Patrol' or v_item ->> 'return_objective' = 'Patrol'
+              when v_item #>> '{patrol,phase}' = 'Returning' then
+                v_item ->> 'objective' is distinct from 'Deploy'
+                or v_item ->> 'return_objective' is distinct from 'Patrol'
+              else v_item ->> 'objective' is distinct from 'Patrol'
+                or v_item -> 'return_objective' <> 'null'::jsonb
+                or v_item -> 'origin' is distinct from v_item -> 'destination'
+              end) then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_patrol';
+        end if;
         if not public.stellarion_battle_plan_valid(v_item -> 'battle_plan') then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_battle_plan';
         end if;
@@ -2504,6 +2589,19 @@ begin
     end if;
     for v_command in select value from jsonb_array_elements(p_submission -> 'commands')
     loop
+        if v_command ->> 'kind' = 'send_patrol' then
+            if not (v_command ?& array['kind', 'mission_id', 'origin', 'center', 'army', 'turns'])
+               or v_command - array['kind', 'mission_id', 'origin', 'center', 'army', 'turns'] <> '{}'::jsonb
+               or not public.stellarion_patrol_valid(jsonb_build_object(
+                   'center', v_command -> 'center', 'remaining_turns', v_command -> 'turns', 'phase', 'Outbound'))
+               or v_command -> 'turns' = '0'::jsonb
+               or jsonb_typeof(v_command -> 'army') is distinct from 'object'
+               or v_command -> 'army' = '{}'::jsonb
+               or jsonb_typeof(v_command -> 'mission_id') is distinct from 'number'
+               or jsonb_typeof(v_command -> 'origin') is distinct from 'number' then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:patrol_command';
+            end if;
+        end if;
         if v_command ->> 'kind' in ('send_mission', 'set_battle_plan', 'set_mission_battle_plan')
            and not public.stellarion_battle_plan_valid(v_command -> 'battle_plan') then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:battle_plan';
@@ -2602,7 +2700,8 @@ revoke all on function public.stellarion_freeze_joint_attack_launches(uuid, json
 create function public.stellarion_save_game(
     p_game_id uuid,
     p_expected_revision bigint,
-    p_submission jsonb
+    p_submission jsonb,
+    p_preferences jsonb default null
 )
 returns jsonb
 language plpgsql
@@ -2692,6 +2791,14 @@ begin
                 submitted_at = clock_timestamp();
     end if;
 
+    if p_preferences is not null then
+        if not public.stellarion_game_preferences_valid(p_preferences) then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:game_preferences';
+        end if;
+        update public.stellarion_game_players set preferences = p_preferences
+         where game_id = p_game_id and player_id = v_player_id and user_id = auth.uid();
+    end if;
+
     -- The matching revision proves that this client already has the canonical
     -- snapshot. Persist only this caller's unfinished commands and renew the
     -- retention checkpoint. Draft saves deliberately do not advance the shared
@@ -2708,6 +2815,34 @@ begin
     );
 end;
 $$;
+
+-- Settings reads return only the authenticated caller's slot. A never-saved game returns null.
+-- Settings survive identity recovery and are deleted with the game by the usual cascade.
+create function public.stellarion_load_game_preferences(p_game_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth
+as $$
+declare
+    v_preferences jsonb;
+begin
+    if auth.uid() is null then
+        raise exception using errcode = 'P0001', message = 'STLR_UNAUTHENTICATED';
+    end if;
+    if not exists (select 1 from public.stellarion_games where id = p_game_id) then
+        raise exception using errcode = 'P0001', message = 'STLR_GAME_NOT_FOUND';
+    end if;
+    select preferences into v_preferences from public.stellarion_game_players
+     where game_id = p_game_id and user_id = auth.uid();
+    if not found then
+        raise exception using errcode = 'P0001', message = 'STLR_FORBIDDEN';
+    end if;
+    return v_preferences;
+end;
+$$;
+revoke all on function public.stellarion_load_game_preferences(uuid) from public, anon, authenticated;
+grant execute on function public.stellarion_load_game_preferences(uuid) to authenticated;
 
 -- End turn marks a draft ready. It remains reversible until every active player
 -- is ready. Readiness and withdrawal take the game row lock, so the final ready
@@ -3396,9 +3531,9 @@ revoke all on function public.stellarion_set_player_color(uuid, smallint)
     from public, anon;
 grant execute on function public.stellarion_set_player_color(uuid, smallint)
     to authenticated;
-revoke all on function public.stellarion_save_game(uuid, bigint, jsonb)
+revoke all on function public.stellarion_save_game(uuid, bigint, jsonb, jsonb)
     from public, anon;
-grant execute on function public.stellarion_save_game(uuid, bigint, jsonb)
+grant execute on function public.stellarion_save_game(uuid, bigint, jsonb, jsonb)
     to authenticated;
 revoke all on function public.stellarion_submit_turn(uuid, jsonb)
     from public, anon;

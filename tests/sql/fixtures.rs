@@ -237,10 +237,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::json!({
+            "game_preferences": stellarion::multiplayer::model::GamePreferences::default(),
             "battle_plan": BattlePlan::default(),
             "battle_plans": battle_plans,
             "battle_report": battle_report,
             "combat_game": combat_fixture(active.clone())?,
+            "patrol_game": patrol_fixture(active.clone())?,
             "trade_routes": trade_route_fixtures(&active),
             "lobby": lobby,
             "active": PersistedGame::new(active),
@@ -249,4 +251,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
     );
     Ok(())
+}
+
+/// Exercises dispatch, a complete operating duration, upkeep, return and recovery snapshots.
+fn patrol_fixture(mut model: GameModel) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    model.rules.space_fauna_percent = 0;
+    let origin = model.players[0].home_planet;
+    let point = (1..20)
+        .flat_map(|x| (1..20).map(move |y| (x, y)))
+        .map(|(x, y)| {
+            model.map.rect.min
+                + model.map.rect.size() * bevy::math::Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
+        })
+        .filter(|point| {
+            stellarion::core::patrols::valid_patrol_target(&model.map, origin, *point, Some(2))
+        })
+        .max_by(|a, b| {
+            a.distance_squared(model.map.get(origin).position)
+                .total_cmp(&b.distance_squared(model.map.get(origin).position))
+        })
+        .ok_or("no patrol center in fixture map")?;
+    let army = Army::from([(Unit::Ship(Ship::Cruiser), 3)]);
+    model.map.get_mut(origin).army.extend(army.clone());
+    model.players[0].resources.deuterium = 100_000;
+    model.validate()?;
+    let initial = PersistedGame::new(model.clone());
+    let launch = TurnCommand::SendPatrol {
+        mission_id: 9902,
+        origin,
+        center: point,
+        army,
+        turns: Some(2),
+    };
+    let mut turns = Vec::new();
+    for index in 0..50 {
+        let submissions = vec![
+            TurnSubmission::new(
+                1,
+                model.turn,
+                if index == 0 {
+                    vec![launch.clone()]
+                } else {
+                    vec![]
+                },
+            ),
+            TurnSubmission::new(2, model.turn, vec![]),
+        ];
+        resolve_turn(&mut model, &submissions)?;
+        turns.push(serde_json::json!({ "submissions": submissions, "resolved": PersistedGame::new(model.clone()) }));
+        if model.missions.is_empty() {
+            break;
+        }
+    }
+    assert!(model.missions.is_empty(), "patrol fixture must return and dock");
+    Ok(serde_json::json!({ "initial": initial, "turns": turns, "launch": launch }))
 }

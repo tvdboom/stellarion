@@ -12,14 +12,15 @@ use crate::core::audio::{PlayAudioMsg, SoundEffect};
 use crate::core::constants::MISSION_Z;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
+use crate::core::map::planet::Planet;
 use crate::core::map::systems::{
     jump_gate_link_particles, JumpGateHelixStyle, JumpGateLinkParticle, MissionCmp,
 };
 use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{
-    BombingRaid, Mission, MissionRouteStyle, Missions, RecallMissionMsg, RecallProtectionMsg,
-    SendMissionMsg, SuppressedMapMissions,
+    BombingRaid, Mission, MissionId, MissionRouteStyle, Missions, RecallMissionMsg,
+    RecallProtectionMsg, SendMissionMsg, SuppressedMapMissions,
 };
 use crate::core::player::Player;
 use crate::core::settings::Settings;
@@ -78,12 +79,99 @@ pub(crate) fn mission_map_flip_y(image: &str, direction: Vec2) -> bool {
 
 /// Keeps a fleet facing along its route when it is already sitting on the destination point.
 pub(crate) fn mission_map_direction(mission: &Mission, map: &Map) -> Vec2 {
-    let destination = map.get(mission.destination);
-    let remaining = destination.position - mission.position;
+    let remaining = mission.target_position(map) - mission.position;
     if remaining.length_squared() > f32::EPSILON {
         remaining.normalize()
     } else {
-        (destination.position - map.get(mission.origin).position).normalize_or_zero()
+        (mission.target_position(map) - map.get(mission.origin).position).normalize_or_zero()
+    }
+}
+
+#[derive(Component)]
+pub(crate) struct PatrolZoneCmp(MissionId);
+
+/// Shows owned coverage and the selected/live launch preview without changing fleet positions.
+pub(crate) fn update_patrol_zones(
+    mut commands: Commands,
+    mut zones: Query<(Entity, &PatrolZoneCmp, &mut Transform, &MeshMaterial2d<ColorMaterial>)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    state: Res<UiState>,
+    missions: Res<Missions>,
+    player: Res<Player>,
+    camera: Single<(&Camera, &GlobalTransform), With<crate::core::camera::MainCamera>>,
+    window: Single<&Window>,
+    map: Res<Map>,
+) {
+    let mut desired = std::collections::BTreeMap::new();
+    for mission in missions.iter().filter(|mission| {
+        mission.owner == player.id && mission.patrol.is_some() && !mission.is_returning()
+    }) {
+        if let Some(patrol) = &mission.patrol {
+            desired.insert(
+                mission.id,
+                (
+                    patrol.center,
+                    player.color().color().with_alpha(if mission.is_patrolling() {
+                        0.5
+                    } else {
+                        0.2
+                    }),
+                ),
+            );
+        }
+    }
+    if state.selecting_patrol_zone || state.mission && state.mission_info.objective == Icon::Patrol
+    {
+        let (camera, transform) = camera.into_inner();
+        let center = if state.selecting_patrol_zone {
+            window
+                .cursor_position()
+                .and_then(|cursor| camera.viewport_to_world_2d(transform, cursor).ok())
+        } else {
+            state.patrol_center
+        };
+        if let Some(center) = center {
+            let valid = crate::core::patrols::valid_patrol_target(
+                &map,
+                state.mission_info.origin,
+                center,
+                None,
+            );
+            desired.insert(
+                0,
+                (
+                    center,
+                    if valid {
+                        player.color().color().with_alpha(0.7)
+                    } else {
+                        Color::srgba(1.0, 0.2, 0.2, 0.7)
+                    },
+                ),
+            );
+        }
+    }
+    // Reuse persistent zone entities. Only the live cursor preview changes every frame.
+    for (entity, zone, mut transform, material) in &mut zones {
+        if let Some((center, color)) = desired.remove(&zone.0) {
+            transform.translation = center.extend(MISSION_Z - 0.5);
+            if let Some(mut material) = materials.get_mut(&material.0) {
+                material.color = color;
+            }
+        } else {
+            commands.entity(entity).despawn();
+        }
+    }
+    for (id, (center, color)) in desired {
+        let radius = crate::core::patrols::PATROL_RADIUS;
+        commands.spawn((
+            Mesh2d(meshes.add(Annulus::new(radius - 1.5, radius))),
+            MeshMaterial2d(materials.add(color)),
+            Transform::from_xyz(center.x, center.y, MISSION_Z - 0.5),
+            Pickable::IGNORE,
+            PatrolZoneCmp(id),
+            MapCmp,
+        ));
     }
 }
 
@@ -212,6 +300,7 @@ pub fn update_missions(
     assets: Res<WorldAssets>,
     session: Res<MultiplayerSession>,
     suppressed_missions: Option<Res<SuppressedMapMissions>>,
+    time: Option<Res<Time>>,
 ) {
     let player_id = player.id;
     let hovered = state.mission_hover.and_then(|id| missions.get(id));
@@ -311,22 +400,53 @@ pub fn update_missions(
                     state.mission_hover = None;
                     state.mission_hover_from_ui = false;
                 })
-                .observe(move |event: On<Pointer<Click>>, mut state: ResMut<UiState>| {
-                    if event.button == PointerButton::Primary {
-                        state.mission = true;
-                        state.planet_selected = None;
-                        state.mission_tab = if owner == player_id {
-                            MissionTab::ActiveMissions
-                        } else {
-                            MissionTab::EnemyMissions
+                .observe(
+                    move |event: On<Pointer<Click>>,
+                          mut state: ResMut<UiState>,
+                          missions: Res<Missions>,
+                          map: Res<Map>,
+                          player: Res<Player>,
+                          settings: Res<Settings>| {
+                        if event.button == PointerButton::Primary {
+                            if state.selecting_patrol_zone {
+                                if let Some(patrol) = missions
+                                    .get(id)
+                                    .filter(|mission| {
+                                        mission.owner == player_id && !mission.is_returning()
+                                    })
+                                    .and_then(|mission| mission.patrol.as_ref())
+                                {
+                                    state.choose_patrol_zone(
+                                        &map,
+                                        &player,
+                                        settings.turn,
+                                        patrol.center,
+                                    );
+                                }
+                                return;
+                            }
+                            state.mission = true;
+                            state.planet_selected = None;
+                            state.mission_tab = if owner == player_id {
+                                MissionTab::ActiveMissions
+                            } else {
+                                MissionTab::EnemyMissions
+                            }
                         }
-                    }
-                });
+                    },
+                );
         }
     }
 
     for (mission_e, mut mission_s, mut mission_t, mut visibility, mission_c) in &mut mission_q {
         if let Some(mission) = missions.iter().find(|m| m.id == mission_c.id) {
+            let displayed_position = if mission.is_patrolling() {
+                let angle = time.as_ref().map_or(0.0, |time| time.elapsed_secs()) * 0.5
+                    + (mission.id % 360) as f32;
+                mission.position + Vec2::new(angle.cos(), angle.sin()) * Planet::SIZE * 0.35
+            } else {
+                mission.position
+            };
             *visibility = if suppressed_missions
                 .as_ref()
                 .is_some_and(|suppressed| suppressed.contains(mission.id))
@@ -349,11 +469,11 @@ pub fn update_missions(
 
             if mission_has_group_hover(mission, hovered, player_id) {
                 // Lift above other missions while staying below the planet's icons.
-                mission_t.translation = mission.position.extend(MISSION_Z + 0.1);
+                mission_t.translation = displayed_position.extend(MISSION_Z + 0.1);
                 // Size, rather than a blue/red texture swap, indicates hover without losing identity.
                 mission_s.custom_size = Some(Vec2::splat(mission_size(mission, true)));
             } else {
-                mission_t.translation = mission.position.extend(MISSION_Z);
+                mission_t.translation = displayed_position.extend(MISSION_Z);
                 mission_s.custom_size = Some(Vec2::splat(mission_size(mission, false)));
             }
         } else {
@@ -493,6 +613,9 @@ pub fn update_mission_route_arrow(
     {
         let origin = map.get(mission.origin);
         let destination = map.get(mission.destination);
+        if mission.is_patrolling() {
+            continue;
+        }
         let animation_speed = mission.route_animation_speed(&map);
         match mission.route_style(&player) {
             MissionRouteStyle::Standard => {
@@ -506,9 +629,13 @@ pub fn update_mission_route_arrow(
                 ));
                 arrows.extend(mission_route_markers(
                     mission.position,
-                    destination.position,
+                    mission.target_position(&map),
                     38.0,
-                    destination.size() * 0.7,
+                    if mission.patrol.is_some() && !mission.is_returning() {
+                        0.0
+                    } else {
+                        destination.size() * 0.7
+                    },
                     session.player_color(mission.owner).color(),
                     offset(animation_speed),
                 ));
@@ -676,6 +803,14 @@ pub fn send_mission(
                 combat_probes: mission.combat_probes,
                 contributions: joint_attack.contributions.clone(),
             }
+        } else if let Some(patrol) = &mission.patrol {
+            TurnCommand::SendPatrol {
+                mission_id: mission.id,
+                origin: mission.origin,
+                center: patrol.center,
+                army,
+                turns: patrol.remaining_turns,
+            }
         } else {
             TurnCommand::SendMission {
                 mission_id: mission.id,
@@ -800,6 +935,7 @@ pub fn recall_mission(
     session: Option<Res<MultiplayerSession>>,
     mut missions: ResMut<Missions>,
     mut pending: ResMut<PendingTurnCommands>,
+    mut refresh: Option<ResMut<Messages<crate::multiplayer::client::RefreshTurnDraft>>>,
 ) {
     for RecallMissionMsg {
         mission_id,
@@ -838,6 +974,9 @@ pub fn recall_mission(
                 TurnCommand::SendMission {
                     mission_id: sent_id,
                     ..
+                } | TurnCommand::SendPatrol {
+                    mission_id: sent_id,
+                    ..
                 } if sent_id == mission_id
             )
         };
@@ -855,6 +994,7 @@ pub fn recall_mission(
                 !matches!(
                     command,
                     TurnCommand::SendMission { mission_id: id, .. }
+                        | TurnCommand::SendPatrol { mission_id: id, .. }
                         | TurnCommand::SetMissionBattlePlan { mission_id: id, .. }
                         if id == mission_id
                 )
@@ -924,6 +1064,11 @@ pub fn recall_mission(
         let radius = mission_size(mission, false) * 1.25;
 
         mission.recall(&map, settings.turn);
+        if mission.patrol.is_some() {
+            if let Some(refresh) = &mut refresh {
+                refresh.write(crate::multiplayer::client::RefreshTurnDraft);
+            }
+        }
         let to_direction = mission_map_direction(mission, &map);
         let to_angle = to_direction.y.atan2(to_direction.x);
         animations.write(MissionRecallAnimationMsg {

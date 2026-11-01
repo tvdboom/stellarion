@@ -1,6 +1,147 @@
 use super::*;
 
 #[test]
+fn objective_buttons_keep_their_size_and_selection_while_hovering_and_pressing() {
+    let image = egui::TextureId::User(910);
+    for enabled in [true, false] {
+        let context = egui::Context::default();
+        context.set_global_style(NordDark.custom_style());
+        let mut button = egui::Rect::NOTHING;
+        let mut selected = false;
+        let mut clicks = 0;
+        for step in 0..7 {
+            let mut events = Vec::new();
+            if (1..=4).contains(&step) {
+                events.push(egui::Event::PointerMoved(button.center()));
+            } else {
+                events.push(egui::Event::PointerGone);
+            }
+            if step == 3 || step == 4 {
+                events.push(egui::Event::PointerButton {
+                    pos: button.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 3,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(330.0, 140.0),
+                    )),
+                    time: Some(step as f64 * 0.2),
+                    events,
+                    ..default()
+                },
+                |ui| {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        let response =
+                            draw_mission_objective_button(ui, image, Icon::Raid, selected);
+                        if step > 0 {
+                            assert_eq!(response.rect, button);
+                        }
+                        button = response.rect;
+                        if response.clicked() {
+                            clicks += 1;
+                            selected = true;
+                        }
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            let artwork = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == image => Some(mesh.calc_bounds()),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(button.size(), MISSION_OBJECTIVE_BUTTON_SIZE);
+            assert_eq!(artwork.size(), egui::vec2(40.0, 40.0));
+            assert_eq!(
+                artwork.min.y - button.min.y,
+                if step == 3 && enabled {
+                    3.0
+                } else {
+                    2.0
+                }
+            );
+            assert!(button.contains_rect(artwork));
+            let markers = output.shapes.iter().filter(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == MISSION_OBJECTIVE_ACCENT && rect.rect.size() == egui::vec2(22.0, 2.0)
+            )).count();
+            if enabled && step >= 5 {
+                assert_eq!(markers, 1);
+            } else {
+                assert_eq!(markers, 0);
+            }
+        }
+        assert_eq!(clicks, usize::from(enabled));
+        assert_eq!(selected, enabled);
+    }
+}
+
+#[test]
+fn objective_buttons_support_keyboard_activation_and_fit_all_seven_choices() {
+    let context = egui::Context::default();
+    let mut activated = false;
+    for step in 0..3 {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                events: if step == 0 {
+                    vec![]
+                } else {
+                    vec![egui::Event::Key {
+                        key: egui::Key::Enter,
+                        physical_key: None,
+                        pressed: step == 1,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }]
+                },
+                ..default()
+            },
+            |ui| {
+                let response =
+                    draw_mission_objective_button(ui, egui::TextureId::User(1), Icon::Raid, true);
+                if step == 0 {
+                    response.request_focus();
+                }
+                activated |= response.clicked();
+            },
+        );
+        output.textures_delta.clear();
+    }
+    assert!(activated);
+    for width in [330.0, 480.0] {
+        let context = egui::Context::default();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(width);
+            let left = ui.cursor().left();
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = MISSION_OBJECTIVE_BUTTON_GAP;
+                for icon in Icon::objectives(false, false, true, false) {
+                    let response = draw_mission_objective_button(
+                        ui,
+                        egui::TextureId::User(1),
+                        icon,
+                        icon == Icon::Attack,
+                    );
+                    assert!(response.rect.right() - left <= width);
+                }
+            });
+        });
+        output.textures_delta.clear();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "ui_objective_preview.rs"]
+mod objective_preview;
+
+#[test]
 fn mission_report_combat_button_stays_inside_the_panel_and_opens_details() {
     let mut destination = Planet::new(1, "Target".into(), Vec2::X, false, 1.0);
     destination.owned = Some(2);
@@ -36,14 +177,35 @@ fn mission_report_combat_button_stays_inside_the_panel_and_opens_details() {
     };
     let button_texture = egui::TextureId::User(90);
     let fighter_texture = egui::TextureId::User(91);
+    let origin_texture = egui::TextureId::User(92);
+    let resource_textures = [93, 94, 95].map(egui::TextureId::User);
     let images = ImageIds(HashMap::from([
         ("button".to_owned(), button_texture),
         ("button hover".to_owned(), button_texture),
         (Unit::Ship(Ship::LightFighter).to_lowername().to_string(), fighter_texture),
+        (map.get(0).image(), origin_texture),
+        ("metal".to_owned(), resource_textures[0]),
+        ("crystal".to_owned(), resource_textures[1]),
+        ("deuterium".to_owned(), resource_textures[2]),
     ]));
-    for viewport in
-        [egui::vec2(1920.0, 1080.0), egui::vec2(1280.0, 720.0), egui::vec2(850.0, 640.0)]
-    {
+    for (objective, loot, viewport) in [
+        (Icon::Attack, Resources::new(21, 1, 0)),
+        (Icon::Raid, Resources::new(21, 1, 0)),
+        (Icon::Raid, Resources::default()),
+        (Icon::Raid, Resources::new(1_234_567, 89, 0)),
+    ]
+    .into_iter()
+    .flat_map(|(objective, loot)| {
+        [
+            egui::vec2(1920.0, 1080.0),
+            egui::vec2(1280.0, 720.0),
+            egui::vec2(850.0, 640.0),
+            egui::vec2(800.0, 600.0),
+        ]
+        .map(|viewport| (objective, loot, viewport))
+    }) {
+        player.reports[0].mission.objective = objective;
+        player.reports[0].raid_loot = loot;
         let context = egui::Context::default();
         context.set_global_style(NordDark.custom_style());
         let scale = mission_panel_scale(viewport);
@@ -115,26 +277,100 @@ fn mission_report_combat_button_stays_inside_the_panel_and_opens_details() {
                 panel.contains_rect(button),
                 "button {button:?} overflowed panel {panel:?} at {viewport:?}"
             );
-            let fighters = output
-                .shapes
-                .iter()
-                .filter_map(|shape| match &shape.shape {
-                    egui::Shape::Mesh(mesh) if mesh.texture_id == fighter_texture => {
-                        Some(mesh.calc_bounds())
-                    },
-                    egui::Shape::Rect(rect)
-                        if rect.brush.is_some() && rect.fill_texture_id() == fighter_texture =>
-                    {
-                        Some(rect.rect)
-                    },
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
+            let image_rects = |texture| {
+                output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                            Some(mesh.calc_bounds())
+                        },
+                        egui::Shape::Rect(rect)
+                            if rect.brush.is_some() && rect.fill_texture_id() == texture =>
+                        {
+                            Some(rect.rect)
+                        },
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let fighters = image_rects(fighter_texture);
             assert_eq!(fighters.len(), 2);
             assert!(
                 (fighters[0].top() - fighters[1].top()).abs() < 1.0,
                 "attacker and defender grids must start at the same height: {fighters:?}"
             );
+            let origin = image_rects(origin_texture)
+                .into_iter()
+                .find(|rect| (rect.width() - MISSION_PLANET_IMAGE_SIZE * scale).abs() < 1.0)
+                .expect("report origin planet");
+            let bar = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if (rect.rect.height() - 6.0 * scale).abs() < 0.1
+                            && (rect.rect.width() - MISSION_REPORT_STRENGTH_BAR_WIDTH * scale)
+                                .abs()
+                                < 0.1 =>
+                    {
+                        Some(rect.rect)
+                    },
+                    _ => None,
+                })
+                .expect("attacker strength bar");
+            let caption_bottom = origin.bottom() + 4.0 * scale;
+            assert!(bar.top() >= caption_bottom);
+            assert!(
+                bar.top() - caption_bottom <= 20.0 * scale,
+                "planet caption and strength bar are too far apart: {origin:?}, {bar:?}"
+            );
+            let mut resource_right = f32::NEG_INFINITY;
+            for texture in resource_textures {
+                let resources = image_rects(texture);
+                if objective == Icon::Raid {
+                    assert_eq!(resources.len(), 1);
+                    let icon = resources[0];
+                    assert!(panel.contains_rect(icon), "raid resource overflowed panel: {icon:?}");
+                    assert!(
+                        icon.right() < button.left() && !icon.intersects(button),
+                        "raid resource {icon:?} overlaps combat button {button:?} at {viewport:?}"
+                    );
+                    for shape in &output.shapes {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            if text.galley.text() == "Scouts: 2" {
+                                assert!(
+                                    icon.top() >= text.pos.y + text.galley.size().y,
+                                    "raid resource {icon:?} overlaps the scouts count"
+                                );
+                            }
+                        }
+                    }
+                    assert!(
+                        icon.left() > resource_right,
+                        "raid resources must stay on one row in resource order"
+                    );
+                    resource_right = icon.right();
+                } else {
+                    assert!(resources.is_empty());
+                }
+            }
+            let text = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert!(!text.iter().any(|text| text.contains("Raided cargo")
+                || text.contains("Credited when")
+                || text.contains("No resources seized")));
+            if objective == Icon::Raid {
+                for resource in CRAWLER_SALVAGE_RESOURCE_ORDER {
+                    assert!(text.contains(&format_thousands(loot.get(&resource)).as_str()));
+                }
+            }
         }
         assert_eq!(state.combat_report, Some(42));
         assert_eq!(state.combat_report_round, 1);
@@ -313,14 +549,73 @@ fn mission_objectives_require_their_origin_units_before_selection() {
 }
 
 #[test]
+fn raid_moon_objective_is_disabled_while_normal_attacks_remain_available() {
+    let moon = Planet::new(2, "Moon".into(), Vec2::ZERO, true, 1.0);
+    let planet = Planet::new(3, "Planet".into(), Vec2::ZERO, false, 1.0);
+    let army = Army::from([(Unit::Ship(Ship::LightFighter), 1)]);
+    assert!(!mission_objective_available(Icon::Raid, &army, &moon, 1, 2));
+    assert!(mission_objective_available(Icon::Raid, &army, &planet, 1, 2));
+    assert!(mission_objective_available(Icon::Attack, &army, &moon, 1, 2));
+    assert_eq!(
+        mission_objective_unavailable_reason(Icon::Raid, &army, &moon, 1, 2),
+        Some("Moons cannot be raided.")
+    );
+}
+
+#[test]
+fn objective_disabled_reasons_identify_the_actual_blocker() {
+    let moon = Planet::new(2, "Moon".into(), Vec2::ZERO, true, 1.0);
+    let planet = Planet::new(3, "Planet".into(), Vec2::ZERO, false, 1.0);
+    let empty = Army::new();
+    for (objective, required_unit, missing_units, moon_restriction) in [
+        (
+            Icon::Raid,
+            Unit::Ship(Ship::LightFighter),
+            "No combat ships on the origin planet.",
+            "Moons cannot be raided.",
+        ),
+        (
+            Icon::Colonize,
+            Unit::colony_ship(),
+            "No Colony Ship on the origin planet.",
+            "Moons cannot be colonized.",
+        ),
+        (
+            Icon::MissileStrike,
+            Unit::interplanetary_missile(),
+            "No Interplanetary Missiles on the origin planet.",
+            "Interplanetary Missiles cannot target moons.",
+        ),
+    ] {
+        let equipped = Army::from([(required_unit, 1)]);
+        assert_eq!(
+            mission_objective_unavailable_reason(objective, &empty, &planet, 1, 2),
+            Some(missing_units)
+        );
+        assert_eq!(mission_objective_unavailable_reason(objective, &equipped, &planet, 1, 2), None);
+        for army in [&empty, &equipped] {
+            assert_eq!(
+                mission_objective_unavailable_reason(objective, army, &moon, 1, 2),
+                Some(moon_restriction)
+            );
+        }
+    }
+    assert_eq!(
+        mission_objective_unavailable_reason(Icon::Colonize, &empty, &planet, 2, 2),
+        Some("Maximum number of colonized planets reached.")
+    );
+}
+
+#[test]
 fn allied_drafts_allow_only_shared_objectives() {
     for objective in [Icon::Colonize, Icon::Attack, Icon::Destroy] {
         assert!(mission_objective_selectable(objective, true, true));
     }
-    for objective in [Icon::Protect, Icon::Deploy, Icon::Spy, Icon::MissileStrike] {
+    for objective in [Icon::Protect, Icon::Deploy, Icon::Raid, Icon::Spy, Icon::MissileStrike] {
         assert!(!mission_objective_selectable(objective, true, true));
     }
     assert!(mission_objective_selectable(Icon::Protect, true, false));
+    assert!(mission_objective_selectable(Icon::Raid, true, false));
     assert!(!mission_objective_selectable(Icon::Attack, false, true));
 }
 

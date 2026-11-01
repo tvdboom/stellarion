@@ -680,12 +680,10 @@ fn battle_selection_starts_the_chosen_report_without_changing_replay_mode() {
     let images = ImageIds::default();
     for view in [CombatView::Schematic, CombatView::Cinematic] {
         let context = egui::Context::default();
-        let mut state = UiState {
-            combat_view: view,
-            ..default()
-        };
+        let mut state = UiState::default();
         let mut settings = Settings {
             turn: 0,
+            combat_view: view,
             combat_paused: true,
             ..default()
         };
@@ -703,7 +701,7 @@ fn battle_selection_starts_the_chosen_report_without_changing_replay_mode() {
             );
         });
         assert_eq!(state.in_combat, Some(42));
-        assert_eq!(state.combat_view, view);
+        assert_eq!(settings.combat_view, view);
         assert!(!settings.combat_paused);
         assert!(matches!(next, NextState::Pending(GameState::Combat)));
     }
@@ -1095,6 +1093,7 @@ fn combat_selection_uses_prebattle_planet_artwork() {
         id: 1,
         turn: 1,
         planet_destroyed: true,
+        raid_loot: Default::default(),
         ..crate::test_support::empty_report(
             Mission {
                 destination: destination.id,
@@ -1208,7 +1207,9 @@ fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() 
             Layout::left_to_right(Align::Center),
             |ui| {
                 body_font_size = TextStyle::Body.resolve(ui.style()).size;
-                assert!(draw_crawler_salvage(ui, &report, &Player::new(2, 0), &images).is_some());
+                assert!(
+                    draw_combat_resource_gains(ui, &report, &Player::new(2, 0), &images).is_some()
+                );
             },
         );
     });
@@ -1230,10 +1231,55 @@ fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() 
          label={label_center_y}, amount={amount_center_y}"
     );
     let mut attacker_output = context.run_ui(input(), |ui| {
-        assert!(draw_crawler_salvage(ui, &report, &Player::new(1, 0), &images).is_none());
+        assert!(draw_combat_resource_gains(ui, &report, &Player::new(1, 0), &images).is_none());
     });
     attacker_output.textures_delta.clear();
     assert!(!has_text(&attacker_output.shapes, "Recovered:"));
+}
+
+#[test]
+fn raid_combat_details_reuse_resource_icons_and_show_seized_cargo_to_both_sides() {
+    let mut planet = Planet::new(1, "Raid target".into(), Vec2::ZERO, false, 1.0);
+    planet.colonize(2);
+    let mut report = crate::test_support::empty_report(
+        Mission {
+            owner: 1,
+            objective: Icon::Raid,
+            ..default()
+        },
+        planet,
+    );
+    report.raid_loot = Resources::new(125, 43, 7);
+    let images = ImageIds::default();
+    for viewer in [1, 2] {
+        for width in [720.0, 1000.0] {
+            let context = egui::Context::default();
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 120.0),
+                    )),
+                    ..default()
+                },
+                |ui| {
+                    assert!(draw_combat_resource_gains(
+                        ui,
+                        &report,
+                        &Player::new(viewer, 0),
+                        &images
+                    )
+                    .is_some());
+                },
+            );
+            output.textures_delta.clear();
+            for text in ["Raided:", "125", "43", "7"] {
+                assert!(has_text(&output.shapes, text));
+                assert!(text_rect(&output.shapes, text).right() <= width);
+            }
+            assert!(!has_text(&output.shapes, "Recovered:"));
+        }
+    }
 }
 
 #[test]

@@ -21,11 +21,6 @@ fn profile_round_trips_in_memory() {
     let mut profile = ClientProfile {
         session: Some(AuthSession::new(UserId::new("user"), "access", "refresh")),
         display_name: "Nova".to_string(),
-        combat_preferences: crate::core::settings::CombatPreferences {
-            speed: 4.0,
-            volley_fire: true,
-            individual_units: true,
-        },
         ..ClientProfile::default()
     };
     profile.remember_game(GameId::new("game-1"));
@@ -34,37 +29,32 @@ fn profile_round_trips_in_memory() {
     let loaded = load_profile(&storage).unwrap();
     assert_eq!(loaded.display_name, "Nova");
     assert_eq!(loaded.recent_games, vec![GameId::new("game-1")]);
-    assert_eq!(loaded.combat_preferences.speed, 4.0);
-    assert!(loaded.combat_preferences.volley_fire);
-    assert!(loaded.combat_preferences.individual_units);
     assert_eq!(loaded.session.unwrap().user_id, UserId::new("user"));
 }
 
 #[test]
-fn older_profiles_receive_default_combat_preferences() {
+fn old_device_settings_are_discarded_without_losing_the_profile() {
     let storage = MemoryStorage::default();
-    storage
-        .store("client-profile", r#"{"session":null,"recent_games":[],"display_name":"Nova"}"#)
-        .unwrap();
-
+    let mut value = serde_json::to_value(ClientProfile {
+        session: Some(AuthSession::new(UserId::new("user"), "access", "refresh")),
+        display_name: "Nova".into(),
+        recent_games: vec![GameId::new("game-1")],
+    })
+    .unwrap();
+    value["combat_preferences"] = serde_json::json!({
+        "speed": 8.0, "volley_fire": true, "individual_units": true,
+    });
+    storage.store("client-profile", &value.to_string()).unwrap();
     let profile = load_profile(&storage).unwrap();
-    assert_eq!(profile.combat_preferences, crate::core::settings::CombatPreferences::default());
-}
-
-#[test]
-fn older_combat_preferences_default_to_grouped_units() {
-    let storage = MemoryStorage::default();
-    storage
-        .store(
-            "client-profile",
-            r#"{"session":null,"recent_games":[],"display_name":"Nova","combat_preferences":{"speed":2.0,"volley_fire":true}}"#,
-        )
-        .unwrap();
-
-    let profile = load_profile(&storage).unwrap();
-    assert_eq!(profile.combat_preferences.speed, 2.0);
-    assert!(profile.combat_preferences.volley_fire);
-    assert!(!profile.combat_preferences.individual_units);
+    assert_eq!(profile.display_name, "Nova");
+    assert_eq!(profile.recent_games, vec![GameId::new("game-1")]);
+    assert_eq!(profile.session.as_ref().unwrap().user_id, UserId::new("user"));
+    save_profile(&storage, &profile).unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_str(&storage.load("client-profile").unwrap().unwrap()).unwrap();
+    assert!(saved.get("combat_preferences").is_none());
+    assert!(saved.get("settings").is_none());
+    assert!(saved.get("game_preferences").is_none());
 }
 
 #[test]

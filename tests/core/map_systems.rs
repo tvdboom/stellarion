@@ -11,6 +11,83 @@ use bevy_kira_audio::AudioSource;
 const ASTEROID_BELT_MINIMUM_VISIBLE_COUNT: usize = 16;
 
 #[test]
+fn empty_space_pointer_clicks_open_and_retarget_the_normal_patrol_draft() {
+    use bevy::camera::RenderTarget;
+    use bevy::picking::{
+        backend::HitData,
+        pointer::{Location, PointerId},
+    };
+    use bevy::window::WindowRef;
+    let mut model = GameModel::new([73; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let home = player.home_planet;
+    let center = (1..20)
+        .flat_map(|x| (1..20).map(move |y| (x, y)))
+        .map(|(x, y)| {
+            model.map.rect.min + model.map.rect.size() * Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
+        })
+        .find(|point| crate::core::patrols::valid_patrol_target(&model.map, home, *point, None))
+        .unwrap();
+    let mut app = App::new();
+    app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<UiState>()
+        .init_resource::<Settings>()
+        .add_message::<MessageMsg>()
+        .insert_resource(player)
+        .insert_resource(model.map)
+        .add_systems(Startup, draw_map);
+    let window = app.world_mut().spawn(Window::default()).id();
+    let camera = app.world_mut().spawn((Camera2d, MainCamera)).id();
+    app.update();
+    let background = app
+        .world_mut()
+        .query::<(Entity, &Transform, &ParallaxCmp)>()
+        .iter(app.world())
+        .find(|(_, transform, _)| transform.translation.z == BACKGROUND_Z)
+        .unwrap()
+        .0;
+    let location = Location {
+        target: RenderTarget::Window(WindowRef::Entity(window)).normalize(Some(window)).unwrap(),
+        position: Vec2::ZERO,
+    };
+    for (button, target) in
+        [(PointerButton::Secondary, center), (PointerButton::Primary, center + Vec2::splat(0.01))]
+    {
+        if button == PointerButton::Primary {
+            app.world_mut().resource_mut::<UiState>().begin_patrol_selection();
+        } else {
+            app.world_mut().resource_mut::<UiState>().planet_selected = Some(home);
+        }
+        app.world_mut().trigger(Pointer::new(
+            PointerId::Mouse,
+            location.clone(),
+            Click {
+                button,
+                hit: HitData::new(camera, 0.0, Some(target.extend(BACKGROUND_Z)), None),
+                duration: Duration::from_millis(50),
+                count: 1,
+            },
+            background,
+        ));
+        let state = app.world().resource::<UiState>();
+        assert!(state.mission);
+        assert!(!state.selecting_patrol_zone);
+        assert_eq!(state.mission_info.objective, Icon::Patrol);
+        assert_eq!(state.mission_info.origin, home);
+        assert_eq!(state.mission_info.patrol.as_ref().unwrap().center, target);
+        assert_eq!(state.mission_tab, MissionTab::NewMission);
+    }
+}
+
+#[test]
 fn destruction_animation_hides_the_planet_swap_under_the_blast() {
     let mut planet = Planet::new(0, "Cindra".into(), Vec2::ZERO, false, 1.0);
     let original_image = planet.image();
@@ -70,7 +147,7 @@ fn railgun_strike_icon_appears_for_planets_and_moons_before_a_shot_is_committed(
 }
 
 #[test]
-fn map_eye_shows_available_destruction_actions_without_hovering_the_targets() {
+fn map_eye_shows_hostile_actions_with_their_planet_and_moon_restrictions() {
     let mut model = GameModel::new(
         [63; 32],
         GameRules {
@@ -129,11 +206,17 @@ fn map_eye_shows_available_destruction_actions_without_hovering_the_targets() {
     };
     app.update();
     let target_icon = map_icon(app.world_mut(), target, Icon::RailgunStrike);
+    assert!(app.world_mut().query::<&Icon>().iter(app.world()).all(|icon| *icon != Icon::Patrol));
     let moon_icon = map_icon(app.world_mut(), moon, Icon::RailgunStrike);
     let destroy_icon = map_icon(app.world_mut(), target, Icon::Destroy);
-    for (hovered, always, target_visible, moon_visible) in
-        [(None, false, false, false), (None, true, true, true), (Some(target), false, true, false)]
-    {
+    let raid_icon = map_icon(app.world_mut(), target, Icon::Raid);
+    let moon_raid_icon = map_icon(app.world_mut(), moon, Icon::Raid);
+    for (hovered, always, target_visible, moon_visible) in [
+        (None, false, false, false),
+        (None, true, true, true),
+        (Some(target), false, true, false),
+        (Some(moon), false, false, true),
+    ] {
         app.world_mut().resource_mut::<UiState>().planet_hover = hovered;
         app.world_mut().resource_mut::<Settings>().show_info = always;
         app.update();
@@ -141,6 +224,8 @@ fn map_eye_shows_available_destruction_actions_without_hovering_the_targets() {
             (target_icon, target_visible),
             (moon_icon, moon_visible),
             (destroy_icon, target_visible),
+            (raid_icon, target_visible),
+            (moon_raid_icon, false),
         ] {
             assert_eq!(
                 app.world().get::<Visibility>(icon) == Some(&Visibility::Inherited),
@@ -513,7 +598,8 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
         let end_angle = (app.world().get::<Transform>(*entity).unwrap().translation.truncate()
             - center)
             .to_angle();
-        (recycler_angular_delta(start_angle, end_angle) - ASTEROID_BELT_ANGULAR_SPEED).abs() < 0.001
+        ((end_angle - start_angle + PI).rem_euclid(TAU) - PI - ASTEROID_BELT_ANGULAR_SPEED).abs()
+            < 0.001
     }));
     let map = app.world().resource::<Map>();
     let layout = shared_asteroid_belt_layout(map).unwrap();
@@ -824,7 +910,6 @@ fn recycler_craft_and_scans_require_ownership_or_a_stationed_fleet() {
                     planet: planet_id,
                     level,
                     phase: 0.4,
-                    gate_angle: PI * 0.25,
                 },
                 Sprite::default(),
                 Transform::default(),
@@ -958,7 +1043,6 @@ fn two_safe_asteroids_are_assigned_to_distinct_recycler_workers() {
                     planet: planet_id,
                     level,
                     phase: 0.0,
-                    gate_angle: 0.0,
                 },
                 0,
                 0.0,
@@ -972,7 +1056,6 @@ fn two_safe_asteroids_are_assigned_to_distinct_recycler_workers() {
         planet: planet_id,
         level: 1,
         phase: 0.0,
-        gate_angle: 0.0,
     };
     let next_trip = assigned_recycler_asteroid_target(
         &map,
@@ -988,45 +1071,168 @@ fn two_safe_asteroids_are_assigned_to_distinct_recycler_workers() {
 }
 
 #[test]
-fn recycler_crosses_behind_the_planet_without_jumping_to_the_next_trip() {
-    let planet = Planet::new(0, "Recycler".into(), Vec2::ZERO, false, 1.0);
-    let recycler = RecyclerCmp {
-        planet: planet.id,
-        level: 1,
-        phase: 0.0,
-        gate_angle: 0.0,
+fn recycler_flies_directly_between_the_center_and_target_without_stopping_at_the_trip_boundary() {
+    let target = Vec2::new(190.0, 130.0);
+    let next_target = Vec2::new(-210.0, 70.0);
+    let later_target = Vec2::new(150.0, -200.0);
+    assert_eq!(recycler_position(target, next_target, 0.30), target);
+    assert_eq!(recycler_position(target, next_target, 0.62), target);
+    assert_eq!(recycler_position(target, next_target, RECYCLER_LANDING_CYCLE), Vec2::ZERO);
+    let mut previous_distance = target.length();
+    for step in 1..=300 {
+        let cycle = 0.62 + (RECYCLER_LANDING_CYCLE - 0.62) * step as f32 / 300.0;
+        let position = recycler_position(target, next_target, cycle);
+        assert!(position.length() <= previous_distance);
+        assert!(position.perp_dot(target.normalize()).abs() < 0.001);
+        previous_distance = position.length();
+    }
+    previous_distance = 0.0;
+    for step in 1..=380 {
+        let cycle = RECYCLER_LANDING_CYCLE + 0.38 * step as f32 / 380.0;
+        let position = if cycle < 1.0 {
+            recycler_position(target, next_target, cycle)
+        } else {
+            recycler_position(next_target, later_target, cycle - 1.0)
+        };
+        assert!(position.length() > previous_distance, "launch must keep moving outward");
+        assert!(position.perp_dot(next_target.normalize()).abs() < 0.001);
+        previous_distance = position.length();
+    }
+
+    let step = 0.0005;
+    let before = recycler_position(target, next_target, 1.0 - step);
+    let boundary = recycler_position(next_target, later_target, 0.0);
+    let after = recycler_position(next_target, later_target, step);
+    let incoming_velocity = (boundary - before) / step;
+    let outgoing_velocity = (after - boundary) / step;
+    assert!(incoming_velocity.length() > next_target.length());
+    assert!(incoming_velocity.distance(outgoing_velocity) < incoming_velocity.length() * 0.02);
+    let before_heading = Quat::from_rotation_z(recycler_heading(target, next_target, 1.0 - step));
+    let after_heading = Quat::from_rotation_z(recycler_heading(next_target, later_target, step));
+    assert!(before_heading.angle_between(after_heading) < 0.001);
+}
+
+#[test]
+fn recycler_shrinks_on_landing_and_grows_on_launch_for_asteroids_and_debris() {
+    let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let elapsed = 1.0;
+    let layout = asteroid_belt_layout(&model.map).unwrap();
+    let placements = asteroid_belt_placements(&model.map, layout);
+    let planet_id = *recycler_asteroid_target_groups_at_elapsed(&model.map, &placements, elapsed)
+        .keys()
+        .next()
+        .unwrap();
+    let player = model.players[0].clone();
+    let planet = model.map.get_mut(planet_id);
+    planet.colonize(player.id);
+    planet.army.insert(Unit::Building(Building::Recycler), 1);
+    let radius = planet.size() * 0.5;
+    let battle = MissionReport {
+        turn: model.turn as usize,
+        combat_report: Some(crate::core::combat::report::CombatReport::default()),
+        ..crate::test_support::empty_report(
+            Mission {
+                owner: player.id,
+                origin: player.home_planet,
+                destination: planet_id,
+                objective: Icon::Attack,
+                army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+                ..default()
+            },
+            planet.clone(),
+        )
     };
-    let home = recycler_home(Vec2::X * Planet::SIZE * 2.0, &recycler, &planet);
-    let next_home = recycler_home(Vec2::NEG_X * Planet::SIZE * 2.0, &recycler, &planet);
-    let alternate_next_home = recycler_home(Vec2::Y * Planet::SIZE * 2.0, &recycler, &planet);
-    assert!(home.distance(next_home) > planet.size());
-    assert_eq!(recycler_docking_position(home, next_home, RECYCLER_DOCKING_START), home);
-    let entering = recycler_docking_position(
-        home,
-        next_home,
-        RECYCLER_DOCKING_START + (1.0 - RECYCLER_DOCKING_START) * 0.12,
-    );
-    assert!(entering.length() < home.length());
-    assert!(entering.normalize().dot(home.normalize()) > 0.9999);
-    assert_eq!(
-        entering,
-        recycler_docking_position(
-            home,
-            alternate_next_home,
-            RECYCLER_DOCKING_START + (1.0 - RECYCLER_DOCKING_START) * 0.12,
-        ),
-        "the craft must enter the planet on the same route regardless of its next asteroid"
-    );
-    assert!(
-        recycler_docking_position(home, next_home, 0.92).length() < planet.size() * 0.5,
-        "the crossing should pass behind the planet sprite"
-    );
-    assert!(recycler_docking_position(home, home, 0.92).length() < 0.001);
-    assert!(recycler_docking_position(home, next_home, 0.9999).distance(next_home) < 0.01);
-    assert!(
-        recycler_route_position(next_home, Vec2::NEG_X, recycler_progress(0.0)).distance(next_home)
-            < 0.001
-    );
+    let mut app = App::new();
+    app.init_resource::<Time>()
+        .init_resource::<MultiplayerSession>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .insert_resource(Settings {
+            turn: model.turn as usize,
+            ..default()
+        })
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .add_systems(Update, animate_recyclers);
+    app.world_mut().spawn((
+        MainCamera,
+        Projection::Orthographic(OrthographicProjection {
+            scale: 0.5,
+            ..OrthographicProjection::default_2d()
+        }),
+    ));
+    let craft = app
+        .world_mut()
+        .spawn((
+            RecyclerCmp {
+                planet: planet_id,
+                level: 1,
+                phase: 0.0,
+            },
+            Sprite::default(),
+            Transform::default(),
+            Visibility::Hidden,
+        ))
+        .id();
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(elapsed));
+
+    for debris in [false, true] {
+        if debris {
+            app.world_mut().resource_mut::<Player>().push_report(battle.clone());
+        }
+        let mut scales = Vec::new();
+        for cycle in [0.0, 0.4, 0.84, 0.86, 0.88, 0.90, 0.92, 0.94, 0.96, 0.98, 0.9999, 1.0001] {
+            // Keep the asteroid positions fixed while sampling both sides of the trip boundary.
+            app.world_mut().get_mut::<RecyclerCmp>(craft).unwrap().phase =
+                1.0 + cycle - elapsed / RECYCLER_CYCLE_SECONDS;
+            app.update();
+            assert_eq!(app.world().get::<Visibility>(craft), Some(&Visibility::Inherited));
+            let transform = app.world().get::<Transform>(craft).unwrap();
+            let distance = transform.translation.truncate().length();
+            let scale = transform.scale.x;
+            assert_eq!(transform.scale, Vec3::splat(scale));
+            if distance >= radius {
+                assert_eq!(scale, 1.0, "craft must reach full size at the planet boundary");
+            } else {
+                assert!((0.0..1.0).contains(&scale));
+                assert!(transform.translation.z > 0.0, "landings must render over the planet");
+            }
+            if (cycle - 0.92_f32).abs() < 0.0001 {
+                assert!(distance < 0.001, "the landing route must reach the center");
+                assert!(scale < 0.0001, "craft must disappear at the center");
+            }
+            if cycle == 0.4 {
+                let expected_depth = if debris {
+                    RECYCLER_DEPTH
+                } else {
+                    RECYCLER_ASTEROID_DEPTH
+                };
+                assert!(
+                    (transform.translation.z - expected_depth).abs() < 0.0001,
+                    "cruising craft must retain their salvage source's rendering layer"
+                );
+            }
+            scales.push(scale);
+        }
+        assert!(scales[2..=6].windows(2).all(|pair| pair[0] >= pair[1]));
+        assert!(scales[6..].windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(scales[4] > scales[5] && scales[5] > scales[6]);
+        assert!(scales[6] < scales[7] && scales[7] < scales[8]);
+
+        let mut transforms = Vec::new();
+        for cycle in [0.9990, 0.9995, 1.0, 1.0005, 1.0010] {
+            app.world_mut().get_mut::<RecyclerCmp>(craft).unwrap().phase =
+                1.0 + cycle - elapsed / RECYCLER_CYCLE_SECONDS;
+            app.update();
+            transforms.push(*app.world().get::<Transform>(craft).unwrap());
+        }
+        let incoming_velocity = (transforms[2].translation - transforms[1].translation) / 0.0005;
+        let outgoing_velocity = (transforms[3].translation - transforms[2].translation) / 0.0005;
+        assert!(incoming_velocity.length() > Planet::SIZE, "launch must not pause near the planet");
+        assert!(incoming_velocity.distance(outgoing_velocity) < incoming_velocity.length() * 0.02,
+            "launch must retain its position, direction and speed when the target assignment advances");
+        assert!(transforms[1].rotation.angle_between(transforms[3].rotation) < 0.001);
+    }
 }
 
 #[test]
@@ -1148,7 +1354,12 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         if app.world().get::<Visibility>(*entity) == Some(&Visibility::Inherited) {
             let world_depth = PLANET_Z + transform.translation.z;
             assert!(world_depth > ASTEROID_BELT_DEPTH);
-            assert!(world_depth < PLANET_Z);
+            let radius = app.world().resource::<Map>().get(planet_id).size();
+            if transform.translation.truncate().length() <= radius * 0.70 {
+                assert!(world_depth > PLANET_Z, "docking craft must remain visible");
+            } else if transform.translation.truncate().length() >= radius * 0.90 {
+                assert!(world_depth < PLANET_Z);
+            }
         }
         assert_eq!(*pickable, Pickable::IGNORE);
     }
@@ -1181,26 +1392,12 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
     assert!(first_target.distance(second_target) > 1.0);
 
     let recycler = recyclers[0].0;
-    let home = {
-        let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
-        let planet = app.world().resource::<Map>().get(planet_id);
-        recycler_home(first_asteroid, marker, planet).extend(RECYCLER_ASTEROID_DEPTH)
-    };
     let planet = app.world().resource::<Map>().get(planet_id);
-    let destination_direction = (first_asteroid - planet.position).normalize();
-    assert!(home.truncate().normalize().dot(destination_direction) > 0.85);
     assert!(
         planet.position.distance(first_asteroid)
             > planet.size() * 0.5
                 + Planet::SIZE * crate::core::map::asteroids::RECYCLER_ASTEROID_MINIMUM_TRAVEL_AU
     );
-    let recycler_radius = Vec2::new(planet.size() * 0.30, planet.size() * 0.214).length() * 0.5;
-    assert!(
-        home.truncate().length() - recycler_radius > planet.size() * 0.5,
-        "a docked Recycler must touch the destination-facing edge without overlapping the planet"
-    );
-    assert!(home.truncate().length() > planet.size() * 0.80);
-    assert!(home.truncate().length() < planet.size() * 0.85);
     let rotating_targets = {
         let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
         (0..4)
@@ -1221,28 +1418,6 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         .iter()
         .enumerate()
         .all(|(index, target)| rotating_targets[..index].iter().all(|other| other != target)));
-    for (entity, _, _) in &recyclers {
-        let marker = app.world().get::<RecyclerCmp>(*entity).unwrap();
-        let worker_home = recycler_home(first_asteroid, marker, planet);
-        for trip in 0..4 {
-            let target = recycler_animation_target(
-                RecyclerSource::AsteroidField {
-                    target: first_asteroid,
-                },
-                Some(&asteroid_targets),
-                marker,
-                planet,
-                trip,
-            ) - planet.position;
-            for step in 0..=100 {
-                let position = recycler_route_position(worker_home, target, step as f32 / 100.0);
-                assert!(
-                    position.length() - recycler_radius > planet.size() * 0.5,
-                    "every Recycler route must remain outside the visible planet"
-                );
-            }
-        }
-    }
     let level_one_scans = scans
         .iter()
         .filter(|(_, level)| *level == 1)
@@ -1274,7 +1449,7 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         .advance_by(Duration::from_secs_f32(RECYCLER_CYCLE_SECONDS / 6.0));
     app.update();
     let outbound = app.world().get::<Transform>(recycler).unwrap().translation;
-    assert!(outbound.distance(home) > Planet::SIZE * 0.05);
+    assert!(outbound.truncate().length() > Planet::SIZE * 0.05);
 
     app.world_mut()
         .resource_mut::<Time>()
@@ -1339,24 +1514,19 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         .advance_by(Duration::from_secs_f32(RECYCLER_CYCLE_SECONDS * 2.0 / 3.0 - 1.0));
     app.update();
     let returned = app.world().get::<Transform>(recycler).unwrap().translation;
-    let (current_home, current_target) = {
+    let (expected_position, current_target) = {
         let map = app.world().resource::<Map>();
         let layout = shared_asteroid_belt_layout(map).unwrap();
         let placements = shared_asteroid_belt_placements(map, layout);
         let elapsed = app.world().resource::<Time>().elapsed_secs();
-        let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
         let current_target = crate::core::map::asteroids::asteroid_position_at_elapsed(
             map,
             &placements[next_asteroid_index],
             elapsed,
         );
-        (
-            recycler_home(current_target, marker, map.get(planet_id))
-                .extend(RECYCLER_ASTEROID_DEPTH),
-            current_target,
-        )
+        ((current_target - map.get(planet_id).position) * recycler_progress(0.0), current_target)
     };
-    assert!(returned.distance(current_home) < Planet::SIZE * 0.04);
+    assert!(returned.truncate().distance(expected_position) < Planet::SIZE * 0.001);
     assert!(current_target.distance(first_asteroid) > 1.0);
     assert!(level_one_scans
         .iter()
@@ -1411,16 +1581,14 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         .iter()
         .all(|(entity, _)| app.world().get::<Visibility>(*entity) == Some(&Visibility::Hidden)));
 
-    let before_wrap =
-        Quat::from_rotation_z(recycler_heading(Vec2::X, Vec2::Y, Vec2::X, Vec2::Y, 0.9999));
-    let after_wrap =
-        Quat::from_rotation_z(recycler_heading(Vec2::Y, Vec2::NEG_X, Vec2::Y, Vec2::NEG_X, 0.0001));
+    let before_wrap = Quat::from_rotation_z(recycler_heading(Vec2::X, Vec2::Y, 0.9999));
+    let after_wrap = Quat::from_rotation_z(recycler_heading(Vec2::Y, Vec2::NEG_X, 0.0001));
     assert!(before_wrap.angle_between(after_wrap) < 0.01);
     assert_eq!(recycler_progress(0.30), 1.0);
     assert_eq!(recycler_progress(0.6199), 1.0);
     assert!(
-        (recycler_progress(RECYCLER_DOCKING_START - 0.0001)
-            - recycler_progress(RECYCLER_DOCKING_START + 0.0001))
+        (recycler_progress(RECYCLER_LANDING_CYCLE - 0.0001)
+            - recycler_progress(RECYCLER_LANDING_CYCLE + 0.0001))
         .abs()
             < 0.001
     );
@@ -1436,7 +1604,6 @@ fn recycler_phase_offsets_keep_collection_turnarounds_on_separate_asteroids() {
             planet: planet.id,
             level,
             phase: recycler_phase(planet.id, level),
-            gate_angle: 0.0,
         })
         .collect::<Vec<_>>();
 

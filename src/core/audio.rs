@@ -739,7 +739,7 @@ fn audio_controls(
     in_combat: bool,
     show_game_settings: bool,
     cinematic: bool,
-    combat_selection: Option<(&mut CombatView, &ImageIds)>,
+    combat_selection: Option<&ImageIds>,
 ) -> (egui::Response, Option<egui::Response>) {
     // One inset for both axes, independent of the window aspect ratio and UI button padding.
     let scale = viewport_ui_scale(context.content_rect().size());
@@ -769,8 +769,13 @@ fn audio_controls(
                 let prefer_volume = audio_button.hovered();
 
                 if let Some(settings_button) = settings_button.as_ref() {
-                    if let Some((view, images)) = combat_selection {
-                        let _ = combat_view_popover(settings_button, view, images, prefer_volume);
+                    if let Some(images) = combat_selection {
+                        let _ = combat_view_popover(
+                            settings_button,
+                            &mut settings.combat_view,
+                            images,
+                            prefer_volume,
+                        );
                     } else if in_combat {
                         let _ = combat_settings_popover(
                             settings_button,
@@ -806,7 +811,6 @@ pub fn draw_audio_controls(
     mut next_game_state: ResMut<NextState<GameState>>,
     mut change_audio: MessageWriter<ChangeAudioMsg>,
     mut volume_feedback: MessageReader<VolumeFeedbackMsg>,
-    mut ui_state: Option<ResMut<UiState>>,
     images: Option<Res<ImageIds>>,
 ) {
     let Ok(context) = contexts.ctx_mut() else {
@@ -816,13 +820,9 @@ pub fn draw_audio_controls(
     let in_combat = *app_state.get() == AppState::Game && *game_state.get() == GameState::Combat;
     let in_combat_menu =
         *app_state.get() == AppState::Game && *game_state.get() == GameState::CombatMenu;
-    let cinematic =
-        ui_state.as_ref().is_some_and(|state| state.combat_view == CombatView::Cinematic);
+    let cinematic = settings.combat_view == CombatView::Cinematic;
     let combat_selection = if in_combat_menu {
-        ui_state
-            .as_deref_mut()
-            .zip(images.as_deref())
-            .map(|(state, images)| (&mut state.combat_view, images))
+        images.as_deref()
     } else {
         None
     };

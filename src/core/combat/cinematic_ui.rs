@@ -24,12 +24,7 @@ use crate::core::units::Unit;
 use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::ToColor32;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum CombatView {
-    #[default]
-    Schematic,
-    Cinematic,
-}
+pub(crate) use crate::core::settings::CombatView;
 
 #[derive(Resource)]
 pub(crate) struct CinematicSoundtrack {
@@ -86,6 +81,9 @@ impl CinematicSoundtrack {
                 cues.push((blast_at + 0.48, PlayAudioMsg::new("large explosion").gain(-12.0)));
             }
         }
+        if let Some(cue) = playback.resource_pickup_cue() {
+            cues.push(cue);
+        }
         cues.sort_by(|a, b| a.0.total_cmp(&b.0));
         // Sound is a bounded mix of the same visible actions the renderer presents.
         let mut last = std::collections::BTreeMap::new();
@@ -125,9 +123,9 @@ impl CinematicSoundtrack {
     }
 }
 
-pub(crate) fn cinematic_selected(state: Option<Res<UiState>>) -> bool {
-    // Run conditions are also evaluated before a match has installed its local UI state.
-    state.is_some_and(|state| state.combat_view == CombatView::Cinematic)
+pub(crate) fn cinematic_selected(settings: Option<Res<Settings>>) -> bool {
+    // Some loading and isolated test schedules run before settings are installed.
+    settings.is_some_and(|settings| settings.combat_view == CombatView::Cinematic)
 }
 
 pub(crate) fn setup_cinematic(

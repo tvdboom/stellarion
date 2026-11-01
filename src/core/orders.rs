@@ -215,11 +215,40 @@ pub fn purchase_limit(
 /// Checks the dispatched fleet and all world-dependent mission requirements.
 pub fn validate_mission(
     player: &Player,
-    _map: &Map,
+    map: &Map,
     origin: &Planet,
     destination: &Planet,
     mission: &Mission,
 ) -> Result<(), OrderError> {
+    if mission.objective == Icon::Patrol {
+        let available = origin.mission_origin_army(player.id).ok_or(OrderError::Ownership)?;
+        if player.spectator
+            || mission.owner != player.id
+            || !origin.can_launch_mission(player.id)
+            || mission.origin != origin.id
+            || mission.destination != origin.id
+        {
+            return Err(OrderError::Ownership);
+        }
+        if !mission.valid_patrol(map)
+            || !mission.objective.accepts_army(&mission.army)
+            || !mission.patrol.as_ref().is_some_and(|patrol| {
+                patrol.phase == crate::core::patrols::PatrolPhase::Outbound
+                    && crate::core::patrols::valid_patrol_target(
+                        map,
+                        origin.id,
+                        patrol.center,
+                        patrol.remaining_turns,
+                    )
+            })
+        {
+            return Err(OrderError::Objective);
+        }
+        if mission.army.iter().any(|(unit, count)| *count > available.amount(unit)) {
+            return Err(OrderError::Fleet);
+        }
+        return Ok(());
+    }
     if origin.id == destination.id {
         return Err(OrderError::SameWorld);
     }

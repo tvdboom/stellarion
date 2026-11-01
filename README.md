@@ -97,6 +97,28 @@ defenses.
 - **Attack:** Send combat ships against a hostile world. A victory leaves the fleet there and gives
   control, but not ownership. The previous owner loses both ownership and control. Surviving
   buildings remain.
+- **Raid:** Fight normal combat, steal resources on victory, and return without taking ownership
+  or control. Moons cannot be raided. Resources raided are chosen randomly, limited by the colony
+  owner's shared stockpile.
+- **Patrol:** Click the Patrol objective icon in New Mission, then click empty space on the map.
+  You can also right-click empty space to open a patrol draft there. Its destination is shown as
+  Deep space. Select ships and send the mission using the normal mission panel.
+  Patrols cover a fixed 3 AU radius and automatically attack every detected foreign fleet,
+  regardless of protection permissions or joint attacks. Detection checks the whole route through
+  the circle. With exposure equal to the fraction of the turn inside it and strength equal to ship
+  count × production level, the chance is `exposure * strength / (exposure * strength + 20)`.
+  Fleets assigned to the same zone combine their strength. Each observing player gets one attempt
+  per passing fleet per turn, using their strongest intersecting zone. An intercepted fleet loses
+  its remaining movement that turn; survivors continue next turn. Each fleet participates in at
+  most one player-versus-player space battle per turn. Missiles, Jump Gate transit and
+  Deep Cover missions cannot be intercepted. Operation starts the turn after arrival and continues
+  until recall or insufficient fuel. Launch fuel is paid normally, and each operating turn
+  reserves one AU of fuel consumption per surviving ship before ordinary purchases. Unaffordable
+  patrols return automatically in stable mission-ID order. Recall and return require no extra fuel.
+  Ships return from the zone center to their launch world, or the nearest available world they own
+  or control if that port is lost. Each full patrol turn also rolls the configured space-fauna chance. Patrol combat
+  changes no planet ownership and creates no planetary debris. Use an existing zone to reinforce
+  its patrol, or select an active patrol to review upkeep, return time, and Recall.
 - **Spy:** Gather intelligence on an enemies' strength using the Probe ships. A minimum of five
   probes is required for a spy mission. The more Probes that return, the more intelligence is
   revealed. Spy missions cannot be detected by a Sensor Phalanx and do not reveal their origin. If
@@ -217,7 +239,7 @@ Things to keep in mind:
   same-turn Protect arrival is stationed before hostile missions at that world resolve.
 - Attacks on the same planet on the same turn are merged per player and per objective. The planet
   of origin becomes the planet that send the strongest army. The order of resolution becomes: Missile
-  strikes are resolved first, followed by spying missions, and then the remaining, which are
+  strikes are resolved first, followed by spying missions, raids, and then the remaining, which are
   grouped together following objective priority `Destroy` > `Colonize` > `Attack`. The resulting
   army uses the battle plan from the strongest contributing fleet.
 - An attacking player receives no enemy unit information if all its units are destroyed. If there
@@ -227,6 +249,11 @@ Things to keep in mind:
 - During allied attacks, each player keeps their own battle plan.
 
 <br>
+
+Settings begin at their defaults whenever Stellarion starts. New games use the current
+session's settings. **Save Game** stores your audio, map display, and combat preferences
+with your player slot on the backend; loading that game restores them. Settings are never
+saved in the local computer or browser profile.
 
 ### Mouse + Key bindings
 

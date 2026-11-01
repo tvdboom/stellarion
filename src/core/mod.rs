@@ -5,7 +5,7 @@ mod app;
 #[cfg(feature = "app")]
 mod assets;
 #[cfg(feature = "app")]
-mod audio;
+pub(crate) mod audio;
 #[cfg(feature = "app")]
 pub mod basis_texture;
 #[cfg(feature = "app")]
@@ -27,7 +27,9 @@ pub mod messages;
 mod mission_systems;
 pub mod missions;
 pub mod orders;
+pub mod patrols;
 pub mod player;
+pub mod raids;
 pub mod random;
 pub mod recycling;
 pub mod resources;
@@ -47,6 +49,9 @@ mod utils;
 
 #[cfg(feature = "app")]
 pub use app::GamePlugin;
+
+#[cfg(feature = "app")]
+pub(crate) use audio::ChangeAudioMsg;
 
 #[cfg(all(test, feature = "app", not(target_arch = "wasm32")))]
 #[path = "../../tests/core/readme_screenshots.rs"]

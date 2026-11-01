@@ -15,6 +15,7 @@ pub(crate) fn empty_report(mission: Mission, planet: Planet) -> MissionReport {
         surviving_defender: Default::default(),
         planet_colonized: false,
         planet_destroyed: false,
+        raid_loot: Default::default(),
         destination_owned: None,
         destination_controlled: None,
         combat_report: None,

@@ -19,6 +19,8 @@ pub mod report;
 pub mod resolution;
 #[cfg(feature = "app")]
 pub(crate) mod result_banner;
+#[cfg(feature = "app")]
+mod rewards;
 pub mod stats;
 #[cfg(feature = "app")]
 pub mod systems;

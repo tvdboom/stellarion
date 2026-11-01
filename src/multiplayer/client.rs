@@ -26,6 +26,7 @@ use crate::core::units::Amount;
 use crate::multiplayer::authority::started_snapshot_for_members;
 use crate::multiplayer::backend::{BackendError, MultiplayerBackend, TurnSubmissionScope};
 use crate::multiplayer::memory::InMemoryBackend;
+use crate::multiplayer::model::GamePreferences;
 use crate::multiplayer::model::{
     AuthSession, BackendEventKind, CreateGameRequest, EventBatch, GameMembership, GameRecord,
     GameSummary, JoinDisposition, JoinGameRequest, MembershipResult, ProtectionPermissionUpdate,
@@ -560,7 +561,7 @@ pub(crate) enum RefreshGameplayProjection {
 
 /// Restores local orders without replaying turn-boundary presentation or clearing selection.
 #[derive(Message)]
-pub(crate) struct RefreshTurnDraft;
+pub struct RefreshTurnDraft;
 
 /// Runtime backend and local profile storage hidden from gameplay systems.
 #[derive(Resource)]
@@ -655,6 +656,7 @@ enum BackendOutput {
         operation: Operation,
         result: MembershipResult,
         color_notice: Option<String>,
+        preferences: Option<GamePreferences>,
     },
     #[cfg(debug_assertions)]
     PracticeReady {
@@ -663,7 +665,7 @@ enum BackendOutput {
         players: Vec<PracticePlayer>,
     },
     Games(Vec<GameSummary>),
-    ResumeLoaded(GameRecord, String),
+    ResumeLoaded(GameRecord, String, Option<GamePreferences>),
     Record(Operation, GameRecord),
     Saved(SaveAcknowledgement),
     ProtectionChanged(ProtectionPermissionUpdate),
@@ -727,15 +729,12 @@ impl Plugin for MultiplayerClientPlugin {
             .add_systems(Startup, initialize_client)
             .add_systems(OnExit(AppState::JoinGame), clear_join_error)
             .add_systems(OnExit(AppState::RecoverPlayer), clear_join_error)
-            .add_systems(OnEnter(AppState::Lobby), profile::reset_new_game_combat_speed)
-            .add_systems(OnEnter(AppState::LoadingGame), profile::reset_new_game_combat_speed)
             .add_systems(
                 Update,
                 (
                     process_requests,
                     poll_backend_tasks,
                     drive_turn_draft,
-                    profile::sync_combat_preferences,
                     profile::flush_profile,
                     drive_reauthentication,
                     drive_auth_refresh,
@@ -761,14 +760,9 @@ fn clear_join_error(mut session: ResMut<MultiplayerSession>) {
 }
 
 /// Creates platform storage and starts anonymous authentication asynchronously.
-fn initialize_client(
-    mut commands: Commands,
-    mut tasks: ResMut<BackendTasks>,
-    mut settings: ResMut<crate::core::settings::Settings>,
-) {
+fn initialize_client(mut commands: Commands, mut tasks: ResMut<BackendTasks>) {
     let storage = platform_storage();
     let profile = load_profile(storage.as_ref()).unwrap_or_default();
-    settings.apply_combat_preferences(profile.combat_preferences);
     let stored_session = profile.session.clone();
     commands.insert_resource(ClientRuntime {
         backend: None,
@@ -1089,6 +1083,7 @@ fn process_requests(
     mut pending: ResMut<PendingTurnCommands>,
     mut form: ResMut<MultiplayerForm>,
     mut tasks: ResMut<BackendTasks>,
+    settings: Option<Res<crate::core::settings::Settings>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     #[cfg(not(debug_assertions))]
@@ -1413,6 +1408,7 @@ fn process_requests(
                                     operation: Operation::Create,
                                     result,
                                     color_notice: None,
+                                    preferences: None,
                                 }
                             },
                             Err(BackendError::GameCodeCollision) => {},
@@ -1441,10 +1437,24 @@ fn process_requests(
                 };
                 spawn_backend_task(&mut tasks, async move {
                     match backend.join_game(&auth, request).await {
-                        Ok(result) => BackendOutput::Membership {
-                            operation: Operation::Join,
-                            result,
-                            color_notice: None,
+                        Ok(result) => {
+                            let preferences = if result.disposition == JoinDisposition::Reconnected
+                            {
+                                match backend.load_game_preferences(&auth, &result.game.id).await {
+                                    Ok(preferences) => preferences,
+                                    Err(error) => {
+                                        return BackendOutput::Failed(Operation::Join, error)
+                                    },
+                                }
+                            } else {
+                                None
+                            };
+                            BackendOutput::Membership {
+                                operation: Operation::Join,
+                                result,
+                                color_notice: None,
+                                preferences,
+                            }
                         },
                         Err(error) => BackendOutput::Failed(Operation::Join, error),
                     }
@@ -1769,9 +1779,10 @@ fn process_requests(
                     pending.commands.clone(),
                 );
                 draft.generation = pending.generation;
+                let preferences = settings.as_ref().map(|settings| settings.game_preferences());
                 spawn_backend_task(&mut tasks, async move {
                     Operation::Save.complete(
-                        backend.save_game(&auth, &game_id, revision, draft).await,
+                        backend.save_game(&auth, &game_id, revision, draft, preferences).await,
                         BackendOutput::Saved,
                     )
                 });
@@ -2082,11 +2093,30 @@ fn poll_backend_tasks(
     app_state: Res<State<AppState>>,
     mut refresh_gameplay: MessageWriter<RefreshGameplayProjection>,
     mut refresh_draft: MessageWriter<RefreshTurnDraft>,
+    mut settings: Option<ResMut<crate::core::settings::Settings>>,
+    mut change_audio: Option<ResMut<Messages<crate::core::ChangeAudioMsg>>>,
     mut messages: MessageWriter<MessageMsg>,
 ) {
     let mut remaining = Vec::with_capacity(tasks.0.len());
     for mut task in std::mem::take(&mut tasks.0) {
         if let Some(output) = block_on(poll_once(&mut task)) {
+            let preferences = match &output {
+                BackendOutput::Membership {
+                    preferences,
+                    ..
+                }
+                | BackendOutput::ResumeLoaded(_, _, preferences) => preferences.as_ref(),
+                _ => None,
+            };
+            if let (Some(preferences), Some(settings)) = (preferences, settings.as_deref_mut()) {
+                let previous_audio = settings.audio;
+                settings.apply_game_preferences(preferences.clone());
+                if previous_audio != settings.audio {
+                    if let Some(messages) = change_audio.as_deref_mut() {
+                        messages.write(crate::core::ChangeAudioMsg(Some(settings.audio)));
+                    }
+                }
+            }
             let restore_draft = matches!(&output, BackendOutput::Withdrawn(draft) if draft.turn == pending.turn)
                 || matches!(&output, BackendOutput::DraftLoaded(turn, _) if *turn == pending.turn);
             let notification = operation_notification(&output, &session);
@@ -2221,6 +2251,7 @@ fn apply_output(
             operation,
             result,
             color_notice,
+            preferences: _,
         } => {
             let reconnected = matches!(result.disposition, JoinDisposition::Reconnected);
             form.display_name.clone_from(&result.membership.display_name);
@@ -2267,7 +2298,7 @@ fn apply_output(
                 games.into_iter().filter(|game| game.status != MatchStatus::Lobby).collect();
             session.connection = ConnectionStatus::Connected;
         },
-        BackendOutput::ResumeLoaded(record, recovery_code) => {
+        BackendOutput::ResumeLoaded(record, recovery_code, _) => {
             session.issued_recovery_code = Some(recovery_code);
             session.reconnect_lobby = record.status == MatchStatus::Active;
             install_record(record, runtime, session, pending, next_state, gameplay_visible);
@@ -3308,9 +3339,9 @@ fn drive_joint_mission_publication(
             // Save the other locally controlled shortcut commands first. The in-memory backend
             // can then validate their accepted fleets against the same state the UI displayed.
             for (practice_auth, practice_draft) in practice_boost_drafts {
-                backend.save_game(&practice_auth, &game_id, revision, practice_draft).await?;
+                backend.save_game(&practice_auth, &game_id, revision, practice_draft, None).await?;
             }
-            let acknowledgement = backend.save_game(&auth, &game_id, revision, draft).await?;
+            let acknowledgement = backend.save_game(&auth, &game_id, revision, draft, None).await?;
             let invitations = backend.load_joint_attacks(&auth, &game_id).await?;
             Ok((acknowledgement, invitations))
         }
@@ -3440,8 +3471,14 @@ async fn load_game_for_resume(
     game_id: GameId,
     recovery_code: String,
 ) -> BackendOutput {
-    Operation::ResumeLoad.complete(backend.load_game(&auth, &game_id).await, |record| {
-        BackendOutput::ResumeLoaded(record, recovery_code)
+    let loaded = async {
+        let record = backend.load_game(&auth, &game_id).await?;
+        let preferences = backend.load_game_preferences(&auth, &game_id).await?;
+        Ok((record, preferences))
+    }
+    .await;
+    Operation::ResumeLoad.complete(loaded, |(record, preferences)| {
+        BackendOutput::ResumeLoaded(record, recovery_code, preferences)
     })
 }
 
@@ -3453,10 +3490,14 @@ async fn recover_or_resume_linked_game(
 ) -> BackendOutput {
     let code = request.code.clone();
     match backend.recover_player(&auth, request).await {
-        Ok(result) => BackendOutput::Membership {
-            operation: Operation::Recover,
-            result,
-            color_notice: None,
+        Ok(result) => match backend.load_game_preferences(&auth, &result.game.id).await {
+            Ok(preferences) => BackendOutput::Membership {
+                operation: Operation::Recover,
+                result,
+                color_notice: None,
+                preferences,
+            },
+            Err(error) => BackendOutput::Failed(Operation::Recover, error),
         },
         Err(BackendError::AlreadyMember) => {
             let games = match backend.list_games(&auth).await {

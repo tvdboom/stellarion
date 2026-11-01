@@ -1,4 +1,5 @@
-//! Browser localStorage and native application-data persistence for sessions and preferences.
+//! Browser localStorage and native application-data persistence for identity and recent games.
+//! Game settings remain in memory and are saved only with games on the backend.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -7,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::core::identity::GameId;
-use crate::core::settings::CombatPreferences;
 use crate::multiplayer::model::AuthSession;
 
 #[cfg(target_arch = "wasm32")]
@@ -24,9 +24,6 @@ pub struct ClientProfile {
     pub recent_games: Vec<GameId>,
     /// Last lobby display name entered by this installation.
     pub display_name: String,
-    /// Combat presentation choices for this client-local authenticated player.
-    #[serde(default)]
-    pub combat_preferences: CombatPreferences,
 }
 
 impl ClientProfile {
@@ -51,7 +48,13 @@ pub trait ClientStorage: Send + Sync {
 /// Loads the standard local client profile.
 pub fn load_profile(storage: &dyn ClientStorage) -> Result<ClientProfile, StorageError> {
     storage.load("client-profile")?.map_or(Ok(ClientProfile::default()), |json| {
-        serde_json::from_str(&json).map_err(|error| StorageError::InvalidData(error.to_string()))
+        let mut value: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+        // Discard former installation-wide settings without losing the player's identity.
+        if let Some(fields) = value.as_object_mut() {
+            fields.remove("combat_preferences");
+        }
+        serde_json::from_value(value).map_err(|error| StorageError::InvalidData(error.to_string()))
     })
 }
 

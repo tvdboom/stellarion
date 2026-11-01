@@ -21,7 +21,9 @@ use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::patrols::{Patrol, PatrolPhase};
 use crate::core::player::Player;
+use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Combat, Description, Unit};
 use crate::utils::NameFromEnum;
@@ -209,8 +211,11 @@ pub struct Mission {
     pub origin_controlled: Option<PlayerId>,
     /// Origin army snapshot used by later intelligence reports.
     pub origin_army: Army,
-    /// Stable planet toward which the mission is travelling.
+    /// Destination world, or the return world while a patrol targets its space coordinate.
     pub destination: PlanetId,
+    /// Space destination and lifecycle for a patrol; ordinary missions have no patrol state.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
+    pub patrol: Option<Patrol>,
     /// Turn on which the mission was dispatched.
     pub send: usize,
     /// Completed movement turns on this leg; acceleration resets on a new leg.
@@ -227,6 +232,8 @@ pub struct Mission {
     pub return_objective: Option<Icon>,
     /// Units stationed on this world or travelling with this mission.
     pub army: Army,
+    /// Seized resources aboard a returning raid fleet; credited only when it docks.
+    pub raid_cargo: Resources,
     /// Optional building category selected for post-combat bombing.
     pub bombing: BombingRaid,
     /// Whether probes remain in fleet combat beyond reconnaissance.
@@ -474,6 +481,7 @@ impl Mission {
             origin_controlled: origin.controlled,
             origin_army: origin.mission_origin_army(owner).cloned().unwrap_or_default(),
             destination: destination.id,
+            patrol: None,
             send: turn,
             travel_turns: 0,
             position: {
@@ -487,6 +495,7 @@ impl Mission {
                 .flatten(),
             return_objective: None,
             army,
+            raid_cargo: Resources::default(),
             bombing,
             combat_probes,
             jump_gate,
@@ -506,6 +515,24 @@ impl Mission {
         destination: &Planet,
         mission: &Mission,
     ) -> Self {
+        if mission.objective == Icon::Patrol {
+            if let Some(patrol) = &mission.patrol {
+                return Self::new_patrol(
+                    if mission.id == 0 {
+                        rand::random::<u64>().max(1)
+                    } else {
+                        mission.id
+                    },
+                    turn,
+                    owner,
+                    origin,
+                    patrol.center,
+                    mission.army.clone(),
+                    None,
+                )
+                .with_battle_plan(mission.battle_plan);
+            }
+        }
         Self::new_with_id(
             if mission.id == 0 {
                 rand::random::<u64>().max(1)
@@ -629,6 +656,9 @@ impl Mission {
         map: &Map,
         player_id: PlayerId,
     ) -> bool {
+        if self.patrol.is_some() {
+            return false;
+        }
         self.origin_owned != Some(player_id)
             && self.origin_controlled != Some(player_id)
             && map
@@ -639,6 +669,10 @@ impl Mission {
     /// Starts a free return leg from the fleet's exact current position to its original world.
     pub(crate) fn recall(&mut self, map: &Map, turn: usize) {
         debug_assert!(!self.is_returning());
+        if self.patrol.is_some() {
+            self.return_patrol(map, turn);
+            return;
+        }
         let original_origin = self.origin;
         let outbound_destination = map.get(self.destination);
         let original_objective = self.objective;
@@ -674,6 +708,9 @@ impl Mission {
             self.protected_player.is_none()
         };
         protection_is_valid
+            && (self.raid_cargo.is_empty()
+                || (self.return_objective == Some(Icon::Raid)
+                    && self.raid_cargo.total() <= crate::core::raids::cargo_capacity(&self.army)))
             && self.return_objective.is_none_or(|objective| {
                 objective.is_mission()
                     && matches!(self.objective, Icon::Deploy | Icon::Attack | Icon::Protect)
@@ -697,6 +734,9 @@ impl Mission {
 
     /// Returns remaining world-space distance from the mission to its destination.
     pub fn distance(&self, map: &Map) -> f32 {
+        if self.patrol.as_ref().is_some_and(|patrol| patrol.phase != PatrolPhase::Returning) {
+            return self.position.distance(self.target_position(map)) / Planet::SIZE;
+        }
         // Minus 0.7 since the mission ends at the edge of the planet
         (self.position.distance(map.get(self.destination).position) / Planet::SIZE - 0.7).max(0.)
     }
@@ -775,8 +815,16 @@ impl Mission {
 
     /// Moves the mission toward its destination without overshooting it.
     pub fn advance(&mut self, map: &Map) {
+        if self.is_patrolling() {
+            return;
+        }
         self.position = self.next_turn_position(map);
         self.travel_turns = self.travel_turns.saturating_add(1);
+        if let Some(patrol) = &mut self.patrol {
+            if patrol.phase == PatrolPhase::Outbound && self.position == patrol.center {
+                patrol.phase = PatrolPhase::OnStation;
+            }
+        }
     }
 
     /// Returns the next turn's displacement in AU, including the final arrival snap.
@@ -784,8 +832,12 @@ impl Mission {
         self.position.distance(self.next_turn_position(map)) / Planet::SIZE
     }
 
-    fn next_turn_position(&self, map: &Map) -> Vec2 {
+    pub(crate) fn next_turn_position(&self, map: &Map) -> Vec2 {
+        if self.is_patrolling() {
+            return self.position;
+        }
         let destination = map.get(self.destination);
+        let target_position = self.target_position(map);
 
         if self.joint_attack.is_some() {
             let remaining = self.turns_to_destination(map);
@@ -812,12 +864,12 @@ impl Mission {
         }
 
         if self.jump_gate || (self.speed() > 0.0 && self.turns_to_destination(map) <= 1) {
-            destination.position
+            target_position
         } else {
-            let offset = destination.position - self.position;
+            let offset = target_position - self.position;
             let step = self.speed() * (1.0 + 2.0 * self.travel_turns as f32 / 3.0) * Planet::SIZE;
             if offset.length() <= step {
-                destination.position
+                target_position
             } else {
                 self.position + offset.normalize_or_zero() * step
             }
@@ -887,6 +939,7 @@ impl Mission {
         }
 
         self.combat_probes = other.combat_probes || self.combat_probes;
+        self.raid_cargo += other.raid_cargo;
         self.logs.push_str(
             format!("\n- Merged with other mission with objective {}.", other.objective.to_name())
                 .as_str(),

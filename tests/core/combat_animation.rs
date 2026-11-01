@@ -1907,53 +1907,10 @@ fn single_round_battles_go_directly_to_fire_without_a_round_banner() {
 }
 
 #[test]
-fn round_banners_use_the_grouped_offset_or_individual_center() {
-    let grouped_anchor = combat_status_node(false);
-    assert_eq!(grouped_anchor.width, Val::Percent(100.0));
-    assert_eq!(grouped_anchor.height, Val::Percent(105.0));
-    assert_eq!(grouped_anchor.align_items, AlignItems::Center);
-    assert_eq!(grouped_anchor.justify_content, JustifyContent::Center);
-    assert_eq!(
-        combat_status_transform(false).translation,
-        Val2::new(Val::ZERO, Val::Px(COMBAT_STATUS_OFFSET * COMBAT_STATUS_FONT_SIZE / 100.0))
-    );
-
-    let band = combat_status_band_node();
-    assert_eq!(band.width, Val::Percent(100.0));
-    assert_eq!(band.height, Val::Vh(result_banner::BAR_HEIGHT_FRACTION * 100.0));
-    assert_eq!(band.min_height, Val::Px(result_banner::BAR_MIN_HEIGHT));
-    assert_eq!(band.max_height, Val::Px(result_banner::BAR_MAX_HEIGHT));
-    assert_eq!(band.overflow, Overflow::clip());
-
-    let individual_anchor = combat_status_node(true);
-    assert_eq!(individual_anchor.height, Val::Percent(100.0));
-    assert_eq!(combat_status_transform(true).translation, Val2::ZERO);
-}
-
-#[test]
-fn visible_round_layouts_follow_the_formation_setting() {
-    let mut app = App::new();
-    app.init_resource::<Settings>();
-    let anchor = app.world_mut().spawn((Node::default(), CombatRoundAnchorCmp)).id();
-    let content = app.world_mut().spawn((UiTransform::default(), CombatRoundContentCmp)).id();
-
-    app.world_mut().run_system_once(update_combat_status_layout).unwrap();
-    assert_eq!(app.world().get::<Node>(anchor).unwrap().height, Val::Percent(105.0));
-    assert_eq!(
-        app.world().get::<UiTransform>(content).unwrap().translation,
-        Val2::new(Val::ZERO, Val::Px(COMBAT_STATUS_OFFSET * COMBAT_STATUS_FONT_SIZE / 100.0))
-    );
-
-    app.world_mut().resource_mut::<Settings>().combat_individual_units = true;
-    app.world_mut().run_system_once(update_combat_status_layout).unwrap();
-    assert_eq!(app.world().get::<Node>(anchor).unwrap().height, Val::Percent(100.0));
-    assert_eq!(app.world().get::<UiTransform>(content).unwrap().translation, Val2::ZERO);
-}
-
-#[test]
-fn pause_stays_centered_when_switching_between_grouped_and_individual_units() {
+fn round_and_pause_banners_share_the_viewport_center_across_formation_changes() {
     for initially_individual in [false, true] {
-        let report = report(5, 0, true, 61);
+        let report = report(12, 5, true, 2);
+        assert!(report.combat_report.as_ref().unwrap().rounds.len() > 1);
         let mut rng = DeterministicRngState::from_u64(61).next_rng();
         let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
         let map = Map {
@@ -1961,35 +1918,73 @@ fn pause_stays_centered_when_switching_between_grouped_and_individual_units() {
             solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
             planets: vec![origin, report.planet.clone()],
         };
-        let mut app = playback_app(report, 0, CombatState::Fire);
+        let mut app = playback_app(report, 1, CombatState::DisplayRound);
         app.insert_resource(map).init_resource::<MultiplayerSession>();
         {
             let mut settings = app.world_mut().resource_mut::<Settings>();
-            settings.combat_paused = true;
             settings.combat_individual_units = initially_individual;
         }
+        // setup_combat replaces the placeholder background used by playback-only fixtures.
+        let background = app
+            .world_mut()
+            .query_filtered::<Entity, With<BackgroundImageCmp>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().despawn(background);
         app.world_mut().run_system_once(setup_combat).unwrap();
+        app.world_mut().run_system_once(animate_combat).unwrap();
         let pause = app
             .world_mut()
             .query_filtered::<Entity, With<CombatPausedCmp>>()
             .single(app.world())
             .unwrap();
         let band = app.world().get::<Children>(pause).unwrap()[0];
+        let round_band = app
+            .world_mut()
+            .query_filtered::<Entity, With<DisplayTextCmp>>()
+            .single(app.world())
+            .unwrap();
+        let round_anchor = app.world().get::<ChildOf>(round_band).unwrap().parent();
 
         for individual in [initially_individual, !initially_individual, initially_individual] {
             app.world_mut().resource_mut::<Settings>().combat_individual_units = individual;
-            app.world_mut().run_system_once(update_combat_status_layout).unwrap();
+            for paused in [false, true, false] {
+                app.world_mut().resource_mut::<Settings>().combat_paused = paused;
+                app.world_mut().run_system_once(update_combat_stats).unwrap();
 
-            let anchor = app.world().get::<Node>(pause).unwrap();
-            assert_eq!(anchor.position_type, PositionType::Absolute);
-            assert_eq!(anchor.left, Val::ZERO);
-            assert_eq!(anchor.top, Val::ZERO);
-            assert_eq!(anchor.width, Val::Percent(100.0));
-            assert_eq!(anchor.height, Val::Percent(100.0));
-            assert_eq!(anchor.align_items, AlignItems::Center);
-            assert_eq!(anchor.justify_content, JustifyContent::Center);
-            assert_eq!(app.world().get::<UiTransform>(band).unwrap().translation, Val2::ZERO);
-            assert_eq!(app.world().get::<Visibility>(pause), Some(&Visibility::Inherited));
+                let anchor = app.world().get::<Node>(pause).unwrap();
+                assert_eq!(anchor.position_type, PositionType::Absolute);
+                assert_eq!(anchor.left, Val::ZERO);
+                assert_eq!(anchor.top, Val::ZERO);
+                assert_eq!(anchor.width, Val::Percent(100.0));
+                assert_eq!(anchor.height, Val::Percent(100.0));
+                assert_eq!(anchor.align_items, AlignItems::Center);
+                assert_eq!(anchor.justify_content, JustifyContent::Center);
+                assert_eq!(app.world().get::<Node>(round_anchor).unwrap(), anchor);
+                assert_eq!(app.world().get::<Node>(round_band), app.world().get::<Node>(band));
+                for entity in [band, round_band] {
+                    assert_eq!(
+                        app.world().get::<UiTransform>(entity).unwrap().translation,
+                        Val2::ZERO
+                    );
+                }
+                assert_eq!(
+                    app.world().get::<Visibility>(pause),
+                    Some(&if paused {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    })
+                );
+                assert_eq!(
+                    app.world().get::<Visibility>(round_band),
+                    Some(&if paused {
+                        Visibility::Hidden
+                    } else {
+                        Visibility::Inherited
+                    })
+                );
+            }
         }
     }
 }
@@ -2698,6 +2693,141 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
         *app.world().resource::<NextState<CombatState>>(),
         NextState::Pending(CombatState::EndCombat)
     ));
+}
+
+#[test]
+fn raid_survivor_pulses_and_floats_loot_down_with_a_distinct_sound() {
+    let mut raid = report(10, 0, true, 19);
+    raid.mission.objective = Icon::Raid;
+    raid.raid_loot = Resources::new(12, 0, 34);
+    let mut app = playback_app(raid, 0, CombatState::Salvage);
+    app.add_plugins(bevy_tweening::TweeningPlugin);
+    let raider =
+        spawn_unit(&mut app, Unit::Ship(Ship::Bomber), 1, Side::Attacker, FireState::Fired);
+    let home = *app.world().get::<Transform>(raider).unwrap();
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert!(app.world().get::<SalvageCrawlerCmp>(raider).is_some());
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_HIGHLIGHT_TIME_MS));
+    assert_eq!(app.world().get::<Transform>(raider).unwrap().scale, home.scale * 1.3);
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    let gains = app
+        .world_mut()
+        .query::<&SalvagePickupCmp>()
+        .iter(app.world())
+        .map(|gain| (gain.resource, gain.amount))
+        .collect::<Vec<_>>();
+    assert_eq!(gains, vec![(ResourceName::Metal, 12), (ResourceName::Deuterium, 34)]);
+    for text in ["+12", "+34"] {
+        assert!(app.world_mut().query::<&Text2d>().iter(app.world()).any(|value| value.0 == text));
+    }
+    let pickups = app
+        .world_mut()
+        .query::<(Entity, &SalvagePickupCmp, &Transform)>()
+        .iter(app.world())
+        .map(|(entity, pickup, transform)| {
+            assert_eq!(pickup.source, raider);
+            assert!(transform.translation.y < home.translation.y);
+            (entity, transform.translation.y)
+        })
+        .collect::<Vec<_>>();
+    let sounds = app
+        .world_mut()
+        .resource_mut::<Messages<PlayAudioMsg>>()
+        .drain()
+        .map(|cue| cue.name)
+        .collect::<Vec<_>>();
+    assert_eq!(sounds.iter().filter(|name| **name == "raid loot").count(), 1);
+    assert!(!sounds.contains(&"construction"));
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(1_000));
+    for (entity, start_y) in pickups {
+        assert!(app.world().get::<Transform>(entity).unwrap().translation.y < start_y);
+    }
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_TIME_MS - 1_000));
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    assert_eq!(*app.world().get::<Transform>(raider).unwrap(), home);
+    assert_eq!(app.world_mut().query::<&SalvagePickupCmp>().iter(app.world()).count(), 0);
+    assert!(matches!(
+        *app.world().resource::<NextState<CombatState>>(),
+        NextState::Pending(CombatState::EndCombat)
+    ));
+}
+
+#[test]
+fn raid_loot_is_shown_on_every_surviving_type_or_individual_ship() {
+    for individual in [false, true] {
+        let fighter = Unit::Ship(Ship::LightFighter);
+        let bomber = Unit::Ship(Ship::Bomber);
+        let loot = Resources::new(12, 0, 34);
+        let mut raid = report(10, 0, true, 19);
+        raid.mission.objective = Icon::Raid;
+        raid.raid_loot = loot;
+        raid.surviving_attacker = Army::from([(fighter, 2), (bomber, 2)]);
+        let mut app = playback_app(raid, 0, CombatState::Salvage);
+        app.add_plugins(bevy_tweening::TweeningPlugin);
+        app.world_mut().resource_mut::<Settings>().combat_individual_units = individual;
+        let mut carriers = Vec::new();
+        for (type_index, unit) in [fighter, bomber].into_iter().enumerate() {
+            let group = spawn_unit(&mut app, unit, 2, Side::Attacker, FireState::Fired);
+            if individual {
+                for index in 0..2 {
+                    let home =
+                        Vec3::new((type_index * 200 + index * 70) as f32, 100.0, COMBAT_SHIP_Z);
+                    let entity = app
+                        .world_mut()
+                        .spawn((
+                            Transform::from_translation(home),
+                            IndividualCombatUnitCmp {
+                                id: Some((type_index * 2 + index) as u64),
+                                owner: Some(1),
+                                unit,
+                                side: Side::Attacker,
+                                group,
+                                home,
+                                display_size: 60.0,
+                                transition_start: home,
+                                shield: unit.shield(),
+                                max_shield: unit.shield(),
+                                hull: unit.hull(),
+                                max_hull: unit.hull(),
+                            },
+                        ))
+                        .id();
+                    carriers.push((entity, unit, 1));
+                }
+            } else {
+                carriers.push((group, unit, 2));
+            }
+        }
+        let dead = spawn_unit(&mut app, Unit::war_sun(), 0, Side::Attacker, FireState::Fired);
+        let enemy = spawn_unit(&mut app, bomber, 2, Side::Defender, FireState::Fired);
+        app.world_mut().run_system_once(animate_combat).unwrap();
+        assert!(app.world().get::<SalvageCrawlerCmp>(dead).is_none());
+        assert!(app.world().get::<SalvageCrawlerCmp>(enemy).is_none());
+        for (entity, unit, count) in &carriers {
+            let cargo = app.world().get::<SalvageCrawlerCmp>(*entity).unwrap().resources;
+            assert!(!cargo.is_empty());
+            assert!(cargo.total() <= unit.production() * count * 10);
+        }
+        TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_HIGHLIGHT_TIME_MS));
+        app.world_mut().run_system_once(animate_combat).unwrap();
+        let mut total = Resources::default();
+        let mut sources = BTreeSet::new();
+        for pickup in app.world_mut().query::<&SalvagePickupCmp>().iter(app.world()) {
+            *total.get_mut(&pickup.resource) += pickup.amount;
+            sources.insert(pickup.source);
+        }
+        assert_eq!(total, loot);
+        assert_eq!(sources.len(), carriers.len());
+        for (entity, _, _) in &carriers {
+            assert!(sources.contains(entity));
+        }
+        TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_TIME_MS));
+        app.world_mut().run_system_once(animate_combat).unwrap();
+        assert_eq!(app.world_mut().query::<&SalvagePickupCmp>().iter(app.world()).count(), 0);
+        for (entity, _, _) in carriers {
+            assert_eq!(app.world().get::<Transform>(entity).unwrap().scale, Vec3::ONE);
+        }
+    }
 }
 
 #[test]

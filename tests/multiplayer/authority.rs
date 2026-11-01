@@ -206,6 +206,7 @@ fn member_drafts_cannot_replace_another_player_or_resolved_state() {
             &active.id,
             active.revision,
             TurnSubmission::new(1, 1, vec![]),
+            None
         )),
         Err(BackendError::Forbidden)
     ));
