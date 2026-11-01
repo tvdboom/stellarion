@@ -555,7 +555,7 @@ fn engine_plumes_attach_to_mirrored_hulls_and_fade_without_hard_edges() {
                     .vertices
                     .iter()
                     .all(|vertex| (vertex.pos - origin).dot(axis) <= 0.001));
-                for row in mesh.vertices.chunks_exact(5) {
+                for row in mesh.vertices.as_chunks::<5>().0 {
                     assert_eq!(row[0].color.a(), 0);
                     assert_eq!(row[4].color.a(), 0);
                 }
