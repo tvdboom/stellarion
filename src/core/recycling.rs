@@ -170,12 +170,15 @@ pub(crate) fn visible_debris_sites<'a>(
     )
 }
 
+/// Radius shared by the visible debris arc and Recycler destinations, in world diameters.
+pub(crate) const DEBRIS_ORBIT_RADIUS: f32 = 0.91;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 /// Source selected by a working Recycler for one turn interval.
 pub(crate) enum RecyclerSource {
     /// Temporary battle wreckage around the Recycler's own planet.
     Debris {
-        /// World-space center of the wreckage corridor.
+        /// World-space midpoint of the wreckage arc.
         target: Vec2,
         /// Current aggregate wreckage class.
         size: DebrisSize,
@@ -231,7 +234,7 @@ pub(crate) fn recycler_sources_with_asteroid_targets(
         .filter_map(|planet| {
             let source = if let Some(site) = debris.get(&planet.id) {
                 Some(RecyclerSource::Debris {
-                    target: planet.position - Vec2::X * planet.size() * 1.06,
+                    target: planet.position - Vec2::X * planet.size() * DEBRIS_ORBIT_RADIUS,
                     size: site.size()?,
                 })
             } else {

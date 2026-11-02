@@ -1,7 +1,6 @@
-//! Patrol destination selection and active-fleet rows.
+//! Patrol destination selection.
 
 use super::*;
-use crate::core::patrols::{PatrolPhase, PATROL_RADIUS};
 
 impl UiState {
     /// Temporarily hides the ordinary draft while its space destination is picked.
@@ -97,102 +96,17 @@ pub(super) fn draw_selection_toast(context: &egui::Context, state: &mut UiState,
         true,
         560.0,
         |ui| {
-            let accent = Color32::from_rgb(112, 190, 255);
-            egui::Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(28, 36, 48, 235))
-                .stroke(Stroke::new(1.0, accent))
-                .corner_radius(5.0)
-                .inner_margin(egui::Margin::symmetric(12, 8))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("Click empty space to choose a patrol zone.")
-                            .small()
-                            .color(accent),
-                    );
-                    if ui.small_button("Cancel").clicked() || cancel {
+            super::missions::joint_attack_toast(
+                ui,
+                "Click empty space to choose a patrol zone.",
+                |ui| {
+                    if super::missions::joint_attack_toast_button(ui, "Cancel", true).clicked()
+                        || cancel
+                    {
                         state.cancel_patrol_selection();
                     }
-                });
+                },
+            );
         },
     );
-}
-
-pub(super) fn draw_active(
-    ui: &mut Ui,
-    mission: &Mission,
-    state: &mut UiState,
-    map: &Map,
-    player: &Player,
-    recall: &mut MessageWriter<RecallMissionMsg>,
-    editable: bool,
-) {
-    let Some(patrol) = &mission.patrol else {
-        return;
-    };
-    if mission.owner != player.id {
-        ui.small("Foreign fleet");
-        let response = ui.small(format!(
-            "Detected at ({:.1}, {:.1}) AU",
-            mission.position.x / Planet::SIZE,
-            mission.position.y / Planet::SIZE
-        ));
-        if response.hovered() {
-            state.mission_hover = Some(mission.id);
-            state.mission_hover_from_ui = true;
-        }
-        ui.label("");
-        return;
-    }
-    ui.small("Patrol");
-    let response = ui
-        .vertical(|ui| {
-            let status = match patrol.phase {
-                PatrolPhase::Outbound => {
-                    format!("Travelling to patrol zone · {} turns", mission.duration(map))
-                },
-                PatrolPhase::OnStation => {
-                    "Patrolling · attacks all detected foreign fleets".to_owned()
-                },
-                PatrolPhase::Returning => format!(
-                    "Returning to {} · {} turns",
-                    map.get(mission.destination).name,
-                    mission.duration(map).max(1)
-                ),
-            };
-            ui.small(status);
-            ui.small(format!(
-                "Zone ({:.1}, {:.1}) AU · radius {:.0} AU",
-                patrol.center.x / Planet::SIZE,
-                patrol.center.y / Planet::SIZE,
-                PATROL_RADIUS / Planet::SIZE
-            ));
-            if mission.owner == player.id {
-                ui.small(format!(
-                    "Strength: {} · Upkeep: {} deuterium/turn",
-                    super::missions::fleet_strength(&mission.army),
-                    mission.patrol_upkeep(),
-                ));
-                if patrol.phase != PatrolPhase::Returning {
-                    let mut returning = mission.clone();
-                    returning.return_patrol(map, mission.send);
-                    ui.small(format!(
-                        "Return: {} · {} turns",
-                        map.get(returning.destination).name,
-                        returning.duration(map).max(1)
-                    ));
-                }
-            }
-        })
-        .response;
-    if response.hovered() {
-        state.mission_hover = Some(mission.id);
-        state.mission_hover_from_ui = true;
-    }
-    if patrol.phase != PatrolPhase::Returning {
-        if ui.add_enabled(editable, egui::Button::new("Recall")).clicked() {
-            recall.write(RecallMissionMsg::new(mission.id));
-        }
-    } else {
-        ui.label("");
-    }
 }

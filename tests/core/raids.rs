@@ -23,6 +23,14 @@ proptest! {
 
 #[test]
 fn raid_cargo_uses_ship_production_and_saturates() {
+    for unit in Unit::ships() {
+        assert_eq!(
+            ship_cargo_capacity(unit),
+            [0, 0, 10, 30, 70, 150][unit.production()],
+            "{unit:?}"
+        );
+    }
+    assert_eq!(ship_cargo_capacity(Unit::Defense(Defense::RocketLauncher)), 0);
     assert_eq!(
         cargo_capacity(&Army::from([
             (Unit::Ship(Ship::LightFighter), 3),
@@ -31,7 +39,14 @@ fn raid_cargo_uses_ship_production_and_saturates() {
             (Unit::probe(), 1),
             (Unit::Defense(Defense::RocketLauncher), 500),
         ])),
-        160
+        310
+    );
+    assert_eq!(
+        cargo_capacity(&Army::from([
+            (Unit::Ship(Ship::LightFighter), usize::MAX),
+            (Unit::probe(), usize::MAX)
+        ])),
+        0
     );
     assert_eq!(cargo_capacity(&Army::from([(Unit::war_sun(), usize::MAX)])), usize::MAX);
 }
@@ -64,8 +79,7 @@ fn raid_plunder_excludes_scouts_and_withholds_credit_until_delivery() {
         ..Default::default()
     };
     let mut report = crate::test_support::empty_report(mission, planet.clone());
-    report.surviving_attacker =
-        Army::from([(Unit::Ship(Ship::LightFighter), 1), (Unit::probe(), 10)]);
+    report.surviving_attacker = Army::from([(Unit::Ship(Ship::Destroyer), 1), (Unit::probe(), 10)]);
     report.scout_probes = 10;
     let mut players = vec![Player::new(1, 0), Player::new(2, 1)];
     players[0].resources = Resources::new(usize::MAX - 3, usize::MAX, usize::MAX);
@@ -83,7 +97,7 @@ fn raid_plunder_excludes_scouts_and_withholds_credit_until_delivery() {
 #[test]
 fn raid_cargo_is_lost_when_surviving_carriers_cannot_hold_it() {
     let cargo = Resources::new(50, 30, 20);
-    let fleet = Army::from([(Unit::Ship(Ship::LightFighter), 3)]);
+    let fleet = Army::from([(Unit::Ship(Ship::Destroyer), 3)]);
     let retained = surviving_cargo(cargo, &fleet, &mut StdRng::seed_from_u64(3));
     assert_eq!(retained.total(), 30);
     assert!(cargo.contains(retained));
@@ -92,4 +106,6 @@ fn raid_cargo_is_lost_when_surviving_carriers_cannot_hold_it() {
         Resources::default()
     );
     assert_eq!(surviving_cargo(retained, &fleet, &mut StdRng::seed_from_u64(3)), retained);
+    let light_fleet = Army::from([(Unit::Ship(Ship::LightFighter), 100)]);
+    assert!(surviving_cargo(cargo, &light_fleet, &mut StdRng::seed_from_u64(3)).is_empty());
 }

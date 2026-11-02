@@ -185,7 +185,7 @@ pub struct UiState {
     pub(crate) resource_hub_term: ResourceLoanTerm,
     /// Camera-only world focus used by shortcuts that must not open a world panel.
     pub focus_planet: Option<PlanetId>,
-    /// Camera-only coordinate focus used by transient in-flight encounter notifications.
+    /// Camera-only coordinate focus used by encounter notifications and report links.
     pub(crate) focus_position: Option<Vec2>,
     /// Optional orthographic scale approached while moving to a camera-only world focus.
     pub(crate) focus_zoom: Option<f32>,
@@ -4675,7 +4675,7 @@ fn encounter_image_corner_radius(report: &MissionReport, size: f32) -> egui::Cor
 
 fn mission_report_destination_name<'a>(report: &MissionReport, destination: &'a Planet) -> &'a str {
     if report.is_space_encounter() {
-        "Space Encounter"
+        "Deep space"
     } else {
         &destination.name
     }
@@ -4689,16 +4689,51 @@ fn mission_report_sender_is_known(report: &MissionReport, viewer: PlayerId) -> b
 fn add_combat_report_destination_image(
     ui: &mut Ui,
     report: &MissionReport,
+    state: &mut UiState,
     images: &ImageIds,
     size: f32,
 ) -> Response {
-    ui.add(
+    let response = ui.add(
         egui::Image::new(SizedTexture::new(
             images.get(combat_selection_planet_image(report)),
             egui::Vec2::splat(size),
         ))
+        .sense(if report.is_space_encounter() {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        })
         .corner_radius(encounter_image_corner_radius(report, size)),
-    )
+    );
+    if report.is_space_encounter() {
+        handle_space_encounter_link(response, report, state)
+    } else {
+        response
+    }
+}
+
+/// A report's virtual planet records the battle site even after its fleet moves or disappears.
+fn handle_space_encounter_link(
+    response: Response,
+    report: &MissionReport,
+    state: &mut UiState,
+) -> Response {
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    if response.clicked() {
+        set_ui_sound(&response.ctx, Some(SoundEffect::Button));
+        state.planet_selected = None;
+        state.planet_hover = None;
+        state.mission_planet_hover = None;
+        state.mission_hover = None;
+        state.mission_hover_from_ui = false;
+        state.focus_planet = None;
+        state.focus_position = Some(report.planet.position);
+        state.focus_zoom = None;
+        state.to_selected = true;
+        state.mission = false;
+        state.combat_report = None;
+    }
+    response
 }
 
 fn combat_side_participants(
@@ -4917,7 +4952,7 @@ fn draw_combat_report(
             .wrap_mode(egui::TextWrapMode::Extend),
         );
         ui.add_space(5.);
-        let resp = add_combat_report_destination_image(ui, report, images, 35.0);
+        let resp = add_combat_report_destination_image(ui, report, state, images, 35.0);
 
         let size = [15., 15.];
         let pos = resp.rect.right_top() - egui::vec2(size[0], 0.);
@@ -5341,14 +5376,21 @@ fn draw_mission_info_hover(
             .as_ref()
             .filter(|patrol| patrol.phase != crate::core::patrols::PatrolPhase::Returning)
         {
+            ui.small(if mission.owner == player.id {
+                "Zone:"
+            } else {
+                "Destination:"
+            });
+            ui.spacing_mut().item_spacing.x = 4.;
+            ui.add_image(images.get("deep space"), [25.; 2]);
             if mission.owner == player.id {
                 ui.small(format!(
-                    "Patrol zone: ({:.1}, {:.1}) AU",
+                    "({:.1}, {:.1})",
                     patrol.center.x / Planet::SIZE,
                     patrol.center.y / Planet::SIZE
                 ));
             } else {
-                ui.small("Destination: Deep space");
+                ui.small("Deep space");
             }
         } else {
             ui.small("Destination:");
@@ -5381,7 +5423,6 @@ fn draw_mission_info_hover(
                 .on_hover_small(mission_movement_tooltip(mission.jump_gate));
 
             if mission.is_patrolling() && mission.owner == player.id {
-                ui.small("Patrolling");
                 return;
             }
             let duration = mission.duration(map);
@@ -5581,21 +5622,13 @@ fn mission_objective_label(objective: Icon) -> String {
     }
 }
 
-/// Uses the pre-mission world artwork so selection cannot reveal the resolved outcome.
+/// Uses deep space for space encounters and pre-mission world artwork for planetary battles.
 fn combat_selection_planet_image(report: &MissionReport) -> String {
-    if report.mission.objective == Icon::Patrol {
-        return "mission".to_owned();
+    if report.is_space_encounter() {
+        "deep space".to_owned()
+    } else {
+        report.planet.image()
     }
-    report
-        .planet
-        .army
-        .combined()
-        .iter()
-        .find_map(|(unit, count)| match unit {
-            Unit::Fauna(fauna) if *count > 0 => Some(fauna.to_lowername()),
-            _ => None,
-        })
-        .unwrap_or_else(|| report.planet.image())
 }
 
 fn combat_selection_title(report: &MissionReport, map: &Map) -> String {

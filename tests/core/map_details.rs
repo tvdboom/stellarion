@@ -512,12 +512,6 @@ fn debris_requires_actual_ship_losses_and_is_bounded() {
     let medium = debris_visuals(DebrisSize::Medium);
     let large = debris_visuals(DebrisSize::Large);
     assert!(small.pieces < medium.pieces && medium.pieces < large.pieces);
-    let radial_span =
-        |visuals: DebrisVisuals| visuals.radial_step * visuals.pieces.saturating_sub(1) as f32;
-    assert!(radial_span(small) < radial_span(medium));
-    assert!(radial_span(medium) < radial_span(large));
-    assert!(large.angle_step * ((large.pieces - 1) as f32) < 0.1);
-    assert!(small.min_radius < medium.min_radius && medium.min_radius < large.min_radius);
     assert!(small.min_diameter < medium.min_diameter);
     assert!(medium.min_diameter < large.min_diameter);
     battle.combat_report = None;
@@ -787,31 +781,6 @@ fn debris_motion_stays_near_its_anchor_and_pauses_with_detail_animation() {
         .query_filtered::<Entity, With<Debris>>()
         .iter(app.world())
         .collect::<Vec<_>>();
-    let phalanx_anchor = planet.position + Vec2::from_angle(TAU * 0.375) * planet.size() * 0.83;
-    let relay_anchor = planet.position + Vec2::from_angle(TAU * 0.625) * planet.size() * 0.83;
-    let phalanx_radius = Vec2::splat(planet.size() * 0.23).length() * 0.5;
-    let phalanx_drift = Vec2::new(10.7, 7.6).length();
-    let relay_radius = Vec2::splat(planet.size() * 0.34).length() * 0.5;
-    let relay_drift = Vec2::new(1.1, 2.4).length();
-    for &entity in &entities {
-        let debris = app.world().get::<Debris>(entity).unwrap();
-        let debris_radius =
-            app.world().get::<Sprite>(entity).unwrap().custom_size.unwrap().length() * 0.5;
-        let debris_drift = Vec2::splat(debris.amplitude).length();
-        let offset = debris.origin - planet.position;
-        assert!(offset.x < -planet.size() * 0.94, "debris must stay left of the planet");
-        assert!(offset.y.abs() < planet.size() * 0.31, "debris must use the open left corridor");
-        assert!(
-            debris.origin.distance(phalanx_anchor)
-                > debris_radius + debris_drift + phalanx_radius + phalanx_drift,
-            "debris must remain clear of the Sensor Phalanx throughout both idle animations"
-        );
-        assert!(
-            debris.origin.distance(relay_anchor)
-                > debris_radius + debris_drift + relay_radius + relay_drift,
-            "debris must remain clear of the Command Relay throughout both idle animations"
-        );
-    }
     app.update();
     let initial = *app.world().get::<Transform>(entities[0]).unwrap();
     for _ in 0..120 {
@@ -950,7 +919,7 @@ fn debris_art_is_not_the_hover_target() {
 }
 
 #[test]
-fn debris_hit_targets_follow_the_art_and_reject_empty_space() {
+fn debris_hit_targets_follow_the_art_behind_worlds_and_reject_empty_space() {
     let planet = model().map.planets[0].clone();
     let images = Assets::<Image>::default();
     let atlases = Assets::<TextureAtlasLayout>::default();
@@ -996,6 +965,16 @@ fn debris_hit_targets_follow_the_art_and_reject_empty_space() {
                 for (sprite, transform, parent) in &targets {
                     let art = app.world().get::<Sprite>(*parent).unwrap();
                     let art_transform = app.world().get::<GlobalTransform>(*parent).unwrap();
+                    for depth in [transform.translation().z, art_transform.translation().z] {
+                        assert!(
+                            depth < PLANET_Z,
+                            "debris and its hit targets must stay behind planets and moons"
+                        );
+                        assert!(
+                            depth > crate::core::constants::VORONOI_Z,
+                            "debris must remain visible above the territory background"
+                        );
+                    }
                     assert!(contains(sprite, transform, art_transform.translation().truncate()));
                     // Transparent atlas padding must not be a hit, even after rotation and drift.
                     let margin = art_transform.transform_point(Vec3::new(
@@ -1011,12 +990,12 @@ fn debris_hit_targets_follow_the_art_and_reject_empty_space() {
                     .iter(app.world())
                     .map(|(sprite, transform)| (sprite.clone(), *transform))
                     .collect::<Vec<_>>();
-                // Scan the plume and its surroundings: no target may select empty space
+                // Scan the arc and its surroundings: no target may select empty space
                 // outside every rendered piece, including the old field rectangle's corners.
                 for x in 0..32 {
                     for y in 0..24 {
                         let point = planet.position
-                            + Vec2::new(-2.1 + x as f32 * 0.05, -0.6 + y as f32 * 0.05)
+                            + Vec2::new(-1.3 + x as f32 * 0.04, -0.9 + y as f32 * 0.08)
                                 * planet.size();
                         if !art.iter().any(|(sprite, transform)| contains(sprite, transform, point))
                         {
@@ -1064,14 +1043,76 @@ fn zoom_details_follow_the_debris_curve_and_settle_gradually() {
 }
 
 #[test]
-fn debris_fields_form_long_shallow_plumes() {
-    for size in [DebrisSize::Small, DebrisSize::Medium, DebrisSize::Large] {
-        let visuals = debris_visuals(size);
-        let radial_span = visuals.radial_step * visuals.pieces.saturating_sub(1) as f32;
-        let angular_span = visuals.angle_step * visuals.pieces.saturating_sub(1) as f32;
-
-        assert!(radial_span > angular_span * 3.0);
-        assert!(radial_span >= 0.16);
+fn debris_fields_form_compact_arcs_clear_of_nearest_planets_and_moons() {
+    let template = model().map.planets[0].clone();
+    for kind in [PlanetKind::Metallic, PlanetKind::Gray] {
+        let mut planet = template.clone();
+        planet.kind = kind;
+        for losses in [3, 4, 16] {
+            for seed in [0, 71, 73, u32::MAX] {
+                let mut world = World::new();
+                spawn_debris(
+                    &mut world.commands(),
+                    &planet,
+                    &DebrisSite {
+                        losses,
+                        latest_turn: 2,
+                        seed,
+                    },
+                    Handle::default(),
+                    Vec2::splat(512.0),
+                );
+                world.flush();
+                let mut radii = Vec::new();
+                let mut angles = Vec::new();
+                for (sprite, debris) in world.query::<(&Sprite, &Debris)>().iter(&world) {
+                    let offset = debris.origin - planet.position;
+                    let radius = offset.length();
+                    // Circumscribed bounds cover every sprite rotation and all idle drift,
+                    // rather than checking only a few frames or ignoring transparent corners.
+                    let extent = sprite.custom_size.unwrap().length() * 0.5
+                        + Vec2::splat(debris.amplitude).length();
+                    assert!(radius - extent > planet.size() * 0.5);
+                    assert!(radius + extent < planet.size() * 1.12);
+                    assert!(offset.x < 0.0, "the arc must remain beside its own world");
+                    radii.push(radius);
+                    angles.push((-offset.y).atan2(-offset.x));
+                    for neighbor_kind in [PlanetKind::Metallic, PlanetKind::Gray] {
+                        let mut neighbor = template.clone();
+                        neighbor.kind = neighbor_kind;
+                        // Minimum center separations used by map generation, including the
+                        // closest mixed pair that caused a plume to reach another moon.
+                        let separation = Planet::SIZE
+                            * match (planet.is_moon(), neighbor.is_moon()) {
+                                (false, false) => 2.5,
+                                (true, true) => 1.25,
+                                _ => 1.5,
+                            };
+                        for direction in 0..32 {
+                            neighbor.position = planet.position
+                                + Vec2::from_angle(TAU * direction as f32 / 32.0) * separation;
+                            assert!(
+                                debris.origin.distance(neighbor.position)
+                                    > extent + neighbor.size() * 0.5,
+                                "the entire animated debris sprite must stay clear of neighbors"
+                            );
+                        }
+                    }
+                }
+                assert_eq!(
+                    radii.len(),
+                    debris_visuals(DebrisSize::from_losses(losses).unwrap()).pieces
+                );
+                radii.sort_by(f32::total_cmp);
+                angles.sort_by(f32::total_cmp);
+                assert!(radii.last().unwrap() - radii[0] < planet.size() * 0.05);
+                let angular_span = angles.last().unwrap() - angles[0];
+                assert!((0.1..1.5).contains(&angular_span), "wreckage must follow an arc");
+                if losses == 16 {
+                    assert!(angular_span > 1.0, "large fields must grow around the world");
+                }
+            }
+        }
     }
 }
 

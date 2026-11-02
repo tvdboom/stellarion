@@ -27,6 +27,8 @@ pub mod messages;
 mod mission_systems;
 pub mod missions;
 pub mod orders;
+#[cfg(feature = "app")]
+mod patrol_visuals;
 pub mod patrols;
 pub mod player;
 pub mod raids;

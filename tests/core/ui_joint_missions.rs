@@ -904,11 +904,15 @@ fn invite_picker_opens_on_hover_and_applies_each_choice_without_launching() {
             );
             assert!(send.right() < screen.right() - 15.0, "send button has a right inset");
             assert!(invite.right() < send.left());
-            assert!(invite.left() < 36.0, "invite stays at the bottom left");
             assert_eq!(invite.size(), egui::Vec2::splat(40.0));
             if size.x >= 620.0 {
+                assert!(
+                    (25.0..40.0).contains(&invite.left()),
+                    "wide footer brings the invite toward the center"
+                );
                 assert!(invite.y_range().contains(send.center().y));
             } else {
+                assert!(invite.left() < 36.0, "compact footer keeps its available width");
                 assert!(invite.bottom() < send.top(), "compact footer stacks the invite row");
             }
             assert!(text_bounds(&output, "Allied mission").is_none());

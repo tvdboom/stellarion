@@ -2358,6 +2358,87 @@ fn weapon_animation_keeps_shield_fire_separate_from_building_raids() {
 }
 
 #[test]
+fn weapon_animation_skips_remaining_attackers_after_the_last_defender_dies() {
+    for individual in [false, true] {
+        for volley in [false, true] {
+            let mut report = report(150, 0, true, 7);
+            let round = &mut report.combat_report.as_mut().unwrap().rounds[0];
+            assert!(round.defender.iter().all(|unit| unit.hull == 0));
+            let gauss = Unit::Defense(Defense::GaussCannon);
+            let remaining = [Unit::Ship(Ship::LightFighter), Unit::Ship(Ship::Destroyer)];
+            for (index, unit) in remaining.iter().enumerate() {
+                let mut shooter = round.attacker[0].clone();
+                shooter.unit = *unit;
+                shooter.id = 1_000 + index as u64;
+                shooter.shots = vec![ShotReport {
+                    target_id: Some(round.defender[0].id),
+                    unit: Some(gauss),
+                    missed: true,
+                    ..default()
+                }];
+                round.attacker.push(shooter);
+            }
+            let mut app = playback_app(report, 0, CombatState::Fire);
+            {
+                let mut settings = app.world_mut().resource_mut::<Settings>();
+                settings.combat_individual_units = individual;
+                settings.combat_volley_fire = volley;
+            }
+            spawn_unit(&mut app, Unit::Ship(Ship::Bomber), 150, Side::Attacker, FireState::Fired);
+            let shooters = remaining
+                .map(|unit| spawn_unit(&mut app, unit, 1, Side::Attacker, FireState::Idle));
+            let defender = spawn_unit(&mut app, gauss, 1, Side::Defender, FireState::Idle);
+            spawn_unit(&mut app, Unit::resource_buildings()[0], 5, Side::Defender, FireState::Idle);
+
+            // Final report casualties must not skip shots while a target is still shown alive.
+            app.world_mut().run_system_once(animate_combat).unwrap();
+            assert!(
+                app.world().get::<CombatUnitCmp>(shooters[0]).unwrap().fire == FireState::Select
+            );
+            for entity in shooters {
+                app.world_mut().get_mut::<CombatUnitCmp>(entity).unwrap().fire = FireState::Idle;
+            }
+            {
+                let mut target = app.world_mut().get_mut::<CombatUnitCmp>(defender).unwrap();
+                target.hull = 0;
+                target.shield = 0;
+            }
+
+            app.world_mut().run_system_once(animate_combat).unwrap();
+
+            for entity in shooters {
+                assert!(app.world().get::<CombatUnitCmp>(entity).unwrap().fire == FireState::Fired);
+                assert!(app.world().get::<TweenAnim>(entity).is_none());
+            }
+            assert!(app.world().get::<CombatUnitCmp>(defender).unwrap().fire == FireState::Select);
+            assert!(app.world().resource::<Messages<SpawnShotMsg>>().is_empty());
+        }
+    }
+}
+
+#[test]
+fn weapon_animation_skips_remaining_defenders_after_the_last_attacker_dies() {
+    for volley in [false, true] {
+        let mut app = playback_app(report(150, 0, true, 7), 0, CombatState::Fire);
+        app.world_mut().resource_mut::<Settings>().combat_volley_fire = volley;
+        spawn_unit(&mut app, Unit::Ship(Ship::Bomber), 0, Side::Attacker, FireState::Fired);
+        let defender = spawn_unit(
+            &mut app,
+            Unit::Defense(Defense::GaussCannon),
+            12,
+            Side::Defender,
+            FireState::Idle,
+        );
+
+        app.world_mut().run_system_once(animate_combat).unwrap();
+
+        assert!(app.world().get::<CombatUnitCmp>(defender).unwrap().fire == FireState::Fired);
+        assert!(app.world().get::<TweenAnim>(defender).is_none());
+        assert!(app.world().resource::<Messages<SpawnShotMsg>>().is_empty());
+    }
+}
+
+#[test]
 fn weapon_animation_replays_simultaneous_return_fire_from_destroyed_defenders() {
     let report = report(150, 0, true, 7);
     let defenders = &report.combat_report.as_ref().unwrap().rounds[0].defender;
@@ -2660,17 +2741,17 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
         .get::<Children>(pickups[0].0)
         .unwrap()
         .iter()
-        .filter_map(|child| app.world().get::<Sprite>(child))
-        .any(|sprite| sprite.image == metal_image));
+        .filter_map(|child| app.world().get::<ImageNode>(child))
+        .any(|image| image.image == metal_image));
     assert_eq!(app.world_mut().query::<&SalvageTimerCmp>().iter(app.world()).count(), 1);
     assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
-    assert!(app.world_mut().query::<&Text2d>().iter(app.world()).any(|text| text.0 == "+2"));
+    assert!(app.world_mut().query::<&Text>().iter(app.world()).any(|text| text.0 == "+2"));
     let amount_text = app
         .world()
         .get::<Children>(pickups[0].0)
         .unwrap()
         .iter()
-        .find(|child| app.world().get::<Text2d>(*child).is_some())
+        .find(|child| app.world().get::<Text>(*child).is_some())
         .unwrap();
     assert_eq!(
         app.world().get::<TweenAnim>(pickups[0].0).unwrap().tweenable().cycle_duration(),
@@ -2683,9 +2764,9 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     assert!(matches!(*app.world().resource::<NextState<CombatState>>(), NextState::Unchanged));
 
     TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_REVEAL_TIME_MS));
-    assert_eq!(app.world().get::<Transform>(amount_text).unwrap().scale, Vec3::ONE);
+    assert_eq!(app.world().get::<UiTransform>(amount_text).unwrap().scale, Vec2::ONE);
     TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_DRIFT_TIME_MS));
-    assert_eq!(app.world().get::<Transform>(amount_text).unwrap().scale, Vec3::ONE);
+    assert_eq!(app.world().get::<UiTransform>(amount_text).unwrap().scale, Vec2::ONE);
     TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_REVEAL_TIME_MS));
     app.world_mut().run_system_once(animate_combat).unwrap();
     assert_eq!(app.world().get::<Transform>(crawler).unwrap().translation, crawler_home);
@@ -2718,16 +2799,19 @@ fn raid_survivor_pulses_and_floats_loot_down_with_a_distinct_sound() {
         .collect::<Vec<_>>();
     assert_eq!(gains, vec![(ResourceName::Metal, 12), (ResourceName::Deuterium, 34)]);
     for text in ["+12", "+34"] {
-        assert!(app.world_mut().query::<&Text2d>().iter(app.world()).any(|value| value.0 == text));
+        assert!(app.world_mut().query::<&Text>().iter(app.world()).any(|value| value.0 == text));
     }
     let pickups = app
         .world_mut()
-        .query::<(Entity, &SalvagePickupCmp, &Transform)>()
+        .query::<(Entity, &SalvagePickupCmp, &Node)>()
         .iter(app.world())
-        .map(|(entity, pickup, transform)| {
+        .map(|(entity, pickup, node)| {
             assert_eq!(pickup.source, raider);
-            assert!(transform.translation.y < home.translation.y);
-            (entity, transform.translation.y)
+            let Val::Percent(top) = node.top else {
+                panic!("resource pickups use viewport-relative UI positions");
+            };
+            assert!(top > 50.0, "raid loot starts below its centered source");
+            (entity, top)
         })
         .collect::<Vec<_>>();
     let sounds = app
@@ -2740,7 +2824,10 @@ fn raid_survivor_pulses_and_floats_loot_down_with_a_distinct_sound() {
     assert!(!sounds.contains(&"construction"));
     TweenAnim::step_all(app.world_mut(), Duration::from_millis(1_000));
     for (entity, start_y) in pickups {
-        assert!(app.world().get::<Transform>(entity).unwrap().translation.y < start_y);
+        let Val::Percent(top) = app.world().get::<Node>(entity).unwrap().top else {
+            panic!("resource pickups use viewport-relative UI positions");
+        };
+        assert!(top > start_y);
     }
     TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_TIME_MS - 1_000));
     app.world_mut().run_system_once(animate_combat).unwrap();
@@ -2753,20 +2840,101 @@ fn raid_survivor_pulses_and_floats_loot_down_with_a_distinct_sound() {
 }
 
 #[test]
-fn raid_loot_is_shown_on_every_surviving_type_or_individual_ship() {
+fn raid_pickups_render_above_victory_below_pause_and_disappear_afterwards() {
+    let mut raid = report(10, 0, false, 19);
+    raid.mission.objective = Icon::Raid;
+    raid.raid_loot = Resources::new(12, 0, 34);
+    let mut rng = DeterministicRngState::from_u64(19).next_rng();
+    let map = Map {
+        rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![
+            Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng),
+            raid.planet.clone(),
+        ],
+    };
+    let mut app = playback_app(raid, 0, CombatState::Salvage);
+    app.add_plugins(bevy_tweening::TweeningPlugin)
+        .insert_resource(map)
+        .init_resource::<MultiplayerSession>();
+    let background = app
+        .world_mut()
+        .query_filtered::<Entity, With<BackgroundImageCmp>>()
+        .single(app.world())
+        .unwrap();
+    app.world_mut().despawn(background);
+    app.world_mut().run_system_once(setup_combat).unwrap();
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_HIGHLIGHT_TIME_MS));
+    app.world_mut().run_system_once(animate_combat).unwrap();
+
+    let pause_layer = app
+        .world_mut()
+        .query_filtered::<&ZIndex, With<CombatPausedCmp>>()
+        .single(app.world())
+        .unwrap()
+        .0;
+    let result = app
+        .world_mut()
+        .query_filtered::<Entity, With<DisplayTextCmp>>()
+        .single(app.world())
+        .unwrap();
+    let band = app.world().get::<ChildOf>(result).unwrap().parent();
+    let result_root = app.world().get::<ChildOf>(band).unwrap().parent();
+    let result_layer = app.world().get::<ZIndex>(result_root).unwrap().0;
+    let pickups = app
+        .world_mut()
+        .query_filtered::<(Entity, &ZIndex, &Node), With<SalvagePickupCmp>>()
+        .iter(app.world())
+        .map(|(entity, layer, node)| {
+            assert!(result_layer < layer.0 && layer.0 < pause_layer);
+            assert_eq!(node.position_type, PositionType::Absolute);
+            entity
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(pickups.len(), 2);
+    let labels = pickups
+        .iter()
+        .flat_map(|entity| app.world().get::<Children>(*entity).unwrap().iter())
+        .collect::<Vec<_>>();
+
+    app.world_mut().resource_mut::<Settings>().combat_paused = true;
+    app.world_mut().run_system_once(update_combat_stats).unwrap();
+    for entity in &pickups {
+        assert_eq!(
+            app.world().get::<TweenAnim>(*entity).unwrap().playback_state,
+            PlaybackState::Paused
+        );
+    }
+    app.world_mut().resource_mut::<Settings>().combat_paused = false;
+    app.world_mut().run_system_once(update_combat_stats).unwrap();
+    TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_TIME_MS));
+    app.world_mut().run_system_once(animate_combat).unwrap();
+    for entity in pickups.into_iter().chain(labels) {
+        assert!(app.world().get_entity(entity).is_err());
+    }
+    assert!(matches!(
+        *app.world().resource::<NextState<CombatState>>(),
+        NextState::Pending(CombatState::EndCombat)
+    ));
+}
+
+#[test]
+fn raid_loot_is_shown_on_surviving_cargo_carriers_in_both_formations() {
     for individual in [false, true] {
         let fighter = Unit::Ship(Ship::LightFighter);
+        let destroyer = Unit::Ship(Ship::Destroyer);
         let bomber = Unit::Ship(Ship::Bomber);
         let loot = Resources::new(12, 0, 34);
         let mut raid = report(10, 0, true, 19);
         raid.mission.objective = Icon::Raid;
         raid.raid_loot = loot;
-        raid.surviving_attacker = Army::from([(fighter, 2), (bomber, 2)]);
+        raid.surviving_attacker = Army::from([(fighter, 2), (destroyer, 2), (bomber, 2)]);
         let mut app = playback_app(raid, 0, CombatState::Salvage);
         app.add_plugins(bevy_tweening::TweeningPlugin);
         app.world_mut().resource_mut::<Settings>().combat_individual_units = individual;
         let mut carriers = Vec::new();
-        for (type_index, unit) in [fighter, bomber].into_iter().enumerate() {
+        for (type_index, unit) in [fighter, destroyer, bomber].into_iter().enumerate() {
             let group = spawn_unit(&mut app, unit, 2, Side::Attacker, FireState::Fired);
             if individual {
                 for index in 0..2 {
@@ -2804,9 +2972,14 @@ fn raid_loot_is_shown_on_every_surviving_type_or_individual_ship() {
         assert!(app.world().get::<SalvageCrawlerCmp>(dead).is_none());
         assert!(app.world().get::<SalvageCrawlerCmp>(enemy).is_none());
         for (entity, unit, count) in &carriers {
+            let capacity = crate::core::raids::ship_cargo_capacity(*unit) * count;
+            if capacity == 0 {
+                assert!(app.world().get::<SalvageCrawlerCmp>(*entity).is_none());
+                continue;
+            }
             let cargo = app.world().get::<SalvageCrawlerCmp>(*entity).unwrap().resources;
             assert!(!cargo.is_empty());
-            assert!(cargo.total() <= unit.production() * count * 10);
+            assert!(cargo.total() <= capacity);
         }
         TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_HIGHLIGHT_TIME_MS));
         app.world_mut().run_system_once(animate_combat).unwrap();
@@ -2817,9 +2990,16 @@ fn raid_loot_is_shown_on_every_surviving_type_or_individual_ship() {
             sources.insert(pickup.source);
         }
         assert_eq!(total, loot);
-        assert_eq!(sources.len(), carriers.len());
-        for (entity, _, _) in &carriers {
-            assert!(sources.contains(entity));
+        let expected_sources = carriers
+            .iter()
+            .filter(|(_, unit, _)| crate::core::raids::ship_cargo_capacity(*unit) > 0)
+            .count();
+        assert_eq!(sources.len(), expected_sources);
+        for (entity, unit, _) in &carriers {
+            assert_eq!(
+                sources.contains(entity),
+                crate::core::raids::ship_cargo_capacity(*unit) > 0
+            );
         }
         TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_TIME_MS));
         app.world_mut().run_system_once(animate_combat).unwrap();

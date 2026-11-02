@@ -626,6 +626,7 @@ impl WorldAssets {
                 "raid",
                 "raid cover",
                 "patrol",
+                "patrol cover",
                 "deep space",
                 "spy",
                 "spy cover",

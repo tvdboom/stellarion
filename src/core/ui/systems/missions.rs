@@ -63,6 +63,8 @@ const MISSION_REPORT_ROUTE_WIDTH: f32 = MISSION_REPORT_ROUTE_PLANET_WIDTH * 2.0
     + MISSION_REPORT_ROUTE_CENTER_WIDTH
     + MISSION_REPORT_ROUTE_GAP * 4.0;
 const MISSION_REPORT_STRENGTH_BAR_WIDTH: f32 = 140.0;
+const MISSION_REPORT_FOOTER_RIGHT_INSET: f32 = 24.0;
+const MISSION_REPORT_FOOTER_BOTTOM_INSET: f32 = 18.0;
 const MISSION_REPORT_PLANET_INTEL_WIDTH: f32 = 138.0;
 const MISSION_REPORT_INTEL_COLUMN_GAP: f32 = 4.0;
 const MISSION_REPORT_INTEL_IMAGE_SIZE: f32 = (MISSION_REPORT_PLANET_INTEL_WIDTH
@@ -99,14 +101,6 @@ impl MissionTooltip for Response {
         self.on_disabled_hover_ui(|ui| {
             ui.label(text.into().small());
         })
-    }
-}
-
-const fn mission_report_destination_cursor(is_space_fauna_encounter: bool) -> CursorIcon {
-    if is_space_fauna_encounter {
-        CursorIcon::Default
-    } else {
-        CursorIcon::PointingHand
     }
 }
 
@@ -493,6 +487,29 @@ fn jump_gate_preview_strands(
     strands
 }
 
+/// Shows continuous local maneuvers without suggesting progress toward another planet.
+fn draw_patrol_preview(painter: &egui::Painter, rect: egui::Rect, time: f32, color: Color32) {
+    let position = |angle: f32| {
+        rect.center()
+            + egui::vec2(angle.sin() * (rect.width() * 0.5 - 10.0), (angle * 2.0).sin() * 10.0)
+    };
+    let orbit = (0..=80).map(|step| position(step as f32 / 80.0 * std::f32::consts::TAU)).collect();
+    painter.add(egui::Shape::line(orbit, Stroke::new(1.0, color.gamma_multiply(0.22))));
+
+    let phase = time * 0.9;
+    for step in 0..18 {
+        let angle = phase - (18 - step) as f32 * 0.035;
+        painter.line_segment(
+            [position(angle), position(angle + 0.035)],
+            Stroke::new(1.8, color.gamma_multiply((step + 1) as f32 / 18.0)),
+        );
+    }
+    let head = position(phase);
+    painter.circle_filled(head, 5.0, color.gamma_multiply(0.15));
+    painter.circle_filled(head, 2.8, color);
+    painter.circle_filled(head, 1.1, Color32::WHITE);
+}
+
 /// Draws the same compact route language used by hovered missions on the strategic map.
 fn draw_route_preview(
     ui: &mut Ui,
@@ -511,6 +528,23 @@ fn draw_route_preview(
     let right = rect.right() - 8.0;
     let center_y = rect.center().y;
     let time = ui.input(|input| input.time) as f32;
+    if mission.patrol.is_some() {
+        if mission.owner != player.id {
+            // A detected contact does not disclose its private patrol phase or route.
+            let phase = (time * 0.6).fract();
+            painter.circle_stroke(
+                rect.center(),
+                4.0 + phase * 11.0,
+                Stroke::new(1.4, color.gamma_multiply(1.0 - phase)),
+            );
+            painter.circle_filled(rect.center(), 2.8, color);
+            return response;
+        }
+        if mission.is_patrolling() {
+            draw_patrol_preview(&painter, rect, time, color);
+            return response;
+        }
+    }
     let speed = mission.route_animation_speed(map) as f32;
     let phase = time
         * speed
@@ -692,6 +726,9 @@ fn handle_mission_planet_link(
         state.planet_hover = None;
         state.mission_planet_hover = None;
         state.planet_selected = Some(planet.id);
+        state.focus_planet = None;
+        state.focus_position = None;
+        state.focus_zoom = None;
         state.to_selected = true;
         state.mission = false;
         if planet.can_launch_mission(player.id) {
@@ -1496,7 +1533,7 @@ fn draw_new_mission(
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
                                         ui.add_image(
-                                            images.get(if *icon == Icon::Patrol { "patrol".to_owned() } else { format!("{} cover", icon.asset_key()) }),
+                                            images.get(format!("{} cover", icon.asset_key())),
                                             [150., 150.],
                                         );
                                     });
@@ -2074,6 +2111,7 @@ fn draw_mission_route(
     let destination = map.get(mission.destination);
     let mut origin_response = None;
     let mut destination_response = None;
+    let mut origin_selector_rect = egui::Rect::NOTHING;
     egui::Grid::new("mission_origin_destination").spacing([30., 0.]).striped(false).show(
         ui,
         |ui| {
@@ -2104,7 +2142,7 @@ fn draw_mission_route(
                         .sorted_by(|a, b| a.name.cmp(&b.name))
                         .collect::<Vec<_>>();
 
-                    ComboBox::from_id_salt("origin")
+                    let selector = ComboBox::from_id_salt("origin")
                         .popup_style(mission_planet_selector_popup_style.into())
                         .height(60. * origins.len().max(5) as f32)
                         .selected_text(mission_planet_selector_label(
@@ -2138,6 +2176,7 @@ fn draw_mission_route(
                         })
                         .response
                         .on_hover_cursor(CursorIcon::PointingHand);
+                    origin_selector_rect = selector.rect;
                 });
             });
 
@@ -2170,8 +2209,20 @@ fn draw_mission_route(
             ui.add_enabled_ui(!fixed_destination, |ui| {
                 ui.cell(100., |ui| {
                     if mission.objective == Icon::Patrol {
-                        ui.add_space(15.0);
-                        ui.small("Deep space");
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(100.0, 70.0), Sense::hover());
+                        // Match the origin's actual text center, including selector padding.
+                        ui.put(
+                            egui::Rect::from_center_size(
+                                egui::pos2(rect.center().x, origin_selector_rect.center().y),
+                                egui::vec2(rect.width(), origin_selector_rect.height()),
+                            ),
+                            egui::Label::new(
+                                RichText::new("Deep space").text_style(TextStyle::Button),
+                            )
+                            .extend()
+                            .halign(Align::Center),
+                        );
                         return;
                     }
                     ui.vertical(|ui| {
@@ -2338,7 +2389,11 @@ fn mission_footer_layout(
         1.0
     };
     let buttons_width = button_count * button_width + (button_count - 1.0) * button_gap;
-    let inline = players_width + badges_width + badge_gap + buttons_width + gap <= bounds.width();
+    let inline_width = players_width + badges_width + badge_gap + buttons_width + gap;
+    let inline = inline_width <= bounds.width();
+    // Bring both ends inward without forcing a footer that already fits onto another row.
+    let horizontal_inset = ((bounds.width() - inline_width) * 0.25).clamp(0.0, 15.0);
+    let bounds = bounds.shrink2(egui::vec2(horizontal_inset, 0.0));
     let send = egui::Rect::from_min_size(
         bounds.right_bottom() - egui::vec2(button_width, row_height),
         egui::vec2(button_width, row_height),
@@ -2626,13 +2681,8 @@ fn draw_mission_details(
     };
     fuel_response.on_hover_mission("Amount of deuterium it costs to send this mission.");
     if mission.objective == Icon::Patrol {
-        ui.small(format!("⛽ Patrol fuel: {} deuterium/turn", mission.patrol_upkeep()))
-            .on_hover_mission("Charged every turn after arrival, using the surviving ships' fuel consumption. The fleet returns automatically when there is not enough deuterium.");
-        ui.small(format!(
-            "Zone radius: {:.0} AU",
-            crate::core::patrols::PATROL_RADIUS / Planet::SIZE
-        ));
-        ui.small("Returns when fuel runs out.");
+        ui.small(format!("⛽ Patrol fuel: {} / turn", mission.patrol_upkeep()))
+            .on_hover_mission("Charged every turn after arrival. The fleet returns automatically when there is not enough deuterium.");
         return;
     }
     draw_deep_cover_option(ui, mission, origin);
@@ -2642,7 +2692,7 @@ fn draw_mission_details(
             "📦 Cargo capacity: {}",
             crate::core::raids::cargo_capacity(&mission.army)
         ))
-        .on_hover_mission(Icon::Raid.description());
+        .on_hover_mission("Per ship, production levels 1-5 carry 0, 10, 30, 70, and 150 resources respectively. Loot is credited when the fleet returns.");
     }
 
     if mission.objective == Icon::Destroy {
@@ -2798,19 +2848,17 @@ fn draw_active_missions(
                     .striped(false)
                     .show(ui, |ui| {
                         for mission in missions {
-                            if mission.patrol.is_some() {
-                                super::patrols::draw_active(ui, mission, state, map, player, recall_mission, editable);
-                                ui.end_row();
-                                continue;
-                            }
                             let (left_planet, right_planet, returning) =
                                 mission_route_presentation(mission);
                             let origin = map.get(left_planet);
                             let destination = map.get(right_planet);
+                            let foreign_patrol =
+                                mission.patrol.is_some() && mission.owner != player.id;
 
-                            if mission.owner == player.id
-                                || !mission.objective.is_hidden()
-                                || mission.is_seen_by_radar(map, player).is_some()
+                            if !foreign_patrol
+                                && (mission.owner == player.id
+                                    || !mission.objective.is_hidden()
+                                    || mission.is_seen_by_radar(map, player).is_some())
                             {
                                 let (resp1, resp2) = draw_mission_planet_link(
                                     ui,
@@ -2862,7 +2910,13 @@ fn draw_active_missions(
                             route_ui.horizontal_centered(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.;
 
-                                let objective = mission.displayed_objective(player.id);
+                                let objective = if mission.patrol.is_some()
+                                    && mission.owner == player.id
+                                {
+                                    Icon::Patrol
+                                } else {
+                                    mission.displayed_objective(player.id)
+                                };
                                 ui.add_image(
                                     images.get(objective.asset_key()),
                                     [25.; 2],
@@ -2899,13 +2953,21 @@ fn draw_active_missions(
                                     returning,
                                 );
 
-                                ui.label(
-                                    RichText::new(format!(
-                                        "+{}",
-                                        mission_display_turns(mission, map)
-                                    ))
-                                    .strong(),
-                                );
+                                if foreign_patrol {
+                                    ui.label(RichText::new("—").strong())
+                                        .on_hover_small("Detected fleet");
+                                } else if mission.is_patrolling() {
+                                    ui.label(RichText::new("∞").strong())
+                                        .on_hover_small("Patrolling");
+                                } else {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "+{}",
+                                            mission_display_turns(mission, map)
+                                        ))
+                                        .strong(),
+                                    );
+                                }
 
                                 if mission_recall_available(mission, map, player.id) {
                                     ui.add_space(10.0);
@@ -2932,24 +2994,38 @@ fn draw_active_missions(
                                 changed_hover = true;
                             }
 
-                            let (resp4, resp3) = draw_mission_planet_link(
-                                ui,
-                                images.get(destination.image()),
-                                &destination.name,
-                                Sense::click(),
-                            );
-                            let resp4 = resp4.on_hover_cursor(CursorIcon::PointingHand);
-                            let resp3 = resp3.on_hover_cursor(CursorIcon::PointingHand);
+                            if mission.patrol.is_some() {
+                                let (image, name) = draw_mission_planet_link(
+                                    ui,
+                                    images.get("deep space"),
+                                    "Deep space",
+                                    Sense::hover(),
+                                );
+                                if image.hovered() || name.hovered() {
+                                    state.mission_hover = Some(mission.id);
+                                    state.mission_hover_from_ui = true;
+                                    changed_hover = true;
+                                }
+                            } else {
+                                let (resp4, resp3) = draw_mission_planet_link(
+                                    ui,
+                                    images.get(destination.image()),
+                                    &destination.name,
+                                    Sense::click(),
+                                );
+                                let resp4 = resp4.on_hover_cursor(CursorIcon::PointingHand);
+                                let resp3 = resp3.on_hover_cursor(CursorIcon::PointingHand);
 
-                            handle_mission_planet_link(
-                                &resp3,
-                                &resp4,
-                                destination,
-                                &mut changed_hover,
-                                state,
-                                map,
-                                player,
-                            );
+                                handle_mission_planet_link(
+                                    &resp3,
+                                    &resp4,
+                                    destination,
+                                    &mut changed_hover,
+                                    state,
+                                    map,
+                                    player,
+                                );
+                            }
 
                             ui.end_row();
                         }
@@ -3097,13 +3173,17 @@ fn draw_mission_report_player(ui: &mut Ui, name: String, color: Color32) {
         Sense::hover(),
     );
     let (image_rect, _) = mission_planet_rects(cell);
-    let galley = egui::WidgetText::from(RichText::new(name).small().color(color)).into_galley(
+    let galley = egui::WidgetText::from(RichText::new(&name).small().color(color)).into_galley(
         ui,
         Some(egui::TextWrapMode::Truncate),
         cell.width(),
         TextStyle::Small,
     );
-    ui.painter().galley(image_rect.center() - galley.size() * 0.5, galley, color);
+    let text_rect = egui::Rect::from_center_size(image_rect.center(), galley.size());
+    if galley.elided {
+        ui.interact(text_rect, ui.next_auto_id(), Sense::hover()).on_hover_small(name);
+    }
+    ui.painter().galley(text_rect.min, galley, color);
 }
 
 fn mission_report_route_leading_space(available_width: f32) -> f32 {
@@ -3157,6 +3237,8 @@ fn draw_mission_reports(
         return;
     }
 
+    // Capture the panel bounds before report columns can grow beyond their preferred size.
+    let panel_rect = ui.max_rect();
     ui.add_space(10.);
 
     ui.horizontal(|ui| {
@@ -3207,8 +3289,9 @@ fn draw_mission_reports(
                                 ui.small(report.turn.to_string());
                             });
 
-                            let resp =
-                                add_combat_report_destination_image(ui, report, images, 40.0);
+                            let resp = add_combat_report_destination_image(
+                                ui, report, state, images, 40.0,
+                            );
 
                             if report.combat_report.is_some() {
                                 let size = [20.; 2];
@@ -3377,24 +3460,18 @@ fn draw_mission_reports(
                     images.get(combat_selection_planet_image(report)),
                     encounter_image_corner_radius(report, MISSION_PLANET_IMAGE_SIZE),
                     mission_report_destination_name(report, destination),
-                    if report.is_space_encounter() {
-                        Sense::hover()
-                    } else {
-                        Sense::click()
-                    },
+                    Sense::click(),
                 );
-                let resp4 = resp4.on_hover_cursor(mission_report_destination_cursor(
-                    report.is_space_encounter(),
-                ));
-                let resp3 = resp3.on_hover_cursor(mission_report_destination_cursor(
-                    report.is_space_encounter(),
-                ));
+                let resp4 = resp4.on_hover_cursor(CursorIcon::PointingHand);
+                let resp3 = resp3.on_hover_cursor(CursorIcon::PointingHand);
 
                 if report.combat_report.is_some() {
                     ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
                 }
 
-                if !report.is_space_encounter() {
+                if report.is_space_encounter() {
+                    handle_space_encounter_link(resp4 | resp3, report, state);
+                } else {
                     handle_mission_planet_link(
                         &resp3,
                         &resp4,
@@ -3548,38 +3625,42 @@ fn draw_mission_reports(
             let show_raid_loot =
                 report.mission.objective == Icon::Raid && !report.is_space_fauna_encounter();
             if show_combat_details || show_raid_loot {
-                // Share one footer across both armies so cargo cannot push the details button out.
-                ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
-                    let (footer, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), 50.0),
-                        Sense::hover(),
+                // Anchor to the panel, not the remaining space beneath the army grids.
+                let footer = egui::Rect::from_min_max(
+                    egui::pos2(
+                        ui.min_rect().left(),
+                        panel_rect.bottom() - MISSION_REPORT_FOOTER_BOTTOM_INSET - 50.0,
+                    ),
+                    egui::pos2(
+                        panel_rect.right() - MISSION_REPORT_FOOTER_RIGHT_INSET,
+                        panel_rect.bottom() - MISSION_REPORT_FOOTER_BOTTOM_INSET,
+                    ),
+                );
+                let mut loot_right = footer.right();
+                if show_combat_details {
+                    let mut button_ui = ui.new_child(
+                        UiBuilder::new()
+                            .max_rect(footer)
+                            .layout(Layout::right_to_left(Align::Center)),
                     );
-                    let mut loot_right = footer.right();
-                    if show_combat_details {
-                        let mut button_ui = ui.new_child(
-                            UiBuilder::new()
-                                .max_rect(footer)
-                                .layout(Layout::right_to_left(Align::Center)),
-                        );
-                        let button = button_ui.add_custom_button("Combat details", images);
-                        loot_right = button.rect.left() - ui.spacing().item_spacing.x;
-                        if button.clicked() {
-                            state.combat_report = Some(report.id);
-                            state.combat_report_round = 1;
-                        }
+                    let button = button_ui.add_custom_button("Combat details", images);
+                    loot_right = button.rect.left() - ui.spacing().item_spacing.x;
+                    if button.clicked() {
+                        state.combat_report = Some(report.id);
+                        state.combat_report_round = 1;
                     }
-                    if show_raid_loot {
-                        let mut loot_ui = ui.new_child(
-                            UiBuilder::new()
-                                .max_rect(egui::Rect::from_min_max(
-                                    footer.min,
-                                    egui::pos2(loot_right, footer.bottom()),
-                                ))
-                                .layout(Layout::left_to_right(Align::Center)),
-                        );
-                        draw_raid_loot(&mut loot_ui, report.raid_loot, images);
-                    }
-                });
+                }
+                if show_raid_loot {
+                    let mut loot_ui = ui.new_child(
+                        UiBuilder::new()
+                            .max_rect(egui::Rect::from_min_max(
+                                footer.min,
+                                egui::pos2(loot_right, footer.bottom()),
+                            ))
+                            .layout(Layout::left_to_right(Align::Center)),
+                    );
+                    draw_raid_loot(&mut loot_ui, report.raid_loot, images);
+                }
             }
         });
     });
@@ -3601,7 +3682,7 @@ fn draw_raid_loot(ui: &mut Ui, loot: Resources, images: &ImageIds) {
     });
 }
 
-fn joint_attack_toast_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
+pub(super) fn joint_attack_toast_button(ui: &mut Ui, label: &str, enabled: bool) -> Response {
     ui.add_enabled(
         enabled,
         egui::Button::new(
@@ -3612,7 +3693,7 @@ fn joint_attack_toast_button(ui: &mut Ui, label: &str, enabled: bool) -> Respons
     .on_hover_cursor(CursorIcon::PointingHand)
 }
 
-fn joint_attack_toast<R>(
+pub(super) fn joint_attack_toast<R>(
     ui: &mut Ui,
     text: impl Into<String>,
     buttons: impl FnOnce(&mut Ui) -> R,

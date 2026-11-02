@@ -9,10 +9,22 @@ use crate::core::player::Player;
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::units::{Army, Price, Unit};
 
-/// Each surviving ship can seize ten resources per production point.
+/// Per-ship raid cargo: production levels 1–5 carry 0, 10, 30, 70, and 150 resources.
+/// Non-ships cannot carry cargo. The exponential curve is `10 * (2^(level - 1) - 1)`.
+pub fn ship_cargo_capacity(unit: Unit) -> usize {
+    if !unit.is_ship() {
+        return 0;
+    }
+    2_usize
+        .saturating_pow(unit.production().saturating_sub(1) as u32)
+        .saturating_sub(1)
+        .saturating_mul(10)
+}
+
+/// Combined carrying capacity of the surviving ships, saturating for very large fleets.
 pub fn cargo_capacity(army: &Army) -> usize {
-    army.iter().filter(|(unit, _)| unit.is_ship()).fold(0, |capacity, (unit, count)| {
-        capacity.saturating_add(unit.production().saturating_mul(*count).saturating_mul(10))
+    army.iter().fold(0, |capacity, (unit, count)| {
+        capacity.saturating_add(ship_cargo_capacity(*unit).saturating_mul(*count))
     })
 }
 

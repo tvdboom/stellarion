@@ -19,6 +19,7 @@ use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::ui::systems::{MissionTab, Shop, UiState};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
+use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Army, Unit};
 use crate::multiplayer::client::{ConnectionStatus, MultiplayerSession};
@@ -333,6 +334,108 @@ fn render_readme_screenshots() {
     app.run();
 }
 
+#[test]
+#[ignore = "requires generated assets and a GPU; captures raid loot layering offline"]
+fn render_raid_loot_screenshots() {
+    use crate::core::combat::systems::SalvagePickupCmp;
+    use crate::core::random::DeterministicRngState;
+
+    assert_eq!(std::env::var("STELLARION_BACKEND").as_deref(), Ok("mock"));
+    std::fs::create_dir_all("target/raid-loot-preview").unwrap();
+    let mut app = capture_app();
+    app.add_systems(Last, |world: &mut World, mut loot_frame: Local<Option<usize>>| {
+        if *world.resource::<State<AppState>>().get() != AppState::Game {
+            return;
+        }
+        let frame = {
+            let mut scene = world.resource_mut::<CaptureScene>();
+            scene.frame += 1;
+            scene.frame
+        };
+        assert!(
+            frame < 1_200,
+            "raid capture timed out: game {:?}, combat {:?}, selected {:?}",
+            world.resource::<State<GameState>>().get(),
+            world.resource::<State<crate::core::states::CombatState>>().get(),
+            world.resource::<UiState>().in_combat,
+        );
+        if frame == 80 {
+            let mut target = world.resource::<Player>().reports[0].planet.clone();
+            target.colonize(2);
+            target.army = fleet(&[(Ship::LightFighter, 2)]).into();
+            let mission = Mission {
+                objective: Icon::Raid,
+                destination: target.id,
+                army: fleet(&[
+                    (Ship::LightFighter, 3),
+                    (Ship::HeavyFighter, 3),
+                    (Ship::Destroyer, 3),
+                    (Ship::Battleship, 3),
+                ]),
+                ..world.resource::<Player>().reports[0].mission.clone()
+            };
+            let mut rng = DeterministicRngState::from_u64(19).next_rng();
+            let mut report = resolve_combat_with_rng(24, &mission, &target, &mut rng);
+            report.raid_loot = Resources::new(24, 16, 9);
+            world.resource_mut::<UiState>().in_combat = Some(report.id);
+            world.resource_mut::<Player>().reports = vec![report];
+            let mut settings = world.resource_mut::<Settings>();
+            settings.combat_view = crate::core::settings::CombatView::Schematic;
+            settings.combat_paused = false;
+            settings.combat_speed = 4.0;
+            settings.combat_volley_fire = true;
+            world.resource_mut::<NextState<GameState>>().set(GameState::Combat);
+        }
+        if loot_frame.is_none()
+            && world.query_filtered::<Entity, With<SalvagePickupCmp>>().iter(world).next().is_some()
+        {
+            *loot_frame = Some(frame);
+            world.resource_mut::<Settings>().combat_speed = 1.0;
+        }
+        let Some(start) = *loot_frame else {
+            return;
+        };
+        let name = match frame - start {
+            100 => {
+                world.resource_mut::<Settings>().combat_paused = true;
+                "victory"
+            },
+            110 => {
+                world.resource_mut::<Settings>().combat_paused = false;
+                "paused"
+            },
+            120 => {
+                world
+                    .query::<&mut Window>()
+                    .single_mut(world)
+                    .unwrap()
+                    .resolution
+                    .set(640.0, 360.0);
+                return;
+            },
+            140 => "compact",
+            280 => {
+                assert_eq!(
+                    world.query_filtered::<Entity, With<SalvagePickupCmp>>().iter(world).count(),
+                    0
+                );
+                "finished"
+            },
+            _ => return,
+        };
+        let mut capture = world.spawn(Screenshot::primary_window());
+        capture.observe(save_to_disk(format!("target/raid-loot-preview/{name}.png")));
+        if name == "finished" {
+            capture.observe(
+                |_: On<ScreenshotCaptured>, mut exit: MessageWriter<bevy::app::AppExit>| {
+                    exit.write(bevy::app::AppExit::Success);
+                },
+            );
+        }
+    });
+    app.run();
+}
+
 fn capture_app() -> App {
     let mut app = App::new();
     app.add_plugins(
@@ -386,6 +489,9 @@ fn capture_app() -> App {
 fn render_patrol_screenshots() {
     assert_eq!(std::env::var("STELLARION_BACKEND").as_deref(), Ok("mock"));
     std::fs::create_dir_all("target/patrol-preview").unwrap();
+    if std::env::var_os("STELLARION_PATROL_ANIMATION_PREVIEW").is_some() {
+        std::fs::create_dir_all("target/patrol-preview/animation").unwrap();
+    }
     let mut app = capture_app();
     app.add_systems(Last, capture_patrol_views);
     app.run();
@@ -449,11 +555,19 @@ fn capture_patrol_views(world: &mut World) {
             window.resolution.set(1600.0, 900.0);
         }
         let mut mission = world.resource::<UiState>().mission_info.clone();
+        let mut outbound = mission.clone();
+        outbound.id = 9910;
         let point = mission.patrol.as_ref().unwrap().center;
         mission.position = point;
         mission.travel_turns = 1;
         mission.patrol.as_mut().unwrap().phase = crate::core::patrols::PatrolPhase::OnStation;
-        world.resource_mut::<crate::core::missions::Missions>().0.push(mission);
+        let mut returning = mission.clone();
+        returning.id = 9911;
+        returning.return_patrol(world.resource::<Map>(), turn);
+        world
+            .resource_mut::<crate::core::missions::Missions>()
+            .0
+            .extend([mission, outbound, returning]);
         let mut ui = world.resource_mut::<UiState>();
         ui.patrol_center = Some(point);
         ui.selecting_patrol_zone = false;
@@ -465,21 +579,112 @@ fn capture_patrol_views(world: &mut World) {
             transform.translation.y = point.y;
         }
     }
+    if frame == 350 {
+        let mut query = world.query::<&mut Window>();
+        for mut window in query.iter_mut(world) {
+            window.resolution.set(800.0, 600.0);
+        }
+    }
     if frame == 380 {
+        let mut query = world.query::<&mut Window>();
+        for mut window in query.iter_mut(world) {
+            window.resolution.set(1600.0, 900.0);
+        }
         world.resource_mut::<UiState>().mission = false;
+        if std::env::var_os("STELLARION_PATROL_ANIMATION_PREVIEW").is_some() {
+            let mut query = world.query_filtered::<&mut Projection, With<MainCamera>>();
+            for mut projection in query.iter_mut(world) {
+                if let Projection::Orthographic(projection) = &mut *projection {
+                    projection.scale = 1.15;
+                }
+            }
+        }
+    }
+    let animation = std::env::var_os("STELLARION_PATROL_ANIMATION_PREVIEW").is_some();
+    if frame == 430 && !animation {
+        let launch = world.resource::<Map>().get(origin).clone();
+        let point = world.resource::<UiState>().patrol_center.unwrap();
+        let mission = Mission::new_patrol(
+            9912,
+            turn,
+            1,
+            &launch,
+            point,
+            fleet(&[(Ship::LightFighter, 8), (Ship::Cruiser, 3)]),
+            None,
+        );
+        let mut encounter = crate::core::map::planet::Planet::new(
+            origin,
+            "Aether Ray Swarm".to_owned(),
+            point,
+            false,
+            1.0,
+        );
+        encounter.army.insert(Unit::Fauna(SpaceFauna::AetherRay), 5);
+        let mut rng = world.resource::<CaptureScene>().model.rng.clone().next_rng();
+        let mut report = resolve_combat_with_rng(turn, &mission, &encounter, &mut rng);
+        report.id = 9912;
+        world.resource_mut::<crate::core::player::Player>().reports.push(report);
+        let mut ui = world.resource_mut::<UiState>();
+        ui.mission = true;
+        ui.mission_tab = MissionTab::MissionReports;
+        ui.mission_report = Some(9912);
+    }
+    if frame == 500 && !animation {
+        let mut query = world.query::<&mut Window>();
+        for mut window in query.iter_mut(world) {
+            window.resolution.set(800.0, 600.0);
+        }
+    }
+    if frame == 550 && !animation {
+        let mut query = world.query::<&mut Window>();
+        for mut window in query.iter_mut(world) {
+            window.resolution.set(1600.0, 900.0);
+        }
+        let mut ui = world.resource_mut::<UiState>();
+        ui.combat_report = Some(9912);
+        ui.combat_report_round = 1;
+    }
+    if frame == 620 && !animation {
+        let mut query = world.query::<&mut Window>();
+        for mut window in query.iter_mut(world) {
+            window.resolution.set(800.0, 600.0);
+        }
+    }
+    if animation && (420..=1620).contains(&frame) && (frame - 420).is_multiple_of(6) {
+        let index = (frame - 420) / 6;
+        let path = format!(
+            "{}/target/patrol-preview/animation/{index:03}.png",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut capture = world.spawn(Screenshot::primary_window());
+        capture.observe(save_to_disk(path));
+        if frame == 1620 {
+            capture.observe(
+                |_: On<ScreenshotCaptured>, mut exit: MessageWriter<bevy::app::AppExit>| {
+                    exit.write(bevy::app::AppExit::Success);
+                },
+            );
+        }
     }
     let name = match frame {
         120 => "launch",
         210 => "launch-small",
         260 => "zone-selection-small",
         340 => "active",
+        370 => "active-small",
+        420 if animation => return,
         420 => "map",
+        490 if !animation => "report",
+        540 if !animation => "report-small",
+        610 if !animation => "combat-details",
+        660 if !animation => "combat-details-small",
         _ => return,
     };
     let path = format!("{}/target/patrol-preview/{name}.png", env!("CARGO_MANIFEST_DIR"));
     let mut capture = world.spawn(Screenshot::primary_window());
     capture.observe(save_to_disk(path));
-    if frame == 420 {
+    if frame == 660 && !animation {
         capture.observe(
             |_: On<ScreenshotCaptured>, mut exit: MessageWriter<bevy::app::AppExit>| {
                 exit.write(bevy::app::AppExit::Success);

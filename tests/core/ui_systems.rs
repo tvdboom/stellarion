@@ -423,7 +423,7 @@ fn deep_space_selection_uses_a_generic_title_and_gray_enemy_name() {
     let neutral = Color32::from_rgb(190, 198, 210);
 
     assert_eq!(combat_selection_title(&report, &map), "Deep Space Encounter");
-    assert_eq!(mission_report_destination_name(&report, map.get(0)), "Space Encounter");
+    assert_eq!(mission_report_destination_name(&report, map.get(0)), "Deep space");
     assert_eq!(combat_report_fauna_units(&report), vec![Unit::Fauna(SpaceFauna::VoidManta)]);
     assert_eq!(encounter_image_corner_radius(&report, 60.0), egui::CornerRadius::same(30));
 

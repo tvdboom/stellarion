@@ -40,7 +40,7 @@ impl ResourcePickup {
         }
         let weights = actors
             .iter()
-            .map(|index| timeline.actors[*index].unit.production().saturating_mul(10))
+            .map(|index| crate::core::raids::ship_cargo_capacity(timeline.actors[*index].unit))
             .collect::<Vec<_>>();
         let shares = if raiding {
             super::super::rewards::resource_shares(resources, &weights)

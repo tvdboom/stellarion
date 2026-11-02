@@ -41,9 +41,9 @@ use crate::core::map::asteroids::{
     recycler_asteroid_target_groups_at_elapsed, AsteroidBeltPlacement as SharedAsteroidPlacement,
     ASTEROID_MAX_RENDER_SCALE, ASTEROID_TUMBLE_SCALE_MARGIN,
 };
+use crate::core::map::details::ZoomDetailVisibility;
 #[cfg(test)]
 use crate::core::map::details::DEVELOPMENT_MAX_SCALE;
-use crate::core::map::details::{ZoomDetailVisibility, DEBRIS_DEPTH};
 use crate::core::map::detection::PublicStructureEffect;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
@@ -118,11 +118,11 @@ const JUMP_GATE_PARTICLE_SPEED: f32 = 38.0;
 const PLANETARY_SHIELD_DEPTH: f32 = 0.05;
 const SOLAR_SATELLITE_DEPTH: f32 = 0.10;
 const SOLAR_SATELLITE_DEPTH_STEP: f32 = 0.001;
-// Recyclers pass over their salvage target, so render them above debris while leaving them
-// non-pickable. Pointer hits then continue to the debris interaction target underneath.
-const RECYCLER_DEPTH: f32 = DEBRIS_DEPTH + 0.01;
+// Recyclers need their own layer above the surface for visible landings, even though debris
+// stays behind worlds. Keep them non-pickable so pointer hits reach the salvage target.
+const RECYCLER_DEPTH: f32 = 0.27;
 const RECYCLER_DEPTH_STEP: f32 = 0.001;
-const RECYCLER_SCAN_DEPTH: f32 = DEBRIS_DEPTH + 0.009;
+const RECYCLER_SCAN_DEPTH: f32 = RECYCLER_DEPTH - 0.001;
 // Asteroid workers cruise just above the belt and below planets. Near home they smoothly rise to
 // RECYCLER_DEPTH so their shrinking landing and growing launch remain visible over the surface.
 const RECYCLER_ASTEROID_DEPTH: f32 = VORONOI_Z + 0.21 - PLANET_Z;

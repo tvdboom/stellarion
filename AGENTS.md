@@ -46,6 +46,7 @@ between desktop and WebAssembly. Multiplayer uses Supabase and a mock backend.
 | `src/core/mod.rs`, `app.rs`, `states.rs`, `turns.rs`, `audio.rs` | Module boundaries, Bevy system registration, application states, turn presentation, sound |
 | `src/core/missions.rs`, `src/core/mission_systems.rs` | Persisted missions and shared rules, optional Bevy mission presentation and commands |
 | `src/core/patrols.rs` | Patrol zones, operating fuel, return rules, and deterministic space interception |
+| `src/core/patrol_visuals.rs` | Client-only patrol flight, wakes, and animated coverage borders |
 | `src/multiplayer/` | Backend contract, transport models, Supabase RPCs, mock storage, recovery, client coordination, Realtime |
 | `src/platform/` | Public configuration and native/browser client-local storage |
 | `scripts/build-assets.rs` | Incremental asset generation and verification |

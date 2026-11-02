@@ -277,6 +277,17 @@ fn mission_report_combat_button_stays_inside_the_panel_and_opens_details() {
                 panel.contains_rect(button),
                 "button {button:?} overflowed panel {panel:?} at {viewport:?}"
             );
+            assert!(
+                (panel.right() - button.right() - MISSION_REPORT_FOOTER_RIGHT_INSET * scale).abs()
+                    < 1.0,
+                "details button must stay anchored to the panel's right edge at {viewport:?}"
+            );
+            assert!(
+                (panel.bottom() - button.bottom() - MISSION_REPORT_FOOTER_BOTTOM_INSET * scale)
+                    .abs()
+                    < 1.0,
+                "details button must stay above the panel's lower border at {viewport:?}"
+            );
             let image_rects = |texture| {
                 output
                     .shapes
@@ -375,12 +386,6 @@ fn mission_report_combat_button_stays_inside_the_panel_and_opens_details() {
         assert_eq!(state.combat_report, Some(42));
         assert_eq!(state.combat_report_round, 1);
     }
-}
-
-#[test]
-fn space_fauna_report_destinations_use_the_default_cursor() {
-    assert_eq!(mission_report_destination_cursor(true), CursorIcon::Default);
-    assert_eq!(mission_report_destination_cursor(false), CursorIcon::PointingHand);
 }
 
 #[test]
@@ -519,6 +524,306 @@ fn mission_report_route_is_centered_without_a_fixed_horizontal_offset() {
     assert_eq!(route.origin.center().x + route.destination.center().x, row.center().x * 2.0);
     assert_eq!(route.attacker.center().x + route.defender.center().x, row.center().x * 2.0);
     assert_eq!(route.center.center().x, row.center().x);
+}
+
+#[test]
+fn report_player_names_show_full_name_tooltips_only_when_truncated() {
+    for name in ["Mara", "Aether Ray Swarm of the Distant Nebula"] {
+        let context = egui::Context::default();
+        context.set_global_style(NordDark.custom_style());
+        context.all_styles_mut(|style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        let mut label_rect = egui::Rect::NOTHING;
+        let truncated = name != "Mara";
+        for step in 0..5 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 250.0),
+                    )),
+                    time: Some(step as f64),
+                    events: if step >= 2 {
+                        vec![egui::Event::PointerMoved(label_rect.center())]
+                    } else {
+                        vec![]
+                    },
+                    ..default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        draw_mission_report_player(ui, name.to_owned(), Color32::WHITE);
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            let names = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == name => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let label = names.iter().find(|text| text.galley.elided == truncated).unwrap();
+            if step < 2 {
+                label_rect = egui::Rect::from_min_size(label.pos, label.galley.size());
+                assert_eq!(names.len(), 1, "a full-name tooltip must wait for hover");
+            }
+            assert_eq!(label.galley.rows.len(), 1);
+            assert!(label.galley.size().x <= MISSION_REPORT_ROUTE_PLAYER_WIDTH);
+            if step == 4 {
+                assert_eq!(
+                    names.len(),
+                    if truncated {
+                        2
+                    } else {
+                        1
+                    }
+                );
+                assert_eq!(names.iter().filter(|text| !text.galley.elided).count(), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn space_report_images_and_caption_focus_the_recorded_encounter_at_each_viewport_scale() {
+    use crate::core::units::fauna::SpaceFauna;
+
+    for fauna in [false, true] {
+        let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+        let destination = Planet::new(1, "Destination".into(), Vec2::X, false, 1.0);
+        let mut encounter = destination.clone();
+        let encounter_position = Vec2::new(375.0, 240.0);
+        encounter.position = encounter_position;
+        encounter.name = "Aether Ray Swarm".to_owned();
+        if fauna {
+            encounter.army.insert(Unit::Fauna(SpaceFauna::AetherRay), 5);
+        }
+        let mut report = crate::test_support::empty_report(
+            Mission {
+                owner: 1,
+                origin: 0,
+                destination: 1,
+                position: Vec2::new(-100.0, 50.0),
+                objective: if fauna {
+                    Icon::Raid
+                } else {
+                    Icon::Patrol
+                },
+                army: Army::from([(Unit::Ship(Ship::Cruiser), 3)]),
+                ..default()
+            },
+            encounter,
+        );
+        report.id = 42;
+        report.combat_report = Some(crate::core::combat::report::CombatReport {
+            rounds: vec![RoundReport::default()],
+            ..default()
+        });
+        let mut player = Player::new(1, 0);
+        player.reports.push(report);
+        let map = Map {
+            rect: Rect::default(),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            planets: vec![origin, destination],
+        };
+        let deep_space = egui::TextureId::User(901);
+        let images = ImageIds(HashMap::from([("deep space".to_owned(), deep_space)]));
+        for (viewport, target) in [egui::vec2(1280.0, 720.0), egui::vec2(800.0, 600.0)]
+            .into_iter()
+            .flat_map(|viewport| (0..3).map(move |target| (viewport, target)))
+        {
+            let context = egui::Context::default();
+            context.set_global_style(NordDark.custom_style());
+            let scale = mission_panel_scale(viewport);
+            let size = mission_panel_size(viewport / scale);
+            let position = (viewport - size * scale) * 0.5;
+            let mut state = UiState {
+                mission: true,
+                mission_tab: MissionTab::MissionReports,
+                planet_selected: Some(0),
+                planet_hover: Some(0),
+                mission_planet_hover: Some(0),
+                focus_planet: Some(1),
+                focus_position: Some(Vec2::ZERO),
+                focus_zoom: Some(2.0),
+                ..default()
+            };
+            let mut target_rect = egui::Rect::NOTHING;
+            for step in 0..6 {
+                let point = target_rect.lerp_inside(egui::vec2(0.35, 0.65));
+                let mut events = Vec::new();
+                if step >= 3 {
+                    events.push(egui::Event::PointerMoved(point));
+                    if step >= 4 {
+                        events.push(egui::Event::PointerButton {
+                            pos: point,
+                            button: egui::PointerButton::Primary,
+                            pressed: step == 4,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
+                        events,
+                        ..default()
+                    },
+                    |context| {
+                        draw_panel_on_context(
+                            context,
+                            "mission",
+                            "panel",
+                            (position.x, position.y),
+                            (size.x, size.y),
+                            0.0,
+                            scale,
+                            &images,
+                            |ui| {
+                                ui.add_space(17.0);
+                                draw_mission_tabs(ui, &mut state.mission_tab);
+                                draw_mission_reports(
+                                    ui,
+                                    &mut state,
+                                    &map,
+                                    &player,
+                                    &MultiplayerSession::default(),
+                                    false,
+                                    &images,
+                                );
+                            },
+                        );
+                    },
+                );
+                output.textures_delta.clear();
+                if step < 2 {
+                    continue;
+                }
+                let images = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) if mesh.texture_id == deep_space => {
+                            Some(mesh.calc_bounds())
+                        },
+                        egui::Shape::Rect(rect)
+                            if rect.brush.is_some() && rect.fill_texture_id() == deep_space =>
+                        {
+                            Some(rect.rect)
+                        },
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    images.len(),
+                    2,
+                    "list and detail images, fauna {fauna}, viewport {viewport:?}"
+                );
+                assert!((images[0].width() - 40.0 * scale).abs() < 1.0);
+                assert!((images[1].width() - MISSION_PLANET_IMAGE_SIZE * scale).abs() < 1.0);
+                let caption = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == "Deep space" => Some(text),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!(!caption.galley.elided);
+                assert_eq!(caption.galley.rows.len(), 1);
+                assert!(images[0].right() < images[1].left());
+                if step == 2 {
+                    target_rect = match target {
+                        0 | 1 => images[target],
+                        _ => egui::Rect::from_min_size(caption.pos, caption.galley.size()),
+                    };
+                }
+                if step == 3 {
+                    assert_eq!(output.platform_output.cursor_icon, CursorIcon::PointingHand);
+                }
+                if step < 5 {
+                    assert!(state.mission, "hovering or pressing must not navigate yet");
+                    assert_eq!(state.focus_position, Some(Vec2::ZERO));
+                }
+            }
+            assert_eq!(state.focus_position, Some(encounter_position));
+            assert!(state.to_selected);
+            assert!(!state.mission);
+            assert_eq!(state.planet_selected, None);
+            assert_eq!(state.focus_planet, None);
+            assert_eq!(state.focus_zoom, None);
+            assert_eq!(state.planet_hover, None);
+            assert_eq!(state.mission_planet_hover, None);
+        }
+    }
+}
+
+#[test]
+fn planet_links_cancel_an_earlier_coordinate_focus() {
+    let context = egui::Context::default();
+    let map = Map::new(1, 0);
+    let player = Player::new(1, 0);
+    let mut state = UiState {
+        mission: true,
+        focus_planet: Some(1),
+        focus_position: Some(Vec2::new(300.0, 200.0)),
+        focus_zoom: Some(2.0),
+        ..default()
+    };
+    let mut image_rect = egui::Rect::NOTHING;
+    for step in 0..4 {
+        let events = if step >= 2 {
+            vec![
+                egui::Event::PointerMoved(image_rect.center()),
+                egui::Event::PointerButton {
+                    pos: image_rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: step == 2,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        } else {
+            vec![]
+        };
+        let mut output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    let (image, name) = draw_mission_planet_link(
+                        ui,
+                        egui::TextureId::User(1),
+                        "Origin",
+                        Sense::click(),
+                    );
+                    image_rect = image.rect;
+                    handle_mission_planet_link(
+                        &image,
+                        &name,
+                        map.get(0),
+                        &mut false,
+                        &mut state,
+                        &map,
+                        &player,
+                    );
+                });
+            },
+        );
+        output.textures_delta.clear();
+    }
+    assert_eq!(state.planet_selected, Some(0));
+    assert!(state.to_selected);
+    assert!(!state.mission);
+    assert_eq!(state.focus_position, None);
+    assert_eq!(state.focus_planet, None);
+    assert_eq!(state.focus_zoom, None);
 }
 
 #[test]

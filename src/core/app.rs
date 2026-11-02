@@ -53,12 +53,13 @@ use crate::core::menu::systems::{
 };
 use crate::core::messages::MessageMsg;
 use crate::core::mission_systems::{
-    animate_jump_gate_missions, animate_mission_recalls, recall_protection, update_patrol_zones,
+    animate_jump_gate_missions, animate_mission_recalls, recall_protection,
 };
 use crate::core::missions::{
     recall_mission, send_mission, update_mission_route_arrow, update_missions,
     MissionRecallAnimationMsg, RecallMissionMsg, RecallProtectionMsg, SendMissionMsg,
 };
+use crate::core::patrol_visuals::{animate_patrol_wakes, update_patrol_zones};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, CombatState, GameState};
 use crate::core::systems::{
@@ -318,6 +319,7 @@ impl Plugin for GamePlugin {
                             .after(recall_protection),
                         animate_jump_gate_missions.after(update_missions),
                         update_patrol_zones.after(update_missions),
+                        animate_patrol_wakes.after(update_missions),
                         animate_mission_recalls.after(update_missions).after(recall_mission),
                         update_mission_route_arrow,
                     )

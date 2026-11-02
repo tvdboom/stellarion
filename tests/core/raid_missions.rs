@@ -98,6 +98,36 @@ fn raid_moon_targets_are_rejected_but_lunar_departures_and_returns_remain_valid(
 }
 
 #[test]
+fn level_one_ships_can_win_a_raid_but_cannot_steal_or_carry_resources() {
+    let (mut model, _, target) = raid_game();
+    model.map.get_mut(target).army = Army::new().into();
+    let defender_before = model.players[1].resources;
+    let production = model.players[1].resource_production(&model.map);
+    arrive(
+        &mut model,
+        target,
+        90_000,
+        Icon::Raid,
+        Army::from([
+            (Unit::Ship(Ship::LightFighter), 10),
+            (Unit::Ship(Ship::HeavyFighter), 10),
+            (Unit::probe(), 5),
+        ]),
+    );
+    empty_turn(&mut model);
+    let report = model.players[0].reports.last().unwrap();
+    assert_eq!(report.winner(), Some(1));
+    assert!(report.raid_loot.is_empty());
+    assert_eq!(model.players[1].resources, defender_before + production);
+    assert!(model.validate().is_ok());
+    let returning = model.missions.iter_mut().find(|mission| mission.owner == 1).unwrap();
+    assert!(returning.raid_cargo.is_empty());
+    returning.raid_cargo = Resources::new(1, 0, 0);
+    assert!(!returning.has_valid_return_objective());
+    assert!(model.validate().is_err());
+}
+
+#[test]
 fn raid_victory_transfers_resources_preserves_colony_and_returns_all_survivors_once() {
     let (mut model, home, target) = raid_game();
     let start = model.players.iter().map(|player| player.resources).collect::<Vec<_>>();
@@ -167,7 +197,7 @@ fn merged_returning_raids_deliver_each_cargo_once() {
             1,
             model.map.get(target),
             model.map.get(home),
-            Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+            Army::from([(Unit::Ship(Ship::Destroyer), 1)]),
             "",
             Icon::Raid,
             Default::default(),
@@ -201,7 +231,7 @@ fn returning_raid_reroutes_cargo_when_its_origin_is_lost() {
         1,
         model.map.get(target),
         model.map.get(lost),
-        Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+        Army::from([(Unit::Ship(Ship::Destroyer), 1)]),
         "",
         Icon::Raid,
         Default::default(),

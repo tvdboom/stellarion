@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use bevy_tweening::lens::{
     TextColorLens, TransformPositionLens, TransformScaleLens, UiBackgroundColorLens,
+    UiPositionLens, UiTransformScaleLens,
 };
 use bevy_tweening::{AnimCompletedEvent, Delay, PlaybackState, Tween, TweenAnim};
 use strum::IntoEnumIterator;
@@ -1217,6 +1218,7 @@ fn combat_identity_forces(
 }
 
 /// Crawler gains fan upward; raided cargo stacks below each ship and drifts downward.
+/// UI nodes keep the readouts above the result artwork and below the pause banner.
 fn spawn_salvage_pickups(
     commands: &mut Commands,
     source: Entity,
@@ -1225,6 +1227,8 @@ fn spawn_salvage_pickups(
     salvage: Resources,
     raiding: bool,
     assets: &WorldAssets,
+    camera_position: Vec3,
+    projection: &OrthographicProjection,
 ) {
     let gains = ResourceName::iter()
         .filter_map(|resource| {
@@ -1233,6 +1237,17 @@ fn spawn_salvage_pickups(
         })
         .collect::<Vec<_>>();
     let middle = (gains.len().saturating_sub(1)) as f32 * 0.5;
+    let width = projection.area.width().max(1.0);
+    let height = projection.area.height().max(1.0);
+    let ui_position = |position: Vec3| UiRect {
+        left: Val::Percent(
+            (position.x - camera_position.x - projection.area.min.x) / width * 100.0,
+        ),
+        top: Val::Percent(
+            (projection.area.max.y - position.y + camera_position.y) / height * 100.0,
+        ),
+        ..default()
+    };
 
     for (index, (resource, amount)) in gains.into_iter().enumerate() {
         let lane = index as f32 - middle;
@@ -1267,32 +1282,41 @@ fn spawn_salvage_pickups(
                 Tween::new(
                     EaseFunction::QuadraticInOut,
                     Duration::from_millis(SALVAGE_PICKUP_REVEAL_TIME_MS),
-                    TransformScaleLens {
-                        start: Vec3::ZERO,
-                        end: Vec3::ONE,
+                    UiTransformScaleLens {
+                        start: Vec2::ZERO,
+                        end: Vec2::ONE,
                     },
                 )
                 .then(Delay::new(Duration::from_millis(SALVAGE_PICKUP_DRIFT_TIME_MS)))
                 .then(Tween::new(
                     EaseFunction::QuadraticInOut,
                     Duration::from_millis(SALVAGE_PICKUP_REVEAL_TIME_MS),
-                    TransformScaleLens {
-                        start: Vec3::ONE,
-                        end: Vec3::ZERO,
+                    UiTransformScaleLens {
+                        start: Vec2::ONE,
+                        end: Vec2::ZERO,
                     },
                 )),
             )
         };
 
         commands.spawn((
-            Transform::from_translation(start),
+            Node {
+                position_type: PositionType::Absolute,
+                left: ui_position(start).left,
+                top: ui_position(start).top,
+                width: Val::Vw(size * 0.9 / width * 100.0),
+                height: Val::Vh(size * 0.48 / height * 100.0),
+                ..default()
+            },
+            UiTransform::from_translation(Val2::new(Val::Percent(-50.0), Val::Percent(-50.0))),
             Visibility::Inherited,
+            ZIndex(6),
             TweenAnim::new(Tween::new(
                 EaseFunction::QuadraticOut,
                 Duration::from_millis(SALVAGE_PICKUP_TIME_MS),
-                TransformPositionLens {
-                    start,
-                    end,
+                UiPositionLens {
+                    start: ui_position(start),
+                    end: ui_position(end),
                 },
             )),
             SalvagePickupCmp {
@@ -1304,36 +1328,57 @@ fn spawn_salvage_pickups(
             CombatCmp,
             children![
                 (
-                    Sprite {
-                        color: Color::BLACK.with_alpha(0.72),
-                        custom_size: Some(Vec2::new(size * 0.9, size * 0.48)),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
                         ..default()
                     },
-                    Transform::from_xyz(0.0, 0.0, 0.0),
+                    BackgroundColor(Color::BLACK.with_alpha(0.72)),
+                    UiTransform::from_scale(Vec2::ZERO),
                     reveal(),
                     CombatCmp,
                     Pickable::IGNORE,
                 ),
                 (
-                    Sprite {
-                        image: assets.image(icon),
-                        custom_size: Some(Vec2::splat(size * 0.34)),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(50.0 - 0.22 / 0.9 * 100.0),
+                        top: Val::Percent(50.0),
+                        width: Val::Percent(0.34 / 0.9 * 100.0),
+                        height: Val::Percent(0.34 / 0.48 * 100.0),
                         ..default()
                     },
-                    Transform::from_xyz(-size * 0.22, 0.0, 0.1),
+                    ImageNode::new(assets.image(icon)),
+                    UiTransform {
+                        translation: Val2::new(Val::Percent(-50.0), Val::Percent(-50.0)),
+                        scale: Vec2::ZERO,
+                        ..default()
+                    },
                     reveal(),
                     CombatCmp,
                     Pickable::IGNORE,
                 ),
                 (
-                    Text2d::new(format!("+{amount}")),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(50.0 + 0.18 / 0.9 * 100.0),
+                        top: Val::Percent(50.0),
+                        ..default()
+                    },
+                    Text::new(format!("+{amount}")),
                     TextFont {
                         font: assets.font("bold").into(),
-                        font_size: (size * 0.27).into(),
+                        font_size: FontSize::Vh(size * 0.27 / height * 100.0),
                         ..default()
                     },
+                    TextLayout::no_wrap(),
                     TextColor(WHITE.into()),
-                    Transform::from_xyz(size * 0.18, 0.0, 0.2),
+                    UiTransform {
+                        translation: Val2::new(Val::Percent(-50.0), Val::Percent(-50.0)),
+                        scale: Vec2::ZERO,
+                        ..default()
+                    },
                     reveal(),
                     CombatCmp,
                     Pickable::IGNORE,
@@ -2998,8 +3043,13 @@ pub fn animate_combat(
         }
 
         for side in Side::iter() {
-            // Follow recorded weapon fire even after the last defender dies: shields
-            // can still be hit, and simultaneous return fire can kill would-be Bombers.
+            let has_targets = *combat_state.get() != CombatState::Fire
+                || unit_q.iter().any(|(_, _, cu)| {
+                    cu.side == side.opposite()
+                        && cu.hull > 0
+                        && !cu.unit.is_building()
+                        && !cu.unit.is_missile()
+                });
             let mut selected = false;
             for unit in &units {
                 if let Some((_, _, mut cu)) = unit_q.iter_mut().find(|(_, _, cu)| {
@@ -3014,6 +3064,18 @@ pub fn animate_combat(
                         && (cu.unit != Unit::interplanetary_missile()
                             || round.missiles_shot() < round.n_missiles())
                 }) {
+                    // Impacts have landed before selection, so skip firing at a defeated fleet.
+                    // Buildings are a separate raid; recorded planetary-shield hits still matter.
+                    // Check the target side only: destroyed ships retain simultaneous return fire.
+                    if !has_targets
+                        && !round.units(&side).iter().any(|shooter| {
+                            shooter.unit == *unit
+                                && shooter.shots.iter().any(|shot| shot.planetary_shield_damage > 0)
+                        })
+                    {
+                        cu.fire = FireState::Fired;
+                        continue;
+                    }
                     cu.fire = FireState::Select;
                     selected = true;
                     if !volley_fire {
@@ -3761,6 +3823,8 @@ pub fn animate_combat(
                         crawler.resources,
                         reward_side == Side::Attacker,
                         &assets,
+                        pos,
+                        projection,
                     );
                 }
                 if all_revealed {
@@ -3827,7 +3891,7 @@ pub fn animate_combat(
             let weights = sources
                 .iter()
                 .map(|(_, _, unit, count, _)| {
-                    unit.production().saturating_mul(*count).saturating_mul(10)
+                    crate::core::raids::ship_cargo_capacity(*unit).saturating_mul(*count)
                 })
                 .collect::<Vec<_>>();
             let gains = if raiding {

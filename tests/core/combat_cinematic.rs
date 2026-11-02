@@ -686,21 +686,29 @@ fn cinematic_raid_distributes_recorded_loot_across_surviving_ships_only() {
     report.mission.objective = Icon::Raid;
     report.raid_loot = Resources::new(12, 9, 9);
     let attackers = &mut report.combat_report.as_mut().unwrap().rounds[0].attacker;
-    attackers[1].unit = Unit::Ship(Ship::LightFighter);
+    attackers[1].unit = Unit::Ship(Ship::Destroyer);
     attackers[2].hull = 0;
+    let mut light_fighter = attackers[1].clone();
+    light_fighter.unit = Unit::Ship(Ship::LightFighter);
+    light_fighter.id = 99;
+    attackers.push(light_fighter);
     let mut movie = CinematicPlayback::new(&report);
     let pickups = movie.resource_pickup.as_ref().unwrap();
     assert_eq!(pickups.actors.len(), 2);
     let mut total = Resources::default();
     for (index, actor) in movie.timeline.actors.iter().enumerate() {
         let share = pickups.resources_for(index);
+        let capacity = crate::core::raids::ship_cargo_capacity(actor.unit);
+        if capacity == 0 {
+            assert!(share.is_empty());
+        }
         if share.is_empty() {
             continue;
         }
         assert_eq!(actor.side, Side::Attacker);
         assert!(actor.death_at.is_none());
         assert!(actor.retreat_at.is_none());
-        assert!(share.total() <= actor.unit.production() * 10);
+        assert!(share.total() <= capacity);
         total += share;
     }
     assert_eq!(total, report.raid_loot);

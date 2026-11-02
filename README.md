@@ -100,25 +100,6 @@ defenses.
 - **Raid:** Fight normal combat, steal resources on victory, and return without taking ownership
   or control. Moons cannot be raided. Resources raided are chosen randomly, limited by the colony
   owner's shared stockpile.
-- **Patrol:** Click the Patrol objective icon in New Mission, then click empty space on the map.
-  You can also right-click empty space to open a patrol draft there. Its destination is shown as
-  Deep space. Select ships and send the mission using the normal mission panel.
-  Patrols cover a fixed 3 AU radius and automatically attack every detected foreign fleet,
-  regardless of protection permissions or joint attacks. Detection checks the whole route through
-  the circle. With exposure equal to the fraction of the turn inside it and strength equal to ship
-  count × production level, the chance is `exposure * strength / (exposure * strength + 20)`.
-  Fleets assigned to the same zone combine their strength. Each observing player gets one attempt
-  per passing fleet per turn, using their strongest intersecting zone. An intercepted fleet loses
-  its remaining movement that turn; survivors continue next turn. Each fleet participates in at
-  most one player-versus-player space battle per turn. Missiles, Jump Gate transit and
-  Deep Cover missions cannot be intercepted. Operation starts the turn after arrival and continues
-  until recall or insufficient fuel. Launch fuel is paid normally, and each operating turn
-  reserves one AU of fuel consumption per surviving ship before ordinary purchases. Unaffordable
-  patrols return automatically in stable mission-ID order. Recall and return require no extra fuel.
-  Ships return from the zone center to their launch world, or the nearest available world they own
-  or control if that port is lost. Each full patrol turn also rolls the configured space-fauna chance. Patrol combat
-  changes no planet ownership and creates no planetary debris. Use an existing zone to reinforce
-  its patrol, or select an active patrol to review upkeep, return time, and Recall.
 - **Spy:** Gather intelligence on an enemies' strength using the Probe ships. A minimum of five
   probes is required for a spy mission. The more Probes that return, the more intelligence is
   revealed. Spy missions cannot be detected by a Sensor Phalanx and do not reveal their origin. If
@@ -139,7 +120,14 @@ defenses.
   enemy ships or Space Dock remaining, every War Sun has an initial 10% chance plus the planet's
   −2% to +2% Death Ray size modifier (the chance falls by 1% in later combat rounds). The fleet
   returns whether destruction succeeds. A destroyed planet can never be colonized again.
-
+- **Patrol:** Patrols cover a fixed 3 AU radius and attack detected foreign fleets. Detection
+  checks the whole route through the circle. With exposure equal to the fraction of the turn
+  inside it and strength equal to `ship count × production_level`, the chance is
+  `exposure * strength / (exposure * strength + 20)`. Fleets assigned to the same zone combine
+  their strength. Each observing player gets one attempt per passing fleet per turn, using their
+  strongest intersecting zone. An intercepted fleet loses its remaining movement that turn. Each
+  fleet participates in at most one space battle per turn. Missiles and deep cover missions
+  cannot be intercepted. Each patrol also rolls the space-fauna chance.
 
 ### Units
 

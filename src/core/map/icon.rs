@@ -269,7 +269,7 @@ impl Description for Icon {
     /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
-            Icon::Patrol => "Patrol a fixed area of space and attack every detected foreign fleet. Detection improves with route exposure and combined ship production. Each complete patrol turn costs deuterium; recall or insufficient fuel sends survivors home.",
+            Icon::Patrol => "Patrol a fixed area of space and attack every detected foreign fleet. Detection improves with route exposure and combined ship production. Insufficient fuel automatically sends the mission back to the planet of origin.",
             Icon::Colonize => {
                 "A successful mission that contains at least one Colony Ship, colonizes the target \
                 planet (the player gains ownership). The Colony Ship is consumed in the process. \

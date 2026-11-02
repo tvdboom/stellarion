@@ -12,16 +12,16 @@ use crate::core::audio::{PlayAudioMsg, SoundEffect};
 use crate::core::constants::MISSION_Z;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
-use crate::core::map::planet::Planet;
 use crate::core::map::systems::{
     jump_gate_link_particles, JumpGateHelixStyle, JumpGateLinkParticle, MissionCmp,
 };
 use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{
-    BombingRaid, Mission, MissionId, MissionRouteStyle, Missions, RecallMissionMsg,
-    RecallProtectionMsg, SendMissionMsg, SuppressedMapMissions,
+    BombingRaid, Mission, MissionRouteStyle, Missions, RecallMissionMsg, RecallProtectionMsg,
+    SendMissionMsg, SuppressedMapMissions,
 };
+use crate::core::patrol_visuals::{spawn_patrol_wake, PatrolFlight};
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::simulation::{TurnCommand, MAX_ACTIVE_MISSIONS};
@@ -84,94 +84,6 @@ pub(crate) fn mission_map_direction(mission: &Mission, map: &Map) -> Vec2 {
         remaining.normalize()
     } else {
         (mission.target_position(map) - map.get(mission.origin).position).normalize_or_zero()
-    }
-}
-
-#[derive(Component)]
-pub(crate) struct PatrolZoneCmp(MissionId);
-
-/// Shows owned coverage and the selected/live launch preview without changing fleet positions.
-pub(crate) fn update_patrol_zones(
-    mut commands: Commands,
-    mut zones: Query<(Entity, &PatrolZoneCmp, &mut Transform, &MeshMaterial2d<ColorMaterial>)>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    state: Res<UiState>,
-    missions: Res<Missions>,
-    player: Res<Player>,
-    camera: Single<(&Camera, &GlobalTransform), With<crate::core::camera::MainCamera>>,
-    window: Single<&Window>,
-    map: Res<Map>,
-) {
-    let mut desired = std::collections::BTreeMap::new();
-    for mission in missions.iter().filter(|mission| {
-        mission.owner == player.id && mission.patrol.is_some() && !mission.is_returning()
-    }) {
-        if let Some(patrol) = &mission.patrol {
-            desired.insert(
-                mission.id,
-                (
-                    patrol.center,
-                    player.color().color().with_alpha(if mission.is_patrolling() {
-                        0.5
-                    } else {
-                        0.2
-                    }),
-                ),
-            );
-        }
-    }
-    if state.selecting_patrol_zone || state.mission && state.mission_info.objective == Icon::Patrol
-    {
-        let (camera, transform) = camera.into_inner();
-        let center = if state.selecting_patrol_zone {
-            window
-                .cursor_position()
-                .and_then(|cursor| camera.viewport_to_world_2d(transform, cursor).ok())
-        } else {
-            state.patrol_center
-        };
-        if let Some(center) = center {
-            let valid = crate::core::patrols::valid_patrol_target(
-                &map,
-                state.mission_info.origin,
-                center,
-                None,
-            );
-            desired.insert(
-                0,
-                (
-                    center,
-                    if valid {
-                        player.color().color().with_alpha(0.7)
-                    } else {
-                        Color::srgba(1.0, 0.2, 0.2, 0.7)
-                    },
-                ),
-            );
-        }
-    }
-    // Reuse persistent zone entities. Only the live cursor preview changes every frame.
-    for (entity, zone, mut transform, material) in &mut zones {
-        if let Some((center, color)) = desired.remove(&zone.0) {
-            transform.translation = center.extend(MISSION_Z - 0.5);
-            if let Some(mut material) = materials.get_mut(&material.0) {
-                material.color = color;
-            }
-        } else {
-            commands.entity(entity).despawn();
-        }
-    }
-    for (id, (center, color)) in desired {
-        let radius = crate::core::patrols::PATROL_RADIUS;
-        commands.spawn((
-            Mesh2d(meshes.add(Annulus::new(radius - 1.5, radius))),
-            MeshMaterial2d(materials.add(color)),
-            Transform::from_xyz(center.x, center.y, MISSION_Z - 0.5),
-            Pickable::IGNORE,
-            PatrolZoneCmp(id),
-            MapCmp,
-        ));
     }
 }
 
@@ -292,7 +204,14 @@ pub(crate) struct MissionRecallPulse {
 /// Advances the visible ECS mission projection after canonical turn installation.
 pub fn update_missions(
     mut commands: Commands,
-    mut mission_q: Query<(Entity, &mut Sprite, &mut Transform, &mut Visibility, &MissionCmp)>,
+    mut mission_q: Query<(
+        Entity,
+        &mut Sprite,
+        &mut Transform,
+        &mut Visibility,
+        &MissionCmp,
+        Option<&mut PatrolFlight>,
+    )>,
     state: Res<UiState>,
     map: Res<Map>,
     player: Res<Player>,
@@ -303,14 +222,23 @@ pub fn update_missions(
     time: Option<Res<Time>>,
 ) {
     let player_id = player.id;
+    let elapsed = time.as_ref().map_or(0.0, |time| time.elapsed_secs_f64());
     let hovered = state.mission_hover.and_then(|id| missions.get(id));
 
     for mission in missions.iter() {
-        if !mission_q.iter().any(|(_, _, _, _, m)| m.id == mission.id) {
+        if !mission_q.iter().any(|(_, _, _, _, m, _)| m.id == mission.id) {
             let id = mission.id;
             let owner = mission.owner;
 
-            let direction = mission_map_direction(mission, &map);
+            let visible =
+                !suppressed_missions.as_ref().is_some_and(|suppressed| suppressed.contains(id));
+            let mut patrol_flight = PatrolFlight::default();
+            let incoming = mission_map_direction(mission, &map);
+            let (displayed_position, direction) = if visible {
+                patrol_flight.sample(mission, incoming, elapsed)
+            } else {
+                (mission.position, incoming)
+            };
             let angle = direction.y.atan2(direction.x);
             let size = mission_size(mission, false);
             let image_rotation = mission_world_rotation(mission, angle);
@@ -327,20 +255,24 @@ pub fn update_missions(
                     ..default()
                 },
                 Transform {
-                    translation: mission.position.extend(MISSION_Z),
+                    translation: displayed_position.extend(MISSION_Z),
                     rotation: Quat::from_rotation_z(image_rotation),
                     ..default()
                 },
                 Pickable::default(),
-                if suppressed_missions.as_ref().is_some_and(|suppressed| suppressed.contains(id)) {
-                    Visibility::Hidden
-                } else {
+                if visible {
                     Visibility::Inherited
+                } else {
+                    Visibility::Hidden
                 },
                 MissionCmp::new(id),
+                patrol_flight,
                 MapCmp,
             ));
             mission_commands.with_children(|parent| {
+                if mission.patrol.is_some() {
+                    spawn_patrol_wake(parent);
+                }
                 parent.spawn((
                     Sprite::from_atlas_image(texture.image, texture.atlas),
                     mission_flame_transform(size, angle, image_rotation),
@@ -438,26 +370,30 @@ pub fn update_missions(
         }
     }
 
-    for (mission_e, mut mission_s, mut mission_t, mut visibility, mission_c) in &mut mission_q {
+    for (mission_e, mut mission_s, mut mission_t, mut visibility, mission_c, patrol_flight) in
+        &mut mission_q
+    {
         if let Some(mission) = missions.iter().find(|m| m.id == mission_c.id) {
-            let displayed_position = if mission.is_patrolling() {
-                let angle = time.as_ref().map_or(0.0, |time| time.elapsed_secs()) * 0.5
-                    + (mission.id % 360) as f32;
-                mission.position + Vec2::new(angle.cos(), angle.sin()) * Planet::SIZE * 0.35
-            } else {
-                mission.position
-            };
-            *visibility = if suppressed_missions
+            let visible = !suppressed_missions
                 .as_ref()
-                .is_some_and(|suppressed| suppressed.contains(mission.id))
-            {
-                Visibility::Hidden
-            } else {
+                .is_some_and(|suppressed| suppressed.contains(mission.id));
+            let incoming = mission_map_direction(mission, &map);
+            let (displayed_position, direction) =
+                patrol_flight.map_or((mission.position, incoming), |mut flight| {
+                    if visible {
+                        flight.sample(mission, incoming, elapsed)
+                    } else {
+                        flight.reset();
+                        (mission.position, incoming)
+                    }
+                });
+            *visibility = if visible {
                 Visibility::Inherited
+            } else {
+                Visibility::Hidden
             };
             // Update the direction the image is pointing at
             // Could change if the destination planet was destroyed
-            let direction = mission_map_direction(mission, &map);
             let angle = direction.y.atan2(direction.x);
             let image = mission.image(&player);
 

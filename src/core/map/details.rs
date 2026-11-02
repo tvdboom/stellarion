@@ -23,7 +23,7 @@ use crate::core::missions::Missions;
 use crate::core::player::Player;
 #[cfg(test)]
 use crate::core::recycling::destroyed_ships;
-use crate::core::recycling::{visible_debris_sites, DebrisSite, DebrisSize};
+use crate::core::recycling::{visible_debris_sites, DebrisSite, DebrisSize, DEBRIS_ORBIT_RADIUS};
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::systems::{MissionTab, UiState};
@@ -32,8 +32,11 @@ use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 
 const DEBRIS_CENTER_ANGLE: f32 = TAU * 0.5;
+const DEBRIS_ANGLE_STEP: f32 = 0.16;
 const DEBRIS_ANGLE_JITTER: f32 = 0.02;
-pub(crate) const DEBRIS_DEPTH: f32 = 0.26;
+const DEBRIS_RADIUS_JITTER: f32 = 0.02;
+// Wreckage and its child hit targets stay below worlds and above the territory background.
+const DEBRIS_DEPTH: f32 = -0.1;
 const PLANET_TERRAFORMER_ART_ASPECT: f32 = 1102.0 / 1427.0;
 pub(crate) const DEVELOPMENT_MAX_SCALE: f32 = 0.9;
 /// Time used to cover 95% of a zoom-sensitive debris or orbital opacity change.
@@ -104,10 +107,6 @@ impl DevelopmentVisibility {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DebrisVisuals {
     pieces: usize,
-    angle_step: f32,
-    min_radius: f32,
-    radial_step: f32,
-    radius_jitter: f32,
     min_diameter: f32,
     diameter_jitter: f32,
 }
@@ -116,30 +115,18 @@ fn debris_visuals(size: DebrisSize) -> DebrisVisuals {
     match size {
         DebrisSize::Small => DebrisVisuals {
             pieces: 2,
-            angle_step: 0.012,
-            min_radius: 1.14,
-            radial_step: 0.16,
-            radius_jitter: 0.04,
-            min_diameter: 0.22,
-            diameter_jitter: 0.06,
+            min_diameter: 0.14,
+            diameter_jitter: 0.04,
         },
         DebrisSize::Medium => DebrisVisuals {
             pieces: 5,
-            angle_step: 0.012,
-            min_radius: 1.18,
-            radial_step: 0.10,
-            radius_jitter: 0.04,
-            min_diameter: 0.25,
-            diameter_jitter: 0.09,
+            min_diameter: 0.16,
+            diameter_jitter: 0.05,
         },
         DebrisSize::Large => DebrisVisuals {
             pieces: 9,
-            angle_step: 0.012,
-            min_radius: 1.24,
-            radial_step: 0.07,
-            radius_jitter: 0.03,
-            min_diameter: 0.29,
-            diameter_jitter: 0.11,
+            min_diameter: 0.18,
+            diameter_jitter: 0.06,
         },
     }
 }
@@ -659,19 +646,16 @@ fn spawn_debris(
     let visuals = debris_visuals(size_class);
     for index in 0..visuals.pieces {
         let seed = site.seed.wrapping_add(index as u32 * 19);
-        // Keep wreckage in the open corridor directly left of the planet, beyond the ordinary
-        // orbital ring and between the fixed upper- and lower-left range infrastructure. Its
-        // depth also keeps a passing orbital from briefly drawing over the wreckage.
+        // Larger fields lengthen an arc around their own world without extending toward a
+        // neighbor. Including the rotated sprite corners and maximum idle drift, the whole
+        // field fits within 1.12 world diameters. Even the closest generated planet/moon pair
+        // leaves 1.15 diameters between the planet's center and the moon's surface.
         let centered_index = index as f32 - visuals.pieces.saturating_sub(1) as f32 * 0.5;
         let angle = DEBRIS_CENTER_ANGLE
-            + centered_index * visuals.angle_step
+            + centered_index * DEBRIS_ANGLE_STEP
             + (noise(seed) - 0.5) * DEBRIS_ANGLE_JITTER;
-        // A radial progression gives the wreckage a long, shallow plume instead of packing every
-        // piece into one compact arc. The small angle step and jitter keep it naturally irregular.
         let radius = planet.size()
-            * (visuals.min_radius
-                + centered_index * visuals.radial_step
-                + noise(seed.wrapping_add(1)) * visuals.radius_jitter);
+            * (DEBRIS_ORBIT_RADIUS + (noise(seed.wrapping_add(1)) - 0.5) * DEBRIS_RADIUS_JITTER);
         let variant = (noise(seed.wrapping_add(2)) * 3.99) as usize;
         let cell = image_size * 0.5;
         let min = Vec2::new((variant % 2) as f32, (variant / 2) as f32) * cell;
