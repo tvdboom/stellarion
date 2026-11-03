@@ -1511,6 +1511,68 @@ fn combat_cards_show_empty_shield_slots_for_probes_and_support_units() {
 }
 
 #[test]
+fn space_battles_use_nebula_art_and_planetary_battles_keep_their_world_art() {
+    for (objective, fauna, expected) in [
+        (Icon::Attack, None, None),
+        (Icon::Patrol, None, None),
+        (Icon::Intercept, None, None),
+        (Icon::Attack, Some(SpaceFauna::AetherRay), Some("fauna combat blue")),
+        (Icon::Attack, Some(SpaceFauna::VoidManta), Some("fauna combat violet")),
+        (Icon::Attack, Some(SpaceFauna::SolarRoc), Some("fauna combat amber")),
+    ] {
+        let mut report = report(1, 0, true, 43);
+        report.mission.objective = objective;
+        if let Some(fauna) = fauna {
+            report.planet.army.clear();
+            report.planet.army.insert(Unit::Fauna(fauna), 1);
+        }
+        let space = report.is_space_encounter();
+        let world_art = format!("{} large", report.planet.kind.to_lowername());
+        let mut rng = DeterministicRngState::from_u64(43).next_rng();
+        let map = Map {
+            rect: Rect::new(-100., -100., 100., 100.),
+            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            planets: vec![
+                Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng),
+                report.planet.clone(),
+            ],
+        };
+        let mut app = playback_app(report, 0, CombatState::Fire);
+        app.insert_resource(map).init_resource::<MultiplayerSession>();
+        app.world_mut().run_system_once(setup_combat).unwrap();
+
+        let background = app
+            .world_mut()
+            .query_filtered::<&Sprite, (With<BackgroundImageCmp>, With<CombatCmp>)>()
+            .single(app.world())
+            .unwrap();
+        let assets = app.world().resource::<WorldAssets>();
+        if let Some(expected) = expected {
+            assert_eq!(background.image, assets.image(expected));
+        } else if space {
+            assert!(["fauna combat blue", "fauna combat violet", "fauna combat amber"]
+                .iter()
+                .any(|image| background.image == assets.image(*image)));
+        } else {
+            assert_eq!(background.image, assets.image(world_art));
+        }
+        assert_eq!(
+            background.color,
+            if space {
+                SPACE_ENCOUNTER_BACKGROUND_TINT
+            } else {
+                Color::WHITE
+            }
+        );
+        assert_eq!(
+            background.image_mode,
+            SpriteImageMode::Scale(SpriteScalingMode::FillCenter),
+            "battle art must retain its proportions just like the selection screen"
+        );
+    }
+}
+
+#[test]
 fn shieldless_fauna_put_their_hull_bar_directly_below_the_image() {
     let fauna = Unit::Fauna(SpaceFauna::VoidManta);
     let mut report = report(1, 0, true, 43);
@@ -1533,7 +1595,7 @@ fn shieldless_fauna_put_their_hull_bar_directly_below_the_image() {
         .query_filtered::<&Sprite, (With<BackgroundImageCmp>, With<CombatCmp>)>()
         .single(app.world())
         .unwrap();
-    assert_eq!(background.color, SPACE_FAUNA_BACKGROUND_TINT);
+    assert_eq!(background.color, SPACE_ENCOUNTER_BACKGROUND_TINT);
 
     assert!(app
         .world_mut()

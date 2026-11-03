@@ -85,6 +85,152 @@ fn empty_space_pointer_clicks_open_and_retarget_the_normal_patrol_draft() {
         assert_eq!(state.mission_info.patrol.as_ref().unwrap().center, target);
         assert_eq!(state.mission_tab, MissionTab::NewMission);
     }
+
+    let planet = app
+        .world_mut()
+        .query::<(Entity, &PlanetCmp)>()
+        .iter(app.world())
+        .find(|(_, planet)| planet.id == home)
+        .unwrap()
+        .0;
+    let outside = app.world().resource::<Map>().rect.max + Vec2::ONE;
+    let home_position = app.world().resource::<Map>().get(home).position;
+    for (entity, target) in
+        [(background, outside), (background, home_position), (planet, home_position)]
+    {
+        for button in [PointerButton::Primary, PointerButton::Secondary] {
+            app.world_mut().resource_mut::<UiState>().begin_patrol_selection();
+            app.world_mut().trigger(Pointer::new(
+                PointerId::Mouse,
+                location.clone(),
+                Click {
+                    button,
+                    hit: HitData::new(camera, 0.0, Some(target.extend(BACKGROUND_Z)), None),
+                    duration: Duration::from_millis(50),
+                    count: 1,
+                },
+                entity,
+            ));
+            let state = app.world().resource::<UiState>();
+            assert!(state.selecting_patrol_zone);
+            assert!(!state.mission);
+            let messages =
+                app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect::<Vec<_>>();
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].level, crate::core::messages::MessageLevel::Error);
+            assert!(!messages[0].silent, "invalid placement must still play the error sound");
+        }
+    }
+
+    // Pressing starts a pan without placing a zone. A drag's release also emits Click, which
+    // must leave selection open even when the pointer has returned to its starting position.
+    app.world_mut().resource_mut::<UiState>().begin_patrol_selection();
+    let before = app.world().get::<Transform>(camera).unwrap().translation;
+    let hit = HitData::new(camera, 0.0, Some(center.extend(BACKGROUND_Z)), None);
+    app.world_mut().trigger(Pointer::new(
+        PointerId::Mouse,
+        location.clone(),
+        Press {
+            button: PointerButton::Primary,
+            hit: hit.clone(),
+            count: 1,
+        },
+        background,
+    ));
+    app.world_mut().flush();
+    assert!(app.world().resource::<UiState>().selecting_patrol_zone);
+    assert!(!app.world().resource::<UiState>().mission);
+    assert_eq!(
+        app.world().get::<CursorIcon>(window),
+        Some(&CursorIcon::System(SystemCursorIcon::Grabbing))
+    );
+    app.world_mut().trigger(Pointer::new(
+        PointerId::Mouse,
+        location.clone(),
+        Drag {
+            button: PointerButton::Primary,
+            distance: Vec2::new(40.0, 20.0),
+            delta: Vec2::new(40.0, 20.0),
+        },
+        background,
+    ));
+    assert_ne!(app.world().get::<Transform>(camera).unwrap().translation, before);
+    assert!(app.world().resource::<UiState>().selecting_patrol_zone);
+    app.world_mut().trigger(Pointer::new(
+        PointerId::Mouse,
+        location.clone(),
+        Drag {
+            button: PointerButton::Primary,
+            distance: Vec2::ZERO,
+            delta: Vec2::new(-40.0, -20.0),
+        },
+        background,
+    ));
+    app.world_mut().trigger(Pointer::new(
+        PointerId::Mouse,
+        location.clone(),
+        Click {
+            button: PointerButton::Primary,
+            hit: hit.clone(),
+            duration: Duration::from_millis(300),
+            count: 1,
+        },
+        background,
+    ));
+    app.world_mut().trigger(Pointer::new(
+        PointerId::Mouse,
+        location.clone(),
+        DragEnd {
+            button: PointerButton::Primary,
+            distance: Vec2::ZERO,
+        },
+        background,
+    ));
+    app.world_mut().flush();
+    assert_eq!(
+        app.world().get::<CursorIcon>(window),
+        Some(&CursorIcon::System(SystemCursorIcon::Default))
+    );
+    assert!(app.world().resource::<UiState>().selecting_patrol_zone);
+    assert!(!app.world().resource::<UiState>().mission);
+
+    // The next ordinary click is still accepted, at the released location rather than the press.
+    app.world_mut().trigger(Pointer::new(
+        PointerId::Mouse,
+        location.clone(),
+        Press {
+            button: PointerButton::Primary,
+            hit: HitData::new(camera, 0.0, Some((center + Vec2::X).extend(BACKGROUND_Z)), None),
+            count: 1,
+        },
+        background,
+    ));
+    assert!(app.world().resource::<UiState>().selecting_patrol_zone);
+    app.world_mut().trigger(Pointer::new(
+        PointerId::Mouse,
+        location.clone(),
+        Drag {
+            button: PointerButton::Primary,
+            distance: Vec2::ONE,
+            delta: Vec2::ONE,
+        },
+        background,
+    ));
+    app.world_mut().trigger(Pointer::new(
+        PointerId::Mouse,
+        location,
+        Click {
+            button: PointerButton::Primary,
+            hit,
+            duration: Duration::from_millis(50),
+            count: 1,
+        },
+        background,
+    ));
+    let state = app.world().resource::<UiState>();
+    assert!(!state.selecting_patrol_zone);
+    assert!(state.mission);
+    assert_eq!(state.mission_info.patrol.as_ref().unwrap().center, center);
 }
 
 #[test]

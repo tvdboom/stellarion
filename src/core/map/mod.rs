@@ -14,6 +14,8 @@ pub(crate) mod detection;
 #[cfg(feature = "app")]
 pub(crate) mod fauna;
 pub mod icon;
+#[cfg(feature = "app")]
+pub(crate) mod interception;
 pub mod model;
 #[cfg(feature = "app")]
 pub(crate) mod orbital_railgun;

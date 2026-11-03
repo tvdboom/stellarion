@@ -11,7 +11,7 @@ use stellarion::core::simulation::{
     resolve_turn, GameModel, GameRules, PersistedGame, TurnCommand, TurnSubmission,
 };
 use stellarion::core::trading::{trading_post_capacity, trading_posts_are_adjacent};
-use stellarion::core::units::{buildings::Building, ships::Ship, Army, Unit};
+use stellarion::core::units::{buildings::Building, ships::Ship, Amount, Army, Unit};
 
 fn trade_route_fixtures(model: &GameModel) -> Vec<serde_json::Value> {
     let mut map = model.map.clone();
@@ -243,6 +243,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "battle_report": battle_report,
             "combat_game": combat_fixture(active.clone())?,
             "patrol_game": patrol_fixture(active.clone())?,
+            "intercept_game": intercept_fixture(active.clone())?,
+            "patrol_contacts": patrol_contact_fixture(active.clone())?,
             "trade_routes": trade_route_fixtures(&active),
             "lobby": lobby,
             "active": PersistedGame::new(active),
@@ -251,6 +253,97 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
     );
     Ok(())
+}
+
+/// Exercises final-approach interception, a surviving target's same-turn arrival and return.
+fn intercept_fixture(
+    mut model: GameModel,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use bevy::prelude::{Rect, Vec2};
+    model.rules.space_fauna_percent = 0;
+    model.rules.independent_populations = false;
+    model.map.rect = Rect::from_corners(Vec2::splat(-10_000.0), Vec2::splat(10_000.0));
+    let home = model.players[0].home_planet;
+    let enemy_home = model.players[1].home_planet;
+    model.map.get_mut(home).position = Vec2::ZERO;
+    model.map.get_mut(enemy_home).position = Vec2::X * Planet::SIZE * 30.0;
+    model.map.get_mut(home).army.insert(Unit::Ship(Ship::LightFighter), 100);
+    let moon_id = model.map.planets.iter().map(|planet| planet.id).max().unwrap_or(0) + 1;
+    let mut moon = Planet::new_with_rng(
+        moon_id,
+        "Intercept Radar".to_owned(),
+        Vec2::ZERO,
+        true,
+        1.0,
+        &mut rand_chacha::ChaCha8Rng::from_seed([54; 32]),
+    );
+    moon.controlled = Some(1);
+    moon.army.insert(Unit::Building(Building::OrbitalRadar), 30);
+    model.map.planets.push(moon);
+    for player in &mut model.players {
+        player.resources = Resources::new(100_000, 100_000, 100_000);
+    }
+    model.missions.push(Mission::new_with_id(
+        9903,
+        model.turn as usize,
+        2,
+        model.map.get(enemy_home),
+        model.map.get(home),
+        Icon::Spy,
+        Army::from([(Unit::probe(), 100)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    ));
+    // This deterministic matchup leaves Probe survivors after space combat. They must
+    // still reach the planet during the same turn, despite already spending their movement.
+    model.missions.last_mut().ok_or("missing interception target")?.position =
+        Vec2::X * Planet::SIZE * 3.0;
+    model.validate()?;
+    let initial = PersistedGame::new(model.clone());
+    let launch = TurnCommand::SendIntercept {
+        mission_id: 9904,
+        origin: home,
+        target: 9903,
+        army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
+        battle_plan: BattlePlan::default(),
+    };
+    let draft = PersistedGame::new(stellarion::core::simulation::preview_commands(
+        &model,
+        1,
+        std::slice::from_ref(&launch),
+    )?);
+    let mut turns = Vec::new();
+    for step in 0..30 {
+        let submissions = vec![
+            TurnSubmission::new(
+                1,
+                model.turn,
+                if step == 0 {
+                    vec![launch.clone()]
+                } else {
+                    vec![]
+                },
+            ),
+            TurnSubmission::new(2, model.turn, vec![]),
+        ];
+        resolve_turn(&mut model, &submissions)?;
+        turns.push(serde_json::json!({ "submissions": submissions, "resolved": PersistedGame::new(model.clone()) }));
+        if model.missions.is_empty() {
+            break;
+        }
+    }
+    assert!(model.missions.is_empty());
+    assert!(model.players[1]
+        .reports
+        .iter()
+        .any(|report| report.mission.objective == Icon::Intercept
+            && report.surviving_defender.has_army()));
+    assert!(model.players[1].reports.iter().any(|report| {
+        report.mission.objective == Icon::Spy && report.turn == initial.state.turn as usize + 1
+    }));
+    Ok(serde_json::json!({ "initial": initial, "draft": draft, "launch": launch, "turns": turns }))
 }
 
 /// Exercises dispatch, a complete operating duration, upkeep, return and recovery snapshots.
@@ -290,7 +383,14 @@ fn patrol_fixture(mut model: GameModel) -> Result<serde_json::Value, Box<dyn std
                 1,
                 model.turn,
                 if index == 0 {
-                    vec![launch.clone()]
+                    vec![
+                        launch.clone(),
+                        TurnCommand::SetPatrolFriendly {
+                            mission_id: 9902,
+                            player_id: 2,
+                            friendly: true,
+                        },
+                    ]
                 } else {
                     vec![]
                 },
@@ -305,4 +405,54 @@ fn patrol_fixture(mut model: GameModel) -> Result<serde_json::Value, Box<dyn std
     }
     assert!(model.missions.is_empty(), "patrol fixture must return and dock");
     Ok(serde_json::json!({ "initial": initial, "turns": turns, "launch": launch }))
+}
+
+/// Friendly observations use the normal persisted report envelope, without combat rounds.
+fn patrol_contact_fixture(
+    mut model: GameModel,
+) -> Result<PersistedGame, Box<dyn std::error::Error>> {
+    use stellarion::core::patrols::{valid_patrol_target, PatrolPhase};
+    model.rules.space_fauna_percent = 0;
+    let point = (1..20)
+        .flat_map(|x| (1..20).map(move |y| (x, y)))
+        .map(|(x, y)| {
+            model.map.rect.min
+                + model.map.rect.size() * bevy::math::Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
+        })
+        .find(|point| valid_patrol_target(&model.map, model.players[0].home_planet, *point, None))
+        .ok_or("no friendly patrol center")?;
+    for owner in [1, 2] {
+        model.player_mut(owner)?.resources.deuterium = 100_000;
+        let mut mission = Mission::new_patrol(
+            9910 + owner,
+            model.turn as usize,
+            owner,
+            model.map.get(model.player(owner)?.home_planet),
+            point,
+            Army::from([(Unit::Ship(Ship::Cruiser), 10)]),
+            None,
+        );
+        mission.position = point;
+        mission.travel_turns = 1;
+        let patrol = mission.patrol.as_mut().ok_or("missing patrol")?;
+        patrol.phase = PatrolPhase::OnStation;
+        patrol.friendly_players.insert(3 - owner);
+        model.missions.push(mission);
+    }
+    for _ in 0..8 {
+        let turn = model.turn;
+        resolve_turn(
+            &mut model,
+            &[TurnSubmission::new(1, turn, vec![]), TurnSubmission::new(2, turn, vec![])],
+        )?;
+        if model
+            .players
+            .iter()
+            .all(|player| player.reports.iter().any(|report| report.is_patrol_contact()))
+        {
+            model.validate()?;
+            return Ok(PersistedGame::new(model));
+        }
+    }
+    Err("friendly patrol fixture did not detect its contacts".into())
 }

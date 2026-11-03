@@ -111,6 +111,18 @@ pub struct MissionReport {
 }
 
 impl MissionReport {
+    /// A friendly patrol detection records both fleets without resolving a battle.
+    pub fn is_patrol_contact(&self) -> bool {
+        self.mission.objective == Icon::Patrol
+            && self.combat_report.is_none()
+            && self.destination_controlled.is_some_and(|owner| {
+                self.mission
+                    .patrol
+                    .as_ref()
+                    .is_some_and(|patrol| patrol.friendly_players.contains(&owner))
+            })
+    }
+
     #[cfg(feature = "app")]
     /// Resource gains presented over the surviving raider or defending Crawler.
     pub(crate) fn conclusion_resources(&self) -> Option<(Side, Resources)> {
@@ -230,7 +242,8 @@ impl MissionReport {
 
     /// Space encounters have no real destination planet and must not reveal planetary data.
     pub fn is_space_encounter(&self) -> bool {
-        self.is_space_fauna_encounter() || self.mission.objective == Icon::Patrol
+        self.is_space_fauna_encounter()
+            || matches!(self.mission.objective, Icon::Patrol | Icon::Intercept)
     }
 
     /// Returns the encounter formation's generated title.
@@ -427,8 +440,16 @@ impl MissionReport {
         destroyed_cost.scaled_percent(percent)
     }
 
+    /// A committed ambush found no eligible fleet at its rendezvous.
+    pub fn is_missed_interception(&self) -> bool {
+        self.mission.objective == Icon::Intercept && self.combat_report.is_none()
+    }
+
     /// Returns the winning combat side when the report is decisive.
     pub fn winner(&self) -> Option<PlayerId> {
+        if self.is_patrol_contact() || self.is_missed_interception() {
+            return None;
+        }
         if self.is_space_fauna_encounter() {
             let attacker_survives = self.surviving_attacker.has_army();
             let fauna_survives = self.surviving_defender.has_army();
@@ -471,11 +492,17 @@ impl MissionReport {
 
     /// Both combat armies remain after the bounded round limit; neither side conquered the world.
     pub fn is_stalemate(&self) -> bool {
-        (self.is_space_fauna_encounter()
-            || matches!(
-                self.mission.objective,
-                Icon::Attack | Icon::Raid | Icon::Patrol | Icon::Colonize | Icon::Destroy
-            ))
+        !self.is_patrol_contact()
+            && (self.is_space_fauna_encounter()
+                || matches!(
+                    self.mission.objective,
+                    Icon::Attack
+                        | Icon::Raid
+                        | Icon::Patrol
+                        | Icon::Intercept
+                        | Icon::Colonize
+                        | Icon::Destroy
+                ))
             && self.surviving_attacker.iter().any(|(unit, count)| {
                 *unit != Unit::colony_ship()
                     && *count
@@ -495,6 +522,9 @@ impl MissionReport {
 
     /// Returns the user-facing status of this combat side.
     pub fn status(&self, player: &Player) -> &'static str {
+        if self.is_patrol_contact() {
+            return "contact";
+        }
         let neutral_defeat = (self.is_space_fauna_encounter()
             && !self.surviving_attacker.has_army())
             || (self.is_independent_population_encounter()
@@ -513,6 +543,12 @@ impl MissionReport {
 
     /// Returns the runtime image key for this value.
     pub fn image(&self, player: &Player) -> &'static str {
+        if self.is_missed_interception() {
+            return "intercept";
+        }
+        if self.is_patrol_contact() {
+            return "protect";
+        }
         match self.mission.objective {
             Icon::MissileStrike => "missile",
             Icon::Spy if self.scout_probes > 0 => "eye",
@@ -521,8 +557,16 @@ impl MissionReport {
         }
     }
 
-    /// Returns whether the current state can see.
+    /// Returns whether this player has full intelligence about a combat side.
     pub fn can_see(&self, side: &Side, player_id: PlayerId) -> bool {
+        // An intercepted fleet needs survivors to bring back intelligence about its attackers.
+        if *side == Side::Attacker
+            && matches!(self.mission.objective, Icon::Patrol | Icon::Intercept)
+            && self.is_defender(player_id)
+            && !self.surviving_defender.has_army()
+        {
+            return false;
+        }
         match side {
             Side::Attacker => {
                 self.is_attacker(player_id)
@@ -534,7 +578,9 @@ impl MissionReport {
                 if self.is_space_fauna_encounter() {
                     self.is_attacker(player_id)
                 } else {
-                    self.is_defender(player_id) || self.won_by(player_id)
+                    self.is_defender(player_id)
+                        || self.won_by(player_id)
+                        || (self.is_patrol_contact() && self.is_attacker(player_id))
                 }
             },
         }

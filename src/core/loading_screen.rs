@@ -10,8 +10,17 @@ use crate::core::basis_texture::BasisTextureSettings;
 use crate::core::states::AppState;
 use crate::multiplayer::client::{ConnectionStatus, MultiplayerRequest, MultiplayerSession};
 
-const BACKGROUNDS: [&str; 7] =
-    ["orbit", "station", "fleet", "expedition", "nebula", "outpost", "rift"];
+const BACKGROUNDS: [&str; 9] = [
+    "orbit",
+    "station",
+    "fleet",
+    "expedition",
+    "outpost",
+    "armada",
+    "battleship",
+    "asteroids",
+    "gate",
+];
 const SLIDE_HOLD: f32 = 2.4;
 const CROSSFADE: f32 = 0.8;
 const MIN_DISPLAY: f32 = 1.2;

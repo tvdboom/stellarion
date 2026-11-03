@@ -71,6 +71,7 @@ use crate::core::turns::{
     clear_end_game_presentation, end_game_presentation_inactive, finish_end_game_presentation,
     EndGamePresentation,
 };
+use crate::core::ui::location_marker::{draw_location_marker, FleetMarkerRing};
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style};
 use crate::core::ui::utils::ImageIds;
 use crate::core::utils::despawn;
@@ -123,6 +124,7 @@ impl Plugin for GamePlugin {
             .add_plugins(MultiplayerClientPlugin)
             .add_plugins(ColonizationPlugin)
             .add_plugins(BattleAftermathPlugin)
+            .add_plugins(crate::core::map::interception::InterceptionAnimationPlugin)
             .add_plugins(OrbitalRailgunAnimationPlugin)
             .add_plugins(MissionDetectionPlugin)
             .add_plugins(MapDetailsPlugin)
@@ -153,6 +155,13 @@ impl Plugin for GamePlugin {
             .configure_sets(
                 Last,
                 InPlayingGameSet.run_if(in_state(GameState::Playing)).in_set(InGameSet),
+            )
+            // World-anchored UI must project the camera pose and zoom used by this frame's render.
+            .configure_sets(
+                PostUpdate,
+                EguiPostUpdateSet::EndPass
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems),
             )
             // Camera
             .add_systems(Startup, setup_camera)
@@ -233,6 +242,21 @@ impl Plugin for GamePlugin {
                 EguiPrimaryContextPass,
                 (draw_ui, draw_game_overlay).chain().in_set(InGameSet),
             )
+            .add_systems(
+                EguiPrimaryContextPass,
+                draw_location_marker
+                    .after(draw_ui)
+                    .run_if(end_game_presentation_inactive)
+                    .run_if(in_state(GameState::Playing))
+                    .in_set(InGameSet),
+            )
+            .add_systems(OnExit(GameState::Playing), despawn::<FleetMarkerRing>)
+            .add_systems(
+                Update,
+                despawn::<FleetMarkerRing>
+                    .run_if(not(end_game_presentation_inactive))
+                    .in_set(InGameSet),
+            )
             // Deferred loading
             .add_systems(OnEnter(AppState::Boot), begin_loading_screen)
             .add_systems(OnEnter(AppState::LoadingGame), begin_loading_screen)
@@ -274,7 +298,7 @@ impl Plugin for GamePlugin {
                         .in_set(InGameSet),
                 ),
             )
-            .add_systems(PostUpdate, on_resize_system)
+            .add_systems(PostUpdate, on_resize_system.after(bevy::camera::CameraUpdateSystems))
             // In-game states
             .add_systems(OnEnter(AppState::Game), draw_map)
             .add_systems(OnEnter(GameState::Playing), resume_gameplay_interactions)

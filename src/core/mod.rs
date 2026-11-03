@@ -14,6 +14,7 @@ pub mod combat;
 pub mod constants;
 pub mod energy;
 pub mod identity;
+pub mod interception;
 #[cfg(feature = "app")]
 mod loading;
 #[cfg(feature = "app")]

@@ -135,3 +135,51 @@ fn phalanx_keeps_recalled_enemy_fleets_in_the_visible_mission_projection() {
     mission.position = map.get(mission.destination).position;
     assert!(filter_missions(&[mission], &map, &player).is_empty());
 }
+
+#[cfg(feature = "app")]
+#[test]
+fn radar_reveals_patrol_objectives_during_outbound_flight_and_on_station() {
+    use crate::core::patrols::PatrolPhase;
+    use crate::core::turns::filter_missions;
+
+    let (mut map, player, enemy) = scanned_mission();
+    let position = enemy.position;
+    let center = position + Vec2::X * Planet::SIZE;
+    let mut moon = Planet::new(2, "Radar".into(), position, true, 1.0);
+    moon.owned = Some(player.id);
+    moon.controlled = Some(player.id);
+    moon.army.insert(Unit::Building(Building::OrbitalRadar), 1);
+    map.planets.push(moon);
+    let mut mission = Mission::new_patrol(
+        enemy.id,
+        1,
+        enemy.owner,
+        map.get(enemy.origin),
+        center,
+        enemy.army,
+        None,
+    );
+    mission.position = position;
+
+    for (phase, expected) in [
+        (PatrolPhase::Outbound, Icon::Patrol),
+        (PatrolPhase::OnStation, Icon::Patrol),
+        (PatrolPhase::Returning, Icon::EnemyFleet),
+    ] {
+        mission.patrol.as_mut().unwrap().phase = phase;
+        if phase == PatrolPhase::OnStation {
+            mission.position = center;
+        }
+        if phase == PatrolPhase::Returning {
+            mission.return_patrol(&map, 2);
+        }
+        assert_eq!(mission.is_seen_by_phalanx(&map, &player), None);
+        assert_eq!(mission.is_seen_by_radar(&map, &player), Some(1));
+        let visible = filter_missions(std::slice::from_ref(&mission), &map, &player);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].displayed_objective(player.id), expected);
+    }
+
+    mission.position = map.get(enemy.origin).position;
+    assert!(filter_missions(&[mission], &map, &player).is_empty());
+}

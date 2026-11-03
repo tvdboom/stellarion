@@ -41,7 +41,9 @@ use crate::core::missions::{
     BombingRaid, JointAttackMission, JointMissionLaunch, Mission, MissionId, Missions,
     RecallMissionMsg, RecallProtectionMsg, SendMissionMsg,
 };
-use crate::core::orders::{purchase_limit, validate_mission};
+use crate::core::orders::purchase_limit;
+#[cfg(test)]
+use crate::core::orders::validate_mission;
 use crate::core::player::{PlanetInfo, Player};
 use crate::core::recycling::{debris_sites, recycler_sources};
 use crate::core::resources::{ResourceName, Resources};
@@ -55,6 +57,7 @@ use crate::core::states::GameState;
 use crate::core::trading::{visible_trading_post_owner, ResourceLoanTerm};
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
+use crate::core::ui::location_marker::LocationMarker;
 use crate::core::ui::utils::{toggle, CustomResponse, CustomUi, ImageIds};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
@@ -77,6 +80,7 @@ use battle_plan::{can_edit_garrison_plan, draw_garrison_plan_modal};
 
 mod missions;
 mod patrols;
+mod player_access;
 use missions::{
     draw_joint_attack_notifications, draw_mission, mission_arrival_tooltip, mission_arrival_turn,
     mission_movement_tooltip,
@@ -154,8 +158,12 @@ pub struct UiState {
     pub(crate) abandon_confirmation: Option<PlanetId>,
     /// Controlled planet awaiting confirmation before colonization is added to the turn draft.
     pub(crate) colonize_confirmation: Option<PlanetId>,
-    /// Controlled world whose immediate protection-access modal is open.
-    pub(crate) protection_access: Option<PlanetId>,
+    /// World kept visible while its adjacent protection selector is hovered.
+    pub(crate) protection_access_hover: Option<PlanetId>,
+    /// Immediate permission edits collected from the world hover selector.
+    pub(crate) protection_permission_changes: Vec<(PlanetId, PlayerId, bool)>,
+    /// Per-patrol friendship edits queued as ordinary deterministic turn orders.
+    pub(crate) patrol_friendly_changes: Vec<(MissionId, PlayerId, bool)>,
     /// World whose local commander's standing battle-plan controls are open.
     pub(crate) battle_plan_planet: Option<PlanetId>,
     /// Origin whose standing orders have initialized the current solo mission draft.
@@ -185,8 +193,10 @@ pub struct UiState {
     pub(crate) resource_hub_term: ResourceLoanTerm,
     /// Camera-only world focus used by shortcuts that must not open a world panel.
     pub focus_planet: Option<PlanetId>,
-    /// Camera-only coordinate focus used by encounter notifications and report links.
+    /// Coordinate focus retained as a camera-boundary anchor until manual input or world selection.
     pub(crate) focus_position: Option<Vec2>,
+    /// Fading echoes at the last space location opened from a mission or report.
+    pub(crate) location_marker: Option<LocationMarker>,
     /// Optional orthographic scale approached while moving to a camera-only world focus.
     pub(crate) focus_zoom: Option<f32>,
     pub to_selected: bool,
@@ -198,6 +208,12 @@ pub struct UiState {
     pub mission: bool,
     pub mission_tab: MissionTab,
     pub mission_info: Mission,
+    /// Contact selected for a targeted interception draft.
+    pub(crate) intercept_target: Option<MissionId>,
+    /// Ordinary planet destination restored when leaving a moving-target draft.
+    pub(crate) intercept_previous_destination: Option<PlanetId>,
+    /// The next enemy fleet click chooses an interception contact.
+    pub(crate) selecting_intercept: bool,
     /// The next empty-space map click selects a patrol center instead of closing its draft.
     pub(crate) selecting_patrol_zone: bool,
     /// Selected patrol center, retained while the launch panel is temporarily hidden.
@@ -332,9 +348,6 @@ const MODAL_ICON_RIGHT_INSET: f32 = 18.0;
 const MODAL_HEADER_HEIGHT: f32 = 54.0;
 const MODAL_BUTTON_HEIGHT: f32 = 40.0;
 const RAILGUN_CONFIRMATION_HEIGHT: f32 = 300.0;
-const PROTECTION_PLAYER_ROW_WIDTH_FRACTION: f32 = 0.44;
-const PROTECTION_PLAYER_ROW_MIN_WIDTH: f32 = 176.0;
-const PROTECTION_PLAYER_ROW_MAX_WIDTH: f32 = 240.0;
 const PLANET_ACTION_ICON_IDLE_TINT: Color32 = Color32::from_gray(205);
 const PLANET_ACTION_ICON_HOVER_TINT: Color32 = Color32::from_gray(245);
 const PLANET_ACTION_ICON_PRESSED_TINT: Color32 = Color32::from_gray(165);
@@ -1167,50 +1180,6 @@ fn draw_colonize_confirmation(
     draw_planet_confirmation(context, images, planet_name, "colonize", "colonize")
 }
 
-/// Explains protection access and lists every current player allowed to use it.
-fn draw_protection_access_tooltip(ui: &mut Ui, planet: &Planet, session: &MultiplayerSession) {
-    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-    ui.small("Manage protection access. Revoking access sends protection fleets home.");
-
-    let local_player = session.membership.as_ref().map(|member| member.player_id);
-    let allowed_players = session
-        .active_game
-        .as_ref()
-        .map(|game| {
-            game.members
-                .iter()
-                .filter(|member| {
-                    Some(member.player_id) != local_player
-                        && planet.protection_permissions.contains(&member.player_id)
-                        && game
-                            .persisted
-                            .state
-                            .player(member.player_id)
-                            .is_ok_and(|player| !player.spectator)
-                })
-                .collect_vec()
-        })
-        .unwrap_or_default();
-
-    if allowed_players.is_empty() {
-        return;
-    }
-
-    ui.add_space(5.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.small(RichText::new("Players currently allowed:").strong());
-        ui.add_space(4.0);
-        for (index, member) in allowed_players.into_iter().enumerate() {
-            if index > 0 {
-                ui.small(", ");
-            }
-            let color = session.player_color(member.player_id).color().to_color32();
-            ui.label(RichText::new(&member.display_name).small().color(color));
-        }
-    });
-}
-
 /// Draws a compact player choice shared by protection and attack invitation pickers.
 fn modal_player_row(
     ui: &mut Ui,
@@ -1309,140 +1278,6 @@ fn modal_player_row(
         },
     );
     response
-}
-
-/// Draws the immediate, per-player protection-access controls for one world.
-fn draw_protection_access_modal(
-    context: &egui::Context,
-    images: &ImageIds,
-    planet: &Planet,
-    session: &MultiplayerSession,
-) -> (bool, Vec<(crate::core::identity::PlayerId, bool)>) {
-    let local_player = session.membership.as_ref().map(|member| member.player_id);
-    let members = session
-        .active_game
-        .as_ref()
-        .map(|game| {
-            game.members
-                .iter()
-                .filter(|member| {
-                    Some(member.player_id) != local_player
-                        && game
-                            .persisted
-                            .state
-                            .player(member.player_id)
-                            .is_ok_and(|player| !player.spectator)
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let content_rect = context.content_rect();
-    let available =
-        content_rect.size() / game_panel_scale(content_rect.size()) - egui::vec2(32.0, 32.0);
-    let desired_height = 242.0 + members.len() as f32 * 46.0;
-    let size = egui::vec2(560.0_f32.min(available.x), desired_height.min(available.y));
-    let modal_id = egui::Id::new(("protection access", planet.id));
-    let response = show_panel_modal(context, images, modal_id, size, |ui, rect, content| {
-        let mut changes = Vec::new();
-        let mut close = false;
-        let header = draw_modal_header(
-            ui,
-            rect,
-            content,
-            RichText::new("Protection Access")
-                .size(21.0)
-                .strong()
-                .color(ABANDON_CONFIRMATION_TEXT_COLOR),
-            images.get("protect"),
-        );
-        let footer = egui::Rect::from_min_size(
-            egui::pos2(content.left(), content.bottom() - MODAL_BUTTON_HEIGHT),
-            egui::vec2(content.width(), MODAL_BUTTON_HEIGHT),
-        );
-        let intro = egui::Rect::from_min_max(
-            egui::pos2(content.left(), header.bottom() + 12.0),
-            egui::pos2(content.right(), (header.bottom() + 52.0).min(footer.top())),
-        );
-        ui.scope_builder(UiBuilder::new().max_rect(intro), |ui| {
-            ui.set_clip_rect(intro);
-            ui.vertical_centered(|ui| {
-                ui.small(format!(
-                    "Choose who may send fleets to {}. Changes apply immediately.",
-                    planet.name
-                ));
-            });
-        });
-
-        let list_top = (intro.bottom() + 20.0).min(footer.top());
-        let list_bottom = (footer.top() - 12.0).max(list_top);
-        let list = egui::Rect::from_min_max(
-            egui::pos2(content.left(), list_top),
-            egui::pos2(content.right(), list_bottom),
-        );
-        ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
-            ui.set_clip_rect(list);
-            egui::ScrollArea::vertical()
-                .id_salt(("protection access players", planet.id))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_width(list.width());
-                    ui.spacing_mut().item_spacing.y = 7.0;
-                    for member in &members {
-                        let allowed = planet.protection_permissions.contains(&member.player_id);
-                        let available_width = ui.available_width();
-                        let row_width = (available_width * PROTECTION_PLAYER_ROW_WIDTH_FRACTION)
-                            .clamp(PROTECTION_PLAYER_ROW_MIN_WIDTH, PROTECTION_PLAYER_ROW_MAX_WIDTH)
-                            .min(available_width);
-                        let response = ui
-                            .horizontal(|ui| {
-                                ui.add_space(((ui.available_width() - row_width) * 0.5).max(0.0));
-                                modal_player_row(
-                                    ui,
-                                    row_width,
-                                    42.0,
-                                    &member.display_name,
-                                    session.player_color(member.player_id).color().to_color32(),
-                                    allowed,
-                                    !session.protection_update_pending,
-                                )
-                            })
-                            .inner;
-                        if response.clicked() {
-                            changes.push((member.player_id, !allowed));
-                        }
-                    }
-                });
-        });
-
-        ui.scope(|ui| {
-            style_modal_buttons(ui);
-            let width = 110.0_f32.min(footer.width());
-            let button_rect = egui::Rect::from_center_size(
-                footer.center(),
-                egui::vec2(width, MODAL_BUTTON_HEIGHT),
-            );
-            if ui
-                .put(
-                    button_rect,
-                    egui::Button::new(
-                        RichText::new("Close")
-                            .size(17.0)
-                            .strong()
-                            .color(ABANDON_CONFIRMATION_TEXT_COLOR),
-                    ),
-                )
-                .on_hover_cursor(CursorIcon::PointingHand)
-                .clicked()
-            {
-                close = true;
-            }
-        });
-        (close, changes)
-    });
-    let should_close = response.should_close();
-    let (mut close, changes) = response.inner;
-    close |= should_close;
-    (close, changes)
 }
 
 /// Draws the input-blocking confirmation for a synchronized Railgun strike.
@@ -3833,18 +3668,34 @@ fn draw_planet_overview(
             .interact(
                 action_rect,
                 ui.id().with(("protection access action", planet.id)),
-                Sense::click(),
+                Sense::hover(),
             )
-            .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_ui(|ui| draw_protection_access_tooltip(ui, planet, session));
+            .on_hover_cursor(CursorIcon::Default);
         ui.add_tinted_image_painter(
             images.get("protect"),
             action_rect,
             planet_action_icon_tint(&response),
         );
-        if response.clicked() {
+        let (open, changes) = player_access::draw_player_access_picker(
+            &response,
+            "Manage protection access",
+            "",
+            session,
+            player.id,
+            &planet.protection_permissions,
+            !session.protection_update_pending,
+        );
+        if open {
+            state.protection_access_hover = Some(planet.id);
+        }
+        for (protector, allowed) in changes {
+            if allowed {
+                planet.protection_permissions.insert(protector);
+            } else {
+                planet.protection_permissions.remove(&protector);
+            }
+            state.protection_permission_changes.push((planet.id, protector, allowed));
             set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
-            state.protection_access = Some(planet.id);
         }
     }
 
@@ -4683,7 +4534,7 @@ fn mission_report_destination_name<'a>(report: &MissionReport, destination: &'a 
 
 /// Hidden Spy and Missile Strike reports do not disclose the sender or departure world.
 fn mission_report_sender_is_known(report: &MissionReport, viewer: PlayerId) -> bool {
-    report.mission.owner == viewer || !report.mission.objective.is_hidden()
+    report.mission.owner == viewer || !report.mission.conceals_origin()
 }
 
 fn add_combat_report_destination_image(
@@ -4706,18 +4557,14 @@ fn add_combat_report_destination_image(
         .corner_radius(encounter_image_corner_radius(report, size)),
     );
     if report.is_space_encounter() {
-        handle_space_encounter_link(response, report, state)
+        handle_space_location_link(response, report.planet.position, state)
     } else {
         response
     }
 }
 
-/// A report's virtual planet records the battle site even after its fleet moves or disappears.
-fn handle_space_encounter_link(
-    response: Response,
-    report: &MissionReport,
-    state: &mut UiState,
-) -> Response {
+/// Leaves mission overlays and centers the map on a space destination or recorded battle site.
+fn handle_space_location_link(response: Response, position: Vec2, state: &mut UiState) -> Response {
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
     if response.clicked() {
         set_ui_sound(&response.ctx, Some(SoundEffect::Button));
@@ -4727,7 +4574,8 @@ fn handle_space_encounter_link(
         state.mission_hover = None;
         state.mission_hover_from_ui = false;
         state.focus_planet = None;
-        state.focus_position = Some(report.planet.position);
+        state.focus_position = Some(position);
+        state.location_marker = Some(LocationMarker::new(position));
         state.focus_zoom = None;
         state.to_selected = true;
         state.mission = false;
@@ -5365,13 +5213,24 @@ fn draw_mission_info_hover(
         ui.small("Origin:");
 
         ui.spacing_mut().item_spacing.x = 4.;
-        ui.add_image(images.get(origin.image()), [25.; 2]);
-        ui.small(origin.name.to_name());
+        if mission.owner != player.id && mission.conceals_origin() {
+            ui.add_image(images.get("unknown"), [25.; 2]);
+            ui.small("Unknown");
+        } else {
+            ui.add_image(images.get(origin.image()), [25.; 2]);
+            ui.small(origin.name.to_name());
+        }
     });
 
     ui.horizontal(|ui| {
         ui.add_space(25.);
-        if let Some(patrol) = mission
+        if mission.intercept.is_some()
+            && (mission.objective == Icon::Intercept || mission.owner != player.id)
+        {
+            ui.small("Destination:");
+            ui.add_image(images.get("deep space"), [25.; 2]);
+            ui.small("Deep space");
+        } else if let Some(patrol) = mission
             .patrol
             .as_ref()
             .filter(|patrol| patrol.phase != crate::core::patrols::PatrolPhase::Returning)
@@ -5417,26 +5276,29 @@ fn draw_mission_info_hover(
     ui.horizontal(|ui| {
         ui.add_space(25.);
         ui.vertical(|ui| {
-            ui.small(format!("📏 Distance: {:.1} AU", mission.distance(map)));
+            if mission.is_patrolling() {
+                ui.small("📏 Distance: ---");
+                ui.small("🚀 Movement: ---");
+                ui.small("⏱ Duration: ∞");
+            } else {
+                ui.small(format!("📏 Distance: {:.1} AU", mission.distance(map)));
 
-            ui.small(format!("🚀 Movement: {:.2} AU", mission.next_turn_movement(map)))
-                .on_hover_small(mission_movement_tooltip(mission.jump_gate));
+                ui.small(format!("🚀 Movement: {:.2} AU", mission.next_turn_movement(map)))
+                    .on_hover_small(mission_movement_tooltip(mission.jump_gate));
 
-            if mission.is_patrolling() && mission.owner == player.id {
-                return;
+                let duration = mission.duration(map);
+                ui.small(format!(
+                    "⏱ Duration: +{} turn{} ({})",
+                    duration,
+                    if duration == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    mission_arrival_turn(settings.turn, duration)
+                ))
+                .on_hover_small(mission_arrival_tooltip(settings.turn, duration));
             }
-            let duration = mission.duration(map);
-            ui.small(format!(
-                "⏱ Duration: +{} turn{} ({})",
-                duration,
-                if duration == 1 {
-                    ""
-                } else {
-                    "s"
-                },
-                mission_arrival_turn(settings.turn, duration)
-            ))
-            .on_hover_small(mission_arrival_tooltip(settings.turn, duration));
         });
     });
 
@@ -5674,6 +5536,7 @@ fn combat_selection_reports(player: &Player, turn: usize) -> Vec<&MissionReport>
             report.turn == turn
                 && !report.hidden
                 && report.has_combat_playback()
+                && report.can_see(&Side::Attacker, player.id)
                 && report.can_see(&Side::Defender, player.id)
         })
         .collect()
@@ -5971,6 +5834,11 @@ pub fn draw_ui(
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
+            missions::interception::draw_selection_toast(
+                context,
+                &mut state,
+                keyboard.just_pressed(KeyCode::Escape),
+            );
             patrols::draw_selection_toast(
                 context,
                 &mut state,
@@ -6042,7 +5910,8 @@ pub fn draw_ui(
     // panel remains briefly after PointerOut so the pointer can reach it, then stays visible for as
     // long as any of its constituent panels are hovered.
     let direct_planet_panel = state
-        .garrison_battle_plan_hover
+        .protection_access_hover
+        .or(state.garrison_battle_plan_hover)
         .and_then(|id| planet_panel_hover_hold.target.filter(|target| target.id == id))
         .or_else(|| planet_hover_panel_target(&state, cursor_position.map(|pos| pos.x), width));
     let planet_panel = if state.mission_hover.is_some() {
@@ -6065,6 +5934,7 @@ pub fn draw_ui(
     }
 
     let planet_panel = planet_panel_slide.update(planet_panel, delta_seconds);
+    state.protection_access_hover = None;
 
     if let Some((target, slide_progress)) = planet_panel {
         let PlanetPanelSlideTarget {
@@ -6422,6 +6292,30 @@ pub fn draw_ui(
         }
     }
 
+    for (mission_id, friendly_player, friendly) in
+        std::mem::take(&mut state.patrol_friendly_changes)
+    {
+        if let Some(mission) = missions.0.iter_mut().find(|mission| {
+            mission.id == mission_id && mission.owner == player.id && !mission.is_returning()
+        }) {
+            if let Some(patrol) = mission.patrol.as_mut() {
+                if !player.spectator
+                    && pending.push(TurnCommand::SetPatrolFriendly {
+                        mission_id,
+                        player_id: friendly_player,
+                        friendly,
+                    })
+                {
+                    if friendly {
+                        patrol.friendly_players.insert(friendly_player);
+                    } else {
+                        patrol.friendly_players.remove(&friendly_player);
+                    }
+                }
+            }
+        }
+    }
+
     for (planet_id, battle_plan) in std::mem::take(&mut state.garrison_battle_plan_changes) {
         if let Some(planet) = map.try_get_mut(planet_id) {
             if can_edit_garrison_plan(planet, &player)
@@ -6527,37 +6421,13 @@ pub fn draw_ui(
         }
     }
 
-    if let Some(id) = state.protection_access {
-        let protection_enabled = session.active_game.as_ref().is_some_and(|game| {
-            game.persisted.state.players.iter().filter(|player| !player.spectator).count() >= 3
+    for (planet_id, protector, allowed) in std::mem::take(&mut state.protection_permission_changes)
+    {
+        multiplayer_requests.write(MultiplayerRequest::SetProtectionPermission {
+            planet_id,
+            protector,
+            allowed,
         });
-        let valid = protection_enabled
-            && map
-                .try_get(id)
-                .is_some_and(|planet| !planet.is_destroyed && player.controls(planet));
-        if !valid {
-            state.protection_access = None;
-        } else if let Ok(context) = contexts.ctx_mut() {
-            let (close, changes) =
-                draw_protection_access_modal(context, &images, map.get(id), &session);
-            if close {
-                state.protection_access = None;
-            }
-            for (protector, allowed) in changes {
-                let planet = map.get_mut(id);
-                if allowed {
-                    planet.protection_permissions.insert(protector);
-                } else {
-                    planet.protection_permissions.remove(&protector);
-                }
-                multiplayer_requests.write(MultiplayerRequest::SetProtectionPermission {
-                    planet_id: id,
-                    protector,
-                    allowed,
-                });
-                set_ui_sound(context, Some(SoundEffect::Button));
-            }
-        }
     }
 
     if let Some(target) = state.railgun_confirmation {

@@ -83,7 +83,14 @@ pub(crate) fn end_game_presentation_inactive(presentation: Res<EndGamePresentati
 pub(crate) fn finish_end_game_presentation(
     presentation: Res<EndGamePresentation>,
     orbital_strikes: Query<(), With<OrbitalStrikeEffect>>,
-    battle_aftermath: Query<(), Or<(With<BattleEffect>, With<FaunaEffect>)>>,
+    battle_aftermath: Query<
+        (),
+        Or<(
+            With<BattleEffect>,
+            With<FaunaEffect>,
+            With<crate::core::map::interception::InterceptEffect>,
+        )>,
+    >,
     planet_destructions: Query<(), With<ExplosionCmp>>,
     mut next_game_state: ResMut<NextState<GameState>>,
 ) {
@@ -184,7 +191,17 @@ fn report_notification(
     origin: &Planet,
     destination: &Planet,
 ) -> MessageMsg {
-    if report.mission.objective == Icon::Patrol && !report.is_space_fauna_encounter() {
+    if report.is_missed_interception() {
+        return MessageMsg::info("Interception missed: no contact. Fleet returning.")
+            .with_action(MessageAction::OpenMissionReport(report.id));
+    }
+    if report.is_patrol_contact() {
+        return MessageMsg::info("Your patrol detected a friendly fleet. No combat.")
+            .with_action(MessageAction::OpenMissionReport(report.id));
+    }
+    if matches!(report.mission.objective, Icon::Patrol | Icon::Intercept)
+        && !report.is_space_fauna_encounter()
+    {
         let notification = if report.is_stalemate() {
             MessageMsg::warning("Deep-space interception ended in a draw.")
         } else if report.won_by(player.id) {
@@ -206,6 +223,9 @@ fn report_notification(
     }
     let local_victory = report.won_by(player.id);
     let notification = match report.mission.objective {
+        Icon::Deploy if report.mission.return_objective == Some(Icon::Intercept) => {
+            MessageMsg::info(format!("Interception fleet returned to planet {}.", destination.name))
+        },
         Icon::Deploy if report.mission.return_objective == Some(Icon::Patrol) => {
             MessageMsg::info(format!("Patrol returned to planet {}.", destination.name))
         },

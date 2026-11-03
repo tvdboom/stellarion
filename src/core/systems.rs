@@ -128,7 +128,6 @@ pub fn check_keys_menu(
                             if state.abandon_confirmation.is_some()
                                 || state.colonize_confirmation.is_some()
                                 || state.railgun_confirmation.is_some()
-                                || state.protection_access.is_some()
                                 || state.battle_plan_planet.is_some()
                                 || state.trade_open.is_some()
                                 || state.trading_post_open.is_some()
@@ -138,7 +137,6 @@ pub fn check_keys_menu(
                                 state.abandon_confirmation = None;
                                 state.colonize_confirmation = None;
                                 state.railgun_confirmation = None;
-                                state.protection_access = None;
                                 state.battle_plan_planet = None;
                                 state.trade_open = None;
                                 state.trading_post_open = None;

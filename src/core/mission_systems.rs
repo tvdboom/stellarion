@@ -339,27 +339,36 @@ pub fn update_missions(
                           map: Res<Map>,
                           player: Res<Player>,
                           settings: Res<Settings>| {
-                        if event.button == PointerButton::Primary {
+                        let Some(mission) = missions.get(id) else {
+                            return;
+                        };
+                        if state.selecting_intercept && mission.owner == player.id {
+                            return;
+                        }
+                        if (event.button == PointerButton::Secondary || state.selecting_intercept)
+                            && mission.owner != player.id
+                        {
+                            state.choose_intercept_target(&map, &player, settings.turn, mission);
+                        } else if event.button == PointerButton::Secondary {
+                            state.choose_patrol_reinforcement(
+                                &map,
+                                &player,
+                                settings.turn,
+                                mission,
+                            );
+                        } else if event.button == PointerButton::Primary {
                             if state.selecting_patrol_zone {
-                                if let Some(patrol) = missions
-                                    .get(id)
-                                    .filter(|mission| {
-                                        mission.owner == player_id && !mission.is_returning()
-                                    })
-                                    .and_then(|mission| mission.patrol.as_ref())
-                                {
-                                    state.choose_patrol_zone(
-                                        &map,
-                                        &player,
-                                        settings.turn,
-                                        patrol.center,
-                                    );
-                                }
+                                state.choose_patrol_reinforcement(
+                                    &map,
+                                    &player,
+                                    settings.turn,
+                                    mission,
+                                );
                                 return;
                             }
                             state.mission = true;
                             state.planet_selected = None;
-                            state.mission_tab = if owner == player_id {
+                            state.mission_tab = if mission.commanded_army(player.id).is_some() {
                                 MissionTab::ActiveMissions
                             } else {
                                 MissionTab::EnemyMissions
@@ -549,7 +558,7 @@ pub fn update_mission_route_arrow(
     {
         let origin = map.get(mission.origin);
         let destination = map.get(mission.destination);
-        if mission.is_patrolling() {
+        if mission.is_patrolling() || (mission.intercept.is_some() && mission.owner != player.id) {
             continue;
         }
         let animation_speed = mission.route_animation_speed(&map);
@@ -567,7 +576,9 @@ pub fn update_mission_route_arrow(
                     mission.position,
                     mission.target_position(&map),
                     38.0,
-                    if mission.patrol.is_some() && !mission.is_returning() {
+                    if (mission.patrol.is_some() || mission.intercept.is_some())
+                        && !mission.is_returning()
+                    {
                         0.0
                     } else {
                         destination.size() * 0.7
@@ -710,8 +721,15 @@ pub fn send_mission(
         });
         let valid = !reserved_conflict
             && worlds.is_some_and(|(origin, destination)| {
-                crate::core::orders::validate_mission(&player, &map, origin, destination, mission)
-                    .is_ok()
+                crate::core::orders::validate_mission_with_patrols(
+                    &player,
+                    &map,
+                    origin,
+                    destination,
+                    mission,
+                    &missions.0,
+                )
+                .is_ok()
             });
         if !valid
             || !pending.can_accept_commands()
@@ -738,6 +756,14 @@ pub fn send_mission(
                 bombing: mission.bombing.clone(),
                 combat_probes: mission.combat_probes,
                 contributions: joint_attack.contributions.clone(),
+            }
+        } else if let Some(intercept) = &mission.intercept {
+            TurnCommand::SendIntercept {
+                mission_id: mission.id,
+                origin: mission.origin,
+                target: intercept.target,
+                army,
+                battle_plan: mission.battle_plan,
             }
         } else if let Some(patrol) = &mission.patrol {
             TurnCommand::SendPatrol {
@@ -910,7 +936,7 @@ pub fn recall_mission(
                 TurnCommand::SendMission {
                     mission_id: sent_id,
                     ..
-                } | TurnCommand::SendPatrol {
+                } | TurnCommand::SendIntercept { mission_id: sent_id, .. } | TurnCommand::SendPatrol {
                     mission_id: sent_id,
                     ..
                 } if sent_id == mission_id
@@ -931,7 +957,9 @@ pub fn recall_mission(
                     command,
                     TurnCommand::SendMission { mission_id: id, .. }
                         | TurnCommand::SendPatrol { mission_id: id, .. }
+                        | TurnCommand::SendIntercept { mission_id: id, .. }
                         | TurnCommand::SetMissionBattlePlan { mission_id: id, .. }
+                        | TurnCommand::SetPatrolFriendly { mission_id: id, .. }
                         if id == mission_id
                 )
             };
@@ -1000,7 +1028,7 @@ pub fn recall_mission(
         let radius = mission_size(mission, false) * 1.25;
 
         mission.recall(&map, settings.turn);
-        if mission.patrol.is_some() {
+        if mission.patrol.is_some() || mission.intercept.is_some() {
             if let Some(refresh) = &mut refresh {
                 refresh.write(crate::multiplayer::client::RefreshTurnDraft);
             }

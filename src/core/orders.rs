@@ -220,7 +220,19 @@ pub fn validate_mission(
     destination: &Planet,
     mission: &Mission,
 ) -> Result<(), OrderError> {
-    if mission.objective == Icon::Patrol {
+    validate_mission_with_patrols(player, map, origin, destination, mission, &[])
+}
+
+/// Checks mission requirements, allowing probes to reinforce an owned operating patrol.
+pub fn validate_mission_with_patrols(
+    player: &Player,
+    map: &Map,
+    origin: &Planet,
+    destination: &Planet,
+    mission: &Mission,
+    missions: &[Mission],
+) -> Result<(), OrderError> {
+    if matches!(mission.objective, Icon::Patrol | Icon::Intercept) {
         let available = origin.mission_origin_army(player.id).ok_or(OrderError::Ownership)?;
         if player.spectator
             || mission.owner != player.id
@@ -230,8 +242,17 @@ pub fn validate_mission(
         {
             return Err(OrderError::Ownership);
         }
+        if mission.objective == Icon::Intercept {
+            if !mission.valid_intercept(map) || !Icon::Intercept.accepts_army(&mission.army) {
+                return Err(OrderError::Objective);
+            }
+            if mission.army.iter().any(|(unit, count)| *count > available.amount(unit)) {
+                return Err(OrderError::Fleet);
+            }
+            return Ok(());
+        }
         if !mission.valid_patrol(map)
-            || !mission.objective.accepts_army(&mission.army)
+            || !mission.accepts_patrol_army(missions)
             || !mission.patrol.as_ref().is_some_and(|patrol| {
                 patrol.phase == crate::core::patrols::PatrolPhase::Outbound
                     && crate::core::patrols::valid_patrol_target(

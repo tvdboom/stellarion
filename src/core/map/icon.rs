@@ -28,6 +28,8 @@ pub enum Icon {
     Raid,
     /// Searches a fixed area of space and attacks every detected foreign fleet.
     Patrol,
+    /// Ambushes one visible travelling enemy fleet before its arrival.
+    Intercept,
     /// The spy value.
     Spy,
     /// The missile strike value.
@@ -83,6 +85,7 @@ impl Icon {
                 | Icon::Attack
                 | Icon::Raid
                 | Icon::Patrol
+                | Icon::Intercept
                 | Icon::Spy
                 | Icon::MissileStrike
                 | Icon::Destroy
@@ -99,6 +102,7 @@ impl Icon {
                 | Icon::Attack
                 | Icon::Raid
                 | Icon::Patrol
+                | Icon::Intercept
                 | Icon::Spy
                 | Icon::Destroy
                 | Icon::Protect
@@ -189,7 +193,7 @@ impl Icon {
             Icon::Fleet | Icon::Deploy | Icon::Protect => origin.has_fleet(),
             Icon::Defenses => origin.has_defense(),
             Icon::Colonize => origin.has(&Unit::colony_ship()),
-            Icon::Attack | Icon::Raid | Icon::Patrol => {
+            Icon::Attack | Icon::Raid | Icon::Patrol | Icon::Intercept => {
                 origin.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship())
             },
             Icon::Spy => origin.army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
@@ -203,7 +207,7 @@ impl Icon {
     pub fn condition_for_army(&self, army: &Army) -> bool {
         match self {
             Icon::Colonize => army.amount(&Unit::colony_ship()) > 0,
-            Icon::Attack | Icon::Raid | Icon::Patrol => {
+            Icon::Attack | Icon::Raid | Icon::Patrol | Icon::Intercept => {
                 army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
             },
             Icon::Spy => army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
@@ -232,7 +236,7 @@ impl Icon {
             Self::Deploy | Self::Protect => only(Unit::is_ship),
             Self::Colonize => only(Unit::is_ship) && army.amount(&Unit::colony_ship()) > 0,
             Self::Destroy => only(Unit::is_ship) && army.amount(&Unit::war_sun()) > 0,
-            Self::Attack | Self::Raid | Self::Patrol => {
+            Self::Attack | Self::Raid | Self::Patrol | Self::Intercept => {
                 only(Unit::is_ship)
                     && army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
             },
@@ -251,6 +255,9 @@ impl Icon {
         match self {
             Icon::Colonize => "No Colony Ship on the origin planet.",
             Icon::Attack | Icon::Raid => "No combat ships on the origin planet.",
+            Icon::Intercept => {
+                "Select combat ships and a visible enemy mission with time to intercept."
+            },
             Icon::Patrol => "Select combat ships and a patrol zone in empty space.",
             Icon::Spy => "A minimum of 5 Probes are required for a Spy mission.",
             Icon::MissileStrike => "No Interplanetary Missiles on the origin planet.",
@@ -269,7 +276,18 @@ impl Description for Icon {
     /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
-            Icon::Patrol => "Patrol a fixed area of space and attack every detected foreign fleet. Detection improves with route exposure and combined ship production. Insufficient fuel automatically sends the mission back to the planet of origin.",
+            Icon::Intercept => {
+                "Ambush a visible enemy fleet along its flight path, including its final \
+                approach before landing. A recall can make the committed rendezvous miss. \
+                Surviving targets continue their scheduled movement."
+            },
+            Icon::Patrol => {
+                "Patrol a fixed area of space and attack detected foreign fleets. Hover the \
+                protection icon on an active patrol to choose friendly players: their detected \
+                fleets are reported without combat. Their patrols may still attack yours. \
+                Detection improves with route exposure and combined ship production. Insufficient \
+                fuel automatically sends the mission back to the planet of origin."
+            },
             Icon::Colonize => {
                 "A successful mission that contains at least one Colony Ship, colonizes the target \
                 planet (the player gains ownership). The Colony Ship is consumed in the process. \

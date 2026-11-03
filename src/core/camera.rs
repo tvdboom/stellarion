@@ -117,8 +117,8 @@ fn clamp_to_planet_hull(position: Vec2, hull: &[Vec2]) -> Option<Vec2> {
     }
 }
 
-fn map_camera_target(map: &Map, position: Vec2) -> Option<Vec2> {
-    let hull = planet_hull(map.planets.iter().map(|planet| planet.position));
+fn map_camera_target(map: &Map, position: Vec2, focus_position: Option<Vec2>) -> Option<Vec2> {
+    let hull = planet_hull(map.planets.iter().map(|planet| planet.position).chain(focus_position));
     clamp_to_planet_hull(position, &hull)
 }
 
@@ -136,7 +136,7 @@ pub(crate) fn drag_camera_position(
     map: &Map,
 ) -> Vec2 {
     let proposed = position + movement;
-    map_camera_target(map, proposed)
+    map_camera_target(map, proposed, None)
         .map_or(proposed, |target| target + clamp_overscroll(proposed - target, view_size))
 }
 
@@ -210,15 +210,17 @@ pub fn move_camera(
     // Move camera on top of selected planet
     let mut shortcut_target = None;
     let mut shortcut_zoom_complete = true;
+    if state.planet_selected.is_some() || state.focus_planet.is_some() {
+        state.focus_position = None;
+    }
     if state.to_selected {
         if let Some(target_position) = state.focus_position {
             if let Some(target_scale) = state.focus_zoom {
                 (projection.scale, shortcut_zoom_complete) =
                     advance_focus_zoom(projection.scale, target_scale);
             }
-            let target = map_camera_target(&map, target_position).unwrap_or(target_position);
-            position = position.lerp(target, LERP_FACTOR);
-            shortcut_target = Some(target);
+            position = position.lerp(target_position, LERP_FACTOR);
+            shortcut_target = Some(target_position);
         } else if let Some(planet_id) = state.planet_selected.or(state.focus_planet) {
             if let Some((pos, _)) = planet_q.iter().find(|(_, p)| p.id == planet_id) {
                 if let Some(target_scale) = state.focus_zoom {
@@ -226,7 +228,8 @@ pub fn move_camera(
                         advance_focus_zoom(projection.scale, target_scale);
                 }
                 let planet_position = pos.translation.truncate();
-                let target = map_camera_target(&map, planet_position).unwrap_or(planet_position);
+                let target =
+                    map_camera_target(&map, planet_position, None).unwrap_or(planet_position);
                 position = position.lerp(target, LERP_FACTOR);
                 if state.planet_selected.is_none() && state.focus_planet == Some(planet_id) {
                     shortcut_target = Some(target);
@@ -241,7 +244,7 @@ pub fn move_camera(
     {
         state.to_selected = false;
         state.focus_planet = None;
-        state.focus_position = None;
+        // Keep an empty-space destination within the camera bounds after the pan finishes.
         state.focus_zoom = None;
     }
 }
@@ -259,11 +262,13 @@ fn advance_focus_zoom(scale: f32, target: f32) -> (f32, bool) {
 ///
 /// Dragging may travel up to 20% of the full viewport beyond the planet cluster. Releasing the mouse
 /// returns the camera smoothly to the closest point within the cluster's convex outline.
+/// A focused space location extends that outline until manual input or world selection clears it.
 pub fn clamp_camera_to_worlds(
     mut camera_q: Query<(&mut Transform, &Projection), With<MainCamera>>,
     map: Res<Map>,
     mouse: Res<ButtonInput<MouseButton>>,
     time: Res<Time>,
+    state: Res<UiState>,
 ) {
     let Ok((mut camera_t, projection)) = camera_q.single_mut() else {
         return;
@@ -273,7 +278,7 @@ pub fn clamp_camera_to_worlds(
     };
     let view_size = projection.area.size();
     let position = camera_t.translation.truncate();
-    let Some(target) = map_camera_target(&map, position) else {
+    let Some(target) = map_camera_target(&map, position, state.focus_position) else {
         return;
     };
     let limit = view_size.abs() * OVERSCROLL_SCREEN_FRACTION;

@@ -1,6 +1,501 @@
 use super::*;
 
 #[test]
+fn enemy_mission_origin_shows_all_foreign_planet_objectives() {
+    use crate::core::turns::filter_missions;
+
+    let mut home = Planet::new(0, "Home".into(), Vec2::ZERO, false, 1.0);
+    home.owned = Some(1);
+    home.controlled = Some(1);
+    home.army.extend(Unit::ships().into_iter().map(|unit| (unit, 10)));
+    home.army.insert(Unit::interplanetary_missile(), 10);
+    home.army.insert(Unit::Building(Building::SensorPhalanx), 2);
+    let mut enemy = Planet::new(1, "Enemy origin".into(), Vec2::X * 1_000.0, false, 1.0);
+    enemy.owned = Some(2);
+    enemy.controlled = Some(2);
+    let mut incoming = Mission::new_with_id(
+        7,
+        1,
+        2,
+        &enemy,
+        &home,
+        Icon::Attack,
+        Army::from([(Unit::Ship(Ship::Cruiser), 3)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    incoming.position = Vec2::X * Planet::SIZE;
+    let map = Map {
+        rect: Rect::from_corners(Vec2::splat(-2_000.0), Vec2::splat(2_000.0)),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![home.clone(), enemy.clone()],
+    };
+    let objectives =
+        [Icon::Colonize, Icon::Attack, Icon::Raid, Icon::Spy, Icon::MissileStrike, Icon::Destroy];
+    let images = ImageIds(
+        objectives
+            .iter()
+            .enumerate()
+            .map(|(index, icon)| (icon.asset_key(), egui::TextureId::User(index as u64 + 1)))
+            .collect(),
+    );
+
+    // Check both a newly detected fleet and the report retained after it arrives.
+    for resolved in [false, true] {
+        for viewport in [egui::vec2(800.0, 600.0), egui::vec2(1280.0, 720.0)] {
+            for selected in objectives {
+                let mut player = Player::new(1, home.id);
+                assert_eq!(player.known_controller(&enemy, &[]), None);
+                let missions = if resolved {
+                    player
+                        .reports
+                        .push(crate::test_support::empty_report(incoming.clone(), home.clone()));
+                    vec![]
+                } else {
+                    filter_missions(std::slice::from_ref(&incoming), &map, &player)
+                };
+                assert_eq!(player.known_controller(&enemy, &missions), Some(2));
+                assert_eq!(visible_planet_affiliation(&map, &player, &missions, &enemy), Some(2));
+                let mut map = map.clone();
+                let mut state = UiState {
+                    mission: true,
+                    mission_info: Mission::from_mission(
+                        2,
+                        player.id,
+                        &home,
+                        &enemy,
+                        &Mission {
+                            objective: selected,
+                            ..default()
+                        },
+                    ),
+                    ..default()
+                };
+                let context = egui::Context::default();
+                context.set_global_style(NordDark.custom_style());
+                let scale = mission_panel_scale(viewport);
+                let size = mission_panel_size(viewport / scale);
+                let position = (viewport - size * scale) * 0.5;
+                let mut world = World::new();
+                world.init_resource::<Messages<SendMissionMsg>>();
+                world.init_resource::<Messages<MultiplayerRequest>>();
+                let mut params = bevy::ecs::system::SystemState::<(
+                    MessageWriter<SendMissionMsg>,
+                    MessageWriter<MultiplayerRequest>,
+                )>::new(&mut world);
+                for frame in 0..3 {
+                    let mut output = context.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                viewport,
+                            )),
+                            ..default()
+                        },
+                        |context| {
+                            draw_panel_on_context(
+                                context,
+                                "mission",
+                                "panel",
+                                (position.x, position.y),
+                                (size.x, size.y),
+                                0.0,
+                                scale,
+                                &images,
+                                |ui| {
+                                    ui.add_space(17.0);
+                                    draw_mission_tabs(ui, &mut state.mission_tab);
+                                    let (mut sends, mut requests) =
+                                        params.get_mut(&mut world).unwrap();
+                                    draw_new_mission(
+                                        ui,
+                                        &mut sends,
+                                        &missions,
+                                        &Settings {
+                                            turn: 2,
+                                            p_colonizable: 100,
+                                            ..default()
+                                        },
+                                        &mut state,
+                                        &mut map,
+                                        &mut player,
+                                        &MultiplayerSession::default(),
+                                        &mut requests,
+                                        true,
+                                        &ButtonInput::default(),
+                                        &images,
+                                    );
+                                },
+                            );
+                        },
+                    );
+                    output.textures_delta.clear();
+                    if frame < 2 {
+                        continue;
+                    }
+                    for objective in objectives {
+                        assert!(
+                            output.shapes.iter().any(|shape| {
+                                matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                                if mesh.texture_id == images.get(objective.asset_key())
+                                    && (mesh.calc_bounds().width() - 40.0 * scale).abs() < 0.1
+                                    && shape.clip_rect.contains_rect(mesh.calc_bounds()))
+                            }),
+                            "missing or clipped {objective:?}: resolved={resolved}, viewport={viewport:?}"
+                        );
+                    }
+                    assert_eq!(state.mission_info.objective, selected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn deploy_drafts_hide_intercept_and_keep_colonize_on_controlled_planets() {
+    use crate::core::simulation::{GameModel, GameRules};
+
+    for owned in [false, true] {
+        for width in [650.0, 900.0] {
+            let mut model = GameModel::new([73; 32], GameRules::default()).unwrap();
+            model.start().unwrap();
+            let mut player = model.players[0].clone();
+            let origin = player.home_planet;
+            let destination = model.players[1].home_planet;
+            model.map.get_mut(origin).army.insert(Unit::Ship(Ship::Cruiser), 3);
+            model.map.get_mut(origin).army.remove(&Unit::colony_ship());
+            model.map.get_mut(destination).owned = owned.then_some(player.id);
+            model.map.get_mut(destination).controlled = Some(player.id);
+            let mut state = UiState {
+                mission_info: Mission {
+                    origin,
+                    destination,
+                    objective: Icon::Deploy,
+                    ..default()
+                },
+                ..default()
+            };
+            let objective_icons = [Icon::Colonize, Icon::Deploy, Icon::Patrol, Icon::Intercept];
+            let images = ImageIds(
+                objective_icons
+                    .iter()
+                    .enumerate()
+                    .map(|(index, icon)| {
+                        (icon.asset_key(), egui::TextureId::User(index as u64 + 1))
+                    })
+                    .collect(),
+            );
+            let context = egui::Context::default();
+            let mut world = World::new();
+            world.init_resource::<Messages<SendMissionMsg>>();
+            world.init_resource::<Messages<MultiplayerRequest>>();
+            let mut params = bevy::ecs::system::SystemState::<(
+                MessageWriter<SendMissionMsg>,
+                MessageWriter<MultiplayerRequest>,
+            )>::new(&mut world);
+            for _ in 0..2 {
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 650.0),
+                        )),
+                        ..default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            let (mut sends, mut requests) = params.get_mut(&mut world).unwrap();
+                            draw_new_mission(
+                                ui,
+                                &mut sends,
+                                &[],
+                                &Settings::default(),
+                                &mut state,
+                                &mut model.map,
+                                &mut player,
+                                &MultiplayerSession::default(),
+                                &mut requests,
+                                true,
+                                &ButtonInput::default(),
+                                &images,
+                            );
+                        });
+                    },
+                );
+                output.textures_delta.clear();
+                let visible_icons = objective_icons
+                    .into_iter()
+                    .filter(|icon| {
+                        output.shapes.iter().any(|shape| {
+                            matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                                if mesh.texture_id == images.get(icon.asset_key())
+                                    && mesh.calc_bounds().size() == egui::Vec2::splat(40.0))
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let expected = if owned {
+                    vec![Icon::Deploy, Icon::Patrol]
+                } else {
+                    vec![Icon::Colonize, Icon::Deploy, Icon::Patrol]
+                };
+                assert_eq!(visible_icons, expected, "owned={owned}, width={width}");
+                assert_eq!(state.mission_info.objective, Icon::Deploy);
+            }
+        }
+    }
+}
+
+#[test]
+fn intercept_drafts_remain_selected_with_a_friendly_previous_destination() {
+    let player = Player::new(1, 1);
+    let mission = Mission {
+        objective: Icon::Intercept,
+        ..default()
+    };
+    for owned in [false, true] {
+        let mut destination = Planet::new(2, "Friendly".into(), Vec2::X, false, 1.0);
+        destination.controlled = Some(player.id);
+        destination.owned = owned.then_some(player.id);
+        assert!(draft_objectives_for_mission(&player, &destination, &mission)
+            .contains(&Icon::Intercept));
+    }
+}
+
+#[test]
+fn intercepted_fleet_reports_require_survivors_to_reveal_attackers_and_combat() {
+    for objective in [Icon::Patrol, Icon::Intercept] {
+        for survivors in [0, 1] {
+            let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+            let mut encounter = Planet::new(1, "Deep space".into(), Vec2::X, false, 1.0);
+            encounter.controlled = Some(2);
+            encounter.army.insert(Unit::Ship(Ship::LightFighter), 6);
+            let mut report = crate::test_support::empty_report(
+                Mission {
+                    owner: 1,
+                    origin: origin.id,
+                    destination: encounter.id,
+                    objective,
+                    army: Army::from([(Unit::Ship(Ship::Cruiser), 17)]),
+                    ..default()
+                },
+                encounter.clone(),
+            );
+            report.id = 90;
+            report.turn = 1;
+            report.surviving_attacker = report.mission.army.clone();
+            report.surviving_defender =
+                Army::from([(Unit::Ship(Ship::LightFighter), survivors)]).into();
+            report.combat_report = Some(crate::core::combat::report::CombatReport {
+                rounds: vec![RoundReport::default()],
+                ..default()
+            });
+            let mut player = Player::new(2, encounter.id);
+            player.reports.push(report);
+            assert_eq!(combat_selection_reports(&player, 1).len(), usize::from(survivors > 0));
+            let map = Map {
+                rect: Rect::default(),
+                solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+                planets: vec![origin, encounter],
+            };
+
+            for viewport in [egui::vec2(800.0, 600.0), egui::vec2(1280.0, 720.0)] {
+                let context = egui::Context::default();
+                context.set_global_style(NordDark.custom_style());
+                let mut state = UiState {
+                    mission_report: Some(90),
+                    ..default()
+                };
+                for frame in 0..3 {
+                    let mut output = context.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                viewport,
+                            )),
+                            ..default()
+                        },
+                        |ui| {
+                            draw_mission_reports(
+                                ui,
+                                &mut state,
+                                &map,
+                                &player,
+                                &MultiplayerSession::default(),
+                                false,
+                                &ImageIds::default(),
+                            );
+                        },
+                    );
+                    output.textures_delta.clear();
+                    if frame < 2 {
+                        continue;
+                    }
+                    let texts = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) => Some(text.galley.text()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        texts.iter().filter(|text| **text == "?").count(),
+                        if survivors == 0 {
+                            Unit::ships().len()
+                        } else {
+                            0
+                        },
+                        "{objective:?}, {survivors} survivors, {viewport:?}"
+                    );
+                    assert!(texts.contains(&format!("{}/6", 6 - survivors).as_str()));
+                    assert_eq!(texts.contains(&"17"), survivors > 0);
+                    assert_eq!(texts.contains(&"Combat details"), survivors > 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn friendly_patrol_reports_show_detection_below_ships_without_header_badges() {
+    let model = crate::core::simulation::GameModel::new([73; 32], default()).unwrap();
+    let map = &model.map;
+    let mut player = model.players[0].clone();
+    let origin = map.get(player.home_planet);
+    let mut mission = Mission::new_patrol(
+        700,
+        1,
+        player.id,
+        origin,
+        origin.position + Vec2::splat(Planet::SIZE),
+        Army::from([(Unit::Ship(Ship::Cruiser), 3)]),
+        None,
+    );
+    mission.patrol.as_mut().unwrap().friendly_players.insert(2);
+    let mut contact = origin.clone();
+    contact.name = "Friendly fleet contact".into();
+    contact.controlled = Some(2);
+    contact.owned = None;
+    contact.army = Army::from([(Unit::Ship(Ship::Cruiser), 17)]).into();
+    let mut report = crate::test_support::empty_report(mission, contact.clone());
+    report.id = 90;
+    report.turn = 1;
+    report.destination_controlled = Some(2);
+    report.surviving_attacker = report.mission.army.clone();
+    report.surviving_defender = contact.army;
+    player.reports.push(report);
+    let protect_texture = egui::TextureId::User(901);
+    let ship_texture = egui::TextureId::User(902);
+    let mut images = ImageIds::default();
+    images.0.insert("protect".into(), protect_texture);
+    for ship in Unit::ships() {
+        images.0.insert(ship.to_lowername(), ship_texture);
+    }
+    for viewport in [egui::vec2(1280.0, 720.0), egui::vec2(850.0, 640.0), egui::vec2(800.0, 600.0)]
+    {
+        let context = egui::Context::default();
+        context.set_global_style(NordDark.custom_style());
+        let scale = mission_panel_scale(viewport);
+        let size = mission_panel_size(viewport / scale);
+        let position = (viewport - size * scale) * 0.5;
+        let mut state = UiState {
+            mission_tab: MissionTab::MissionReports,
+            mission_report: Some(90),
+            ..default()
+        };
+        let mut panel = egui::Rect::NOTHING;
+        for frame in 0..3 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
+                    ..default()
+                },
+                |ui| {
+                    draw_panel_on_context(
+                        ui,
+                        "mission",
+                        "panel",
+                        (position.x, position.y),
+                        (size.x, size.y),
+                        0.0,
+                        scale,
+                        &images,
+                        |ui| {
+                            panel = ui.max_rect();
+                            ui.add_space(17.0);
+                            draw_mission_tabs(ui, &mut state.mission_tab);
+                            draw_mission_reports(
+                                ui,
+                                &mut state,
+                                map,
+                                &player,
+                                &MultiplayerSession::default(),
+                                false,
+                                &images,
+                            );
+                        },
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            if frame < 2 {
+                continue;
+            }
+            let text_rects = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some((
+                        text.galley.text(),
+                        egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let detection = text_rects
+                .iter()
+                .find(|(text, _)| *text == "Friendly Fleet Detected")
+                .expect("friendly detection label")
+                .1;
+            assert!(!text_rects.iter().any(|(text, _)| text.contains("No combat")));
+            assert!(text_rects.iter().any(|(text, _)| *text == "17"));
+            assert!(!text_rects.iter().any(|(text, _)| *text == "Combat details"));
+            let image_rects = |texture| {
+                output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) if mesh.texture_id == texture => {
+                            Some(mesh.calc_bounds())
+                        },
+                        egui::Shape::Rect(rect)
+                            if rect.brush.is_some() && rect.fill_texture_id() == texture =>
+                        {
+                            Some(rect.rect)
+                        },
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let shields = image_rects(protect_texture);
+            assert_eq!(shields.len(), 1, "only the detection footer should show a shield");
+            let shield = shields[0];
+            let ships = image_rects(ship_texture);
+            assert_eq!(ships.len(), Unit::ships().len() * 2);
+            assert!(ships.iter().all(|ship| ship.bottom() < shield.top()));
+            assert!(ships.iter().all(|ship| ship.bottom() < detection.top()));
+            assert!(shield.right() < detection.left());
+            assert!((shield.center().y - detection.center().y).abs() < scale);
+            let panel = egui::emath::TSTransform::from_scaling(scale).mul_rect(panel);
+            assert!(panel.contains_rect(shield), "shield overflowed panel at {viewport:?}");
+            assert!(panel.contains_rect(detection), "label overflowed panel at {viewport:?}");
+        }
+    }
+}
+
+#[test]
 fn objective_buttons_keep_their_size_and_selection_while_hovering_and_pressing() {
     let image = egui::TextureId::User(910);
     for enabled in [true, false] {
@@ -193,6 +688,7 @@ fn mission_report_combat_button_stays_inside_the_panel_and_opens_details() {
         (Icon::Raid, Resources::new(21, 1, 0)),
         (Icon::Raid, Resources::default()),
         (Icon::Raid, Resources::new(1_234_567, 89, 0)),
+        (Icon::Raid, Resources::new(1_234_567, 8_901_234, 5_678_901)),
     ]
     .into_iter()
     .flat_map(|(objective, loot)| {
@@ -336,7 +832,24 @@ fn mission_report_combat_button_stays_inside_the_panel_and_opens_details() {
                 bar.top() - caption_bottom <= 20.0 * scale,
                 "planet caption and strength bar are too far apart: {origin:?}, {bar:?}"
             );
+            let divider = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::LineSegment {
+                        points,
+                        stroke,
+                    } if (stroke.width - 0.75 * scale).abs() < 0.01
+                        && points[0].x > fighters[0].right()
+                        && points[0].x < fighters[1].left() =>
+                    {
+                        Some(egui::Rect::from_two_pos(points[0], points[1]))
+                    },
+                    _ => None,
+                })
+                .expect("thin attacker/defender divider");
             let mut resource_right = f32::NEG_INFINITY;
+            let mut resource_top: Option<f32> = None;
             for texture in resource_textures {
                 let resources = image_rects(texture);
                 if objective == Icon::Raid {
@@ -344,14 +857,30 @@ fn mission_report_combat_button_stays_inside_the_panel_and_opens_details() {
                     let icon = resources[0];
                     assert!(panel.contains_rect(icon), "raid resource overflowed panel: {icon:?}");
                     assert!(
-                        icon.right() < button.left() && !icon.intersects(button),
+                        !icon.intersects(button),
                         "raid resource {icon:?} overlaps combat button {button:?} at {viewport:?}"
                     );
+                    assert!(
+                        (icon.top()
+                            - divider.bottom()
+                            - (MISSION_REPORT_LOOT_TOP_GAP + 1.0) * scale)
+                            .abs()
+                            < 1.0,
+                        "raid resources must sit just below the armies and divider at {viewport:?}: \
+                         icon {icon:?}, divider {divider:?}, scale {scale}"
+                    );
+                    if let Some(top) = resource_top {
+                        assert!((icon.top() - top).abs() < 0.1, "raid resources must align");
+                    }
+                    resource_top = Some(icon.top());
                     for shape in &output.shapes {
                         if let egui::Shape::Text(text) = &shape.shape {
                             if text.galley.text() == "Scouts: 2" {
                                 assert!(
-                                    icon.top() >= text.pos.y + text.galley.size().y,
+                                    !icon.intersects(egui::Rect::from_min_size(
+                                        text.pos,
+                                        text.galley.size(),
+                                    )),
                                     "raid resource {icon:?} overlaps the scouts count"
                                 );
                             }
@@ -385,6 +914,74 @@ fn mission_report_combat_button_stays_inside_the_panel_and_opens_details() {
         }
         assert_eq!(state.combat_report, Some(42));
         assert_eq!(state.combat_report_round, 1);
+    }
+}
+
+#[test]
+fn raid_resource_icons_share_the_hud_border_and_show_their_names_on_hover() {
+    let resources = [("metal", "Metal"), ("crystal", "Crystal"), ("deuterium", "Deuterium")];
+    let images = ImageIds(
+        resources
+            .iter()
+            .enumerate()
+            .map(|(index, (key, _))| (key.to_string(), egui::TextureId::User(index as u64 + 1)))
+            .collect(),
+    );
+    for (key, name) in resources {
+        let context = egui::Context::default();
+        context.set_global_style(NordDark.custom_style());
+        context.all_styles_mut(|style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        let mut icon = egui::Rect::NOTHING;
+        for step in 0..5 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 200.0),
+                    )),
+                    time: Some(step as f64),
+                    events: if step >= 2 {
+                        vec![egui::Event::PointerMoved(icon.center())]
+                    } else {
+                        vec![]
+                    },
+                    ..default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        draw_raid_loot(ui, Resources::new(61, 19, 4), &images);
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            icon = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == images.get(key) => {
+                        Some(mesh.calc_bounds())
+                    },
+                    _ => None,
+                })
+                .expect("raid resource icon");
+            assert!(output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Rect(rect)
+                    if rect.stroke.color == RESOURCE_IMAGE_BORDER_COLOR
+                        && rect.stroke.width == 2.0
+                        && rect.rect == icon.expand(1.0))
+            }));
+            let tooltip_shown = output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == name)
+            });
+            if step < 2 {
+                assert!(!tooltip_shown, "resource names must wait for hover");
+            } else if step == 4 {
+                assert!(tooltip_shown, "hover must identify {name}");
+            }
+        }
     }
 }
 
@@ -451,6 +1048,203 @@ fn mission_planet_selector_marks_only_visible_affiliations() {
     assert_eq!(home.sections[0].format.color, session.player_color(1).color().to_color32());
     assert_eq!(hidden.text, "Hidden");
     assert_eq!(hidden.sections.len(), 1);
+}
+
+#[test]
+fn intercept_route_wraps_plain_fleet_names_in_owner_colors_and_keeps_the_destination_column() {
+    use crate::core::identity::{GameCode, GameId, UserId};
+    use crate::core::player::PlayerColor;
+    use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+    use crate::multiplayer::model::GameRecord;
+
+    let mut model = GameModel::new([73; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let home = player.home_planet;
+    let owner = model.players[1].id;
+    model.players[1].color = PlayerColor::new(4).unwrap();
+    model.map.get_mut(home).name = "A world with a deliberately long name".into();
+    model.map.get_mut(home).army.insert(Unit::Building(Building::SensorPhalanx), 30);
+    let target = Mission {
+        id: 900,
+        owner,
+        origin: model.players[1].home_planet,
+        destination: home,
+        position: model.map.get(home).position + Vec2::X * Planet::SIZE,
+        objective: Icon::Attack,
+        army: Army::from([(Unit::war_sun(), 1)]),
+        ..default()
+    };
+    assert!(interception::visible_contact(&target, &model.map, &player));
+    let mut session = MultiplayerSession::default();
+    session.active_game = Some(GameRecord {
+        id: GameId::new("intercept-route"),
+        code: GameCode::new("ABCDEF"),
+        revision: 0,
+        saved_at: 0,
+        max_players: 2,
+        status: MatchStatus::Active,
+        persisted: PersistedGame::new(model.clone()),
+        submitted_players: Vec::new(),
+        members: vec![GameMembership {
+            game_id: GameId::new("intercept-route"),
+            player_id: owner,
+            user_id: UserId::new("enemy"),
+            display_name: String::new(),
+            is_creator: false,
+            identity_version: 0,
+            connected: true,
+        }],
+    });
+    let deep_space = egui::TextureId::User(1);
+    let enemy_fleet = egui::TextureId::User(2);
+    let images = ImageIds(HashMap::from([
+        ("deep space".to_owned(), deep_space),
+        ("mission destroy".to_owned(), enemy_fleet),
+    ]));
+    for width in [820.0, 650.0, 520.0, 320.0] {
+        let mut image_column = None;
+        for name in ["Mara", "Practice P2", "Aether Ray Swarm of the Distant Nebula"] {
+            session.active_game.as_mut().unwrap().members[0].display_name = name.to_owned();
+            let expected = format!("{name}'s fleet");
+            let color = session.player_color(owner).color().to_color32();
+            let mut mission = Mission {
+                origin: home,
+                destination: home,
+                owner: player.id,
+                objective: Icon::Intercept,
+                ..default()
+            };
+            let context = egui::Context::default();
+            context.set_global_style(NordDark.custom_style());
+            let expected_font = TextStyle::Button.resolve(&context.style_of(context.theme()));
+            context.style_mut_of(context.theme(), |style| {
+                style.interaction.tooltip_delay = f32::MAX;
+            });
+            let mut label_rect = egui::Rect::NOTHING;
+            for frame in 0..8 {
+                let mut events = Vec::new();
+                if width >= 650.0 && matches!(frame, 2 | 3) {
+                    events.push(egui::Event::PointerMoved(label_rect.center()));
+                    events.push(egui::Event::PointerButton {
+                        pos: label_rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: frame == 2,
+                        modifiers: default(),
+                    });
+                }
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 300.0),
+                        )),
+                        time: Some(frame as f64 * 0.25),
+                        events,
+                        ..default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            let mut scroll = ScrollArea::horizontal();
+                            if width < 650.0 && frame == 0 {
+                                scroll = scroll.horizontal_scroll_offset(1000.0);
+                            }
+                            scroll.show(ui, |ui| {
+                                let route = draw_mission_route(
+                                    ui,
+                                    &mut mission,
+                                    &model.map,
+                                    &player,
+                                    std::slice::from_ref(&target),
+                                    &session,
+                                    &Army::new(),
+                                    &Unit::ships(),
+                                    &images,
+                                    false,
+                                    Some(target.id),
+                                );
+                                let rect = route[1].as_ref().unwrap().rect;
+                                if frame >= 2 {
+                                    if let Some(previous) = image_column {
+                                        assert_eq!(
+                                            (rect.x_range(), rect.top()),
+                                            previous,
+                                            "destination column moved for {name} at {width}"
+                                        );
+                                    }
+                                    image_column = Some((rect.x_range(), rect.top()));
+                                    if width >= 650.0 {
+                                        assert!(ui.ctx().content_rect().contains_rect(rect));
+                                    }
+                                }
+                            });
+                        });
+                    },
+                );
+                output.textures_delta.clear();
+                let mut labels = 0;
+                let mut saw_deep_space = false;
+                for shape in &output.shapes {
+                    match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == expected => {
+                            labels += 1;
+                            assert!(text.galley.job.sections.iter().all(|section| {
+                                section.format.color == color
+                                    && section.format.font_id == expected_font
+                            }));
+                            assert!(text.galley.size().x <= interception::TARGET_LABEL_WIDTH);
+                            assert!(!text.galley.elided);
+                            if labels == 1 {
+                                label_rect = text.galley.rect.translate(text.pos.to_vec2());
+                                if width >= 650.0 {
+                                    assert!(shape.clip_rect.contains_rect(label_rect));
+                                }
+                            }
+                        },
+                        egui::Shape::Mesh(mesh) => {
+                            assert_ne!(mesh.texture_id, enemy_fleet);
+                            if mesh.texture_id == deep_space {
+                                saw_deep_space = true;
+                                assert!(mesh
+                                    .vertices
+                                    .iter()
+                                    .all(|vertex| vertex.color == Color32::WHITE));
+                            }
+                        },
+                        egui::Shape::Rect(rect) if rect.brush.is_some() => {
+                            assert_ne!(rect.fill_texture_id(), enemy_fleet);
+                            if rect.fill_texture_id() == deep_space {
+                                saw_deep_space = true;
+                                assert_eq!(rect.fill, Color32::WHITE);
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+                if frame >= 2 {
+                    assert!(saw_deep_space, "missing Deep space image at {width} on frame {frame}");
+                }
+                assert!(labels <= 1, "clicking the fleet label must not open a dropdown");
+                if frame >= 2 && width >= 650.0 {
+                    assert_eq!(output.platform_output.cursor_icon, CursorIcon::Default);
+                }
+                if width >= 650.0 && frame >= 1 {
+                    assert!(
+                        labels >= 1,
+                        "missing {expected} at {width} on frame {frame}: {:?}",
+                        output
+                            .shapes
+                            .iter()
+                            .filter_map(|shape| match &shape.shape {
+                                egui::Shape::Text(text) => Some(text.galley.text()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -635,7 +1429,7 @@ fn space_report_images_and_caption_focus_the_recorded_encounter_at_each_viewport
         let images = ImageIds(HashMap::from([("deep space".to_owned(), deep_space)]));
         for (viewport, target) in [egui::vec2(1280.0, 720.0), egui::vec2(800.0, 600.0)]
             .into_iter()
-            .flat_map(|viewport| (0..3).map(move |target| (viewport, target)))
+            .flat_map(|viewport| (0..4).map(move |target| (viewport, target)))
         {
             let context = egui::Context::default();
             context.set_global_style(NordDark.custom_style());
@@ -651,6 +1445,7 @@ fn space_report_images_and_caption_focus_the_recorded_encounter_at_each_viewport
                 focus_planet: Some(1),
                 focus_position: Some(Vec2::ZERO),
                 focus_zoom: Some(2.0),
+                combat_report: (target == 3).then_some(42),
                 ..default()
             };
             let mut target_rect = egui::Rect::NOTHING;
@@ -687,15 +1482,26 @@ fn space_report_images_and_caption_focus_the_recorded_encounter_at_each_viewport
                             |ui| {
                                 ui.add_space(17.0);
                                 draw_mission_tabs(ui, &mut state.mission_tab);
-                                draw_mission_reports(
-                                    ui,
-                                    &mut state,
-                                    &map,
-                                    &player,
-                                    &MultiplayerSession::default(),
-                                    false,
-                                    &images,
-                                );
+                                if target == 3 {
+                                    draw_combat_report(
+                                        ui,
+                                        &mut state,
+                                        &map,
+                                        &player,
+                                        &MultiplayerSession::default(),
+                                        &images,
+                                    );
+                                } else {
+                                    draw_mission_reports(
+                                        ui,
+                                        &mut state,
+                                        &map,
+                                        &player,
+                                        &MultiplayerSession::default(),
+                                        false,
+                                        &images,
+                                    );
+                                }
                             },
                         );
                     },
@@ -719,29 +1525,39 @@ fn space_report_images_and_caption_focus_the_recorded_encounter_at_each_viewport
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                assert_eq!(
-                    images.len(),
-                    2,
-                    "list and detail images, fauna {fauna}, viewport {viewport:?}"
-                );
-                assert!((images[0].width() - 40.0 * scale).abs() < 1.0);
-                assert!((images[1].width() - MISSION_PLANET_IMAGE_SIZE * scale).abs() < 1.0);
-                let caption = output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) if text.galley.text() == "Deep space" => Some(text),
-                        _ => None,
-                    })
-                    .unwrap();
-                assert!(!caption.galley.elided);
-                assert_eq!(caption.galley.rows.len(), 1);
-                assert!(images[0].right() < images[1].left());
-                if step == 2 {
-                    target_rect = match target {
-                        0 | 1 => images[target],
-                        _ => egui::Rect::from_min_size(caption.pos, caption.galley.size()),
-                    };
+                if target == 3 {
+                    assert_eq!(images.len(), 1, "combat details destination");
+                    assert!((images[0].width() - 35.0 * scale).abs() < 1.0);
+                    if step == 2 {
+                        target_rect = images[0];
+                    }
+                } else {
+                    assert_eq!(
+                        images.len(),
+                        2,
+                        "list and detail images, fauna {fauna}, viewport {viewport:?}"
+                    );
+                    assert!((images[0].width() - 40.0 * scale).abs() < 1.0);
+                    assert!((images[1].width() - MISSION_PLANET_IMAGE_SIZE * scale).abs() < 1.0);
+                    let caption = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.text() == "Deep space" => {
+                                Some(text)
+                            },
+                            _ => None,
+                        })
+                        .unwrap();
+                    assert!(!caption.galley.elided);
+                    assert_eq!(caption.galley.rows.len(), 1);
+                    assert!(images[0].right() < images[1].left());
+                    if step == 2 {
+                        target_rect = match target {
+                            0 | 1 => images[target],
+                            _ => egui::Rect::from_min_size(caption.pos, caption.galley.size()),
+                        };
+                    }
                 }
                 if step == 3 {
                     assert_eq!(output.platform_output.cursor_icon, CursorIcon::PointingHand);
@@ -749,9 +1565,12 @@ fn space_report_images_and_caption_focus_the_recorded_encounter_at_each_viewport
                 if step < 5 {
                     assert!(state.mission, "hovering or pressing must not navigate yet");
                     assert_eq!(state.focus_position, Some(Vec2::ZERO));
+                    assert!(state.location_marker.is_none());
                 }
             }
             assert_eq!(state.focus_position, Some(encounter_position));
+            assert_eq!(state.location_marker.as_ref().unwrap().position, encounter_position);
+            assert_eq!(state.combat_report, None);
             assert!(state.to_selected);
             assert!(!state.mission);
             assert_eq!(state.planet_selected, None);
@@ -832,10 +1651,10 @@ fn mission_objectives_require_their_origin_units_before_selection() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let mut army = Army::from([(fighter, 1)]);
 
-    assert!(mission_objective_available(Icon::Attack, &army, &destination, 1, 2));
+    assert!(mission_objective_available(Icon::Attack, &army, 0, &destination, 1, 2));
     for objective in [Icon::Colonize, Icon::Spy, Icon::MissileStrike, Icon::Destroy] {
         assert!(
-            !mission_objective_available(objective, &army, &destination, 1, 2),
+            !mission_objective_available(objective, &army, 0, &destination, 1, 2),
             "{objective:?} should be disabled without its required unit"
         );
     }
@@ -847,7 +1666,7 @@ fn mission_objectives_require_their_origin_units_before_selection() {
 
     for objective in [Icon::Colonize, Icon::Spy, Icon::MissileStrike, Icon::Destroy] {
         assert!(
-            mission_objective_available(objective, &army, &destination, 1, 2),
+            mission_objective_available(objective, &army, 0, &destination, 1, 2),
             "{objective:?} should be enabled once its required unit is available"
         );
     }
@@ -858,11 +1677,11 @@ fn raid_moon_objective_is_disabled_while_normal_attacks_remain_available() {
     let moon = Planet::new(2, "Moon".into(), Vec2::ZERO, true, 1.0);
     let planet = Planet::new(3, "Planet".into(), Vec2::ZERO, false, 1.0);
     let army = Army::from([(Unit::Ship(Ship::LightFighter), 1)]);
-    assert!(!mission_objective_available(Icon::Raid, &army, &moon, 1, 2));
-    assert!(mission_objective_available(Icon::Raid, &army, &planet, 1, 2));
-    assert!(mission_objective_available(Icon::Attack, &army, &moon, 1, 2));
+    assert!(!mission_objective_available(Icon::Raid, &army, 0, &moon, 1, 2));
+    assert!(mission_objective_available(Icon::Raid, &army, 0, &planet, 1, 2));
+    assert!(mission_objective_available(Icon::Attack, &army, 0, &moon, 1, 2));
     assert_eq!(
-        mission_objective_unavailable_reason(Icon::Raid, &army, &moon, 1, 2),
+        mission_objective_unavailable_reason(Icon::Raid, &army, 0, &moon, 1, 2),
         Some("Moons cannot be raided.")
     );
 }
@@ -894,20 +1713,31 @@ fn objective_disabled_reasons_identify_the_actual_blocker() {
     ] {
         let equipped = Army::from([(required_unit, 1)]);
         assert_eq!(
-            mission_objective_unavailable_reason(objective, &empty, &planet, 1, 2),
+            mission_objective_unavailable_reason(objective, &empty, 0, &planet, 1, 2),
             Some(missing_units)
         );
-        assert_eq!(mission_objective_unavailable_reason(objective, &equipped, &planet, 1, 2), None);
+        assert_eq!(
+            mission_objective_unavailable_reason(objective, &equipped, 0, &planet, 1, 2),
+            None
+        );
         for army in [&empty, &equipped] {
             assert_eq!(
-                mission_objective_unavailable_reason(objective, army, &moon, 1, 2),
+                mission_objective_unavailable_reason(objective, army, 0, &moon, 1, 2),
                 Some(moon_restriction)
             );
         }
     }
     assert_eq!(
-        mission_objective_unavailable_reason(Icon::Colonize, &empty, &planet, 2, 2),
+        mission_objective_unavailable_reason(Icon::Colonize, &empty, 0, &planet, 2, 2),
         Some("Maximum number of colonized planets reached.")
+    );
+    assert_eq!(
+        mission_objective_unavailable_reason(Icon::Deploy, &empty, planet.id, &planet, 1, 2),
+        Some("No planets to deploy to.")
+    );
+    assert_eq!(
+        mission_objective_unavailable_reason(Icon::Deploy, &empty, 0, &planet, 1, 2),
+        Some("No ships on the origin planet.")
     );
 }
 
@@ -1883,7 +2713,7 @@ fn active_mission_destination_stays_in_the_third_grid_column() {
 }
 
 #[test]
-fn active_mission_arrow_lanes_align_across_affinities_and_hidden_plans() {
+fn active_mission_arrow_lanes_align_across_affinities_and_expand_for_hidden_plans() {
     use crate::core::combat::plan::CombatTactic;
 
     let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
@@ -1918,6 +2748,13 @@ fn active_mission_arrow_lanes_align_across_affinities_and_hidden_plans() {
                 ..default()
             })
             .collect::<Vec<_>>();
+    let objective_texture = egui::TextureId::User(904);
+    let images = ImageIds(
+        missions
+            .iter()
+            .map(|mission| (mission.displayed_objective(player.id).asset_key(), objective_texture))
+            .collect(),
+    );
 
     for width in [700.0, 850.0, 1_200.0] {
         for editable in [false, true] {
@@ -1951,7 +2788,7 @@ fn active_mission_arrow_lanes_align_across_affinities_and_hidden_plans() {
                                 &player,
                                 &MultiplayerSession::default(),
                                 true,
-                                &ImageIds::default(),
+                                &images,
                                 editable,
                             );
                         });
@@ -1966,20 +2803,71 @@ fn active_mission_arrow_lanes_align_across_affinities_and_hidden_plans() {
                     .iter()
                     .filter_map(|shape| match &shape.shape {
                         egui::Shape::LineSegment {
-                            points,
                             stroke,
+                            ..
                         } if stroke.color == Color32::from_rgba_unmultiplied(143, 158, 174, 52) => {
-                            Some(points)
+                            Some(shape.clip_rect)
                         },
                         _ => None,
                     })
                     .collect::<Vec<_>>();
                 assert_eq!(lanes.len(), missions.len());
-                for lane in &lanes {
-                    assert!((lane[0].x - lanes[0][0].x).abs() < 0.5, "width {width}: {lanes:?}");
-                    assert!((lane[1].x - lanes[0][1].x).abs() < 0.5, "width {width}: {lanes:?}");
-                    assert!(lane[1].x > lane[0].x);
+                for (index, lane) in lanes.iter().enumerate() {
+                    if index < 3 {
+                        assert!(
+                            (lane.left() - lanes[0].left()).abs() < 0.5,
+                            "width {width}: {lanes:?}"
+                        );
+                        assert!(
+                            (lane.right() - lanes[0].right()).abs() < 0.5,
+                            "width {width}: {lanes:?}"
+                        );
+                    }
+                    assert!(lane.width() > 0.0);
                 }
+                let objectives = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) if mesh.texture_id == objective_texture => {
+                            Some(mesh.calc_bounds())
+                        },
+                        egui::Shape::Rect(rect)
+                            if rect.brush.is_some()
+                                && rect.fill_texture_id() == objective_texture =>
+                        {
+                            Some(rect.rect)
+                        },
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(objectives.len(), missions.len());
+                let enemy_lane = lanes[3];
+                assert!((enemy_lane.left() - objectives[3].right() - 8.0).abs() < 0.5,
+                    "the enemy animation must start immediately after its objective: {enemy_lane:?}, {:?}", objectives[3]);
+                assert!(enemy_lane.width() > lanes[0].width() + 100.0);
+                let row_text = |name: &str| {
+                    output.shapes.iter().find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.text() == name
+                                && (text.pos.y - enemy_lane.center().y).abs() < 40.0 =>
+                        {
+                            Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                        },
+                        _ => None,
+                    })
+                };
+                let enemy_eta =
+                    row_text(&format!("+{}", mission_display_turns(&missions[3], &map))).unwrap();
+                let origin = row_text("Origin").unwrap();
+                let destination = row_text("Destination").unwrap();
+                let contents = objectives[3].union(enemy_lane).union(enemy_eta);
+                assert!(
+                    (contents.center().x - (origin.center().x + destination.center().x) * 0.5)
+                        .abs()
+                        < 0.5,
+                    "width {width}: enemy route contents must be centered without a recall slot"
+                );
                 for label in ["0%", "50%", "100%"] {
                     let percentage = output
                         .shapes
@@ -1989,7 +2877,7 @@ fn active_mission_arrow_lanes_align_across_affinities_and_hidden_plans() {
                             _ => None,
                         })
                         .unwrap();
-                    assert!(percentage.pos.x + percentage.galley.size().x < lanes[0][0].x);
+                    assert!(percentage.pos.x + percentage.galley.size().x < lanes[0].left());
                 }
             }
         }
@@ -2225,6 +3113,200 @@ fn active_mission_route_and_objective_hovers_keep_only_the_fleet_preview() {
 }
 
 #[test]
+fn mission_animations_focus_the_current_location_with_a_marker_at_each_panel_scale() {
+    let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    origin.owned = Some(1);
+    origin.controlled = Some(1);
+    let destination = Planet::new(1, "Destination".into(), Vec2::X * 500.0, false, 1.0);
+    let map = Map {
+        rect: Rect::default(),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![origin, destination],
+    };
+    let player = Player::new(1, 0);
+    let images = ImageIds::default();
+    for owner in [1, 2] {
+        for kind in ["outbound", "returning", "jump gate", "patrol outbound", "patrolling"] {
+            let mut mission = if kind.starts_with("patrol") {
+                Mission::new_patrol(
+                    7,
+                    1,
+                    owner,
+                    map.get(0),
+                    Vec2::new(200.0, 250.0),
+                    Army::from([(Unit::probe(), 1)]),
+                    None,
+                )
+            } else {
+                Mission::new_with_id(
+                    7,
+                    1,
+                    owner,
+                    map.get(0),
+                    map.get(1),
+                    Icon::Attack,
+                    Army::from([(Unit::probe(), 1)]),
+                    BombingRaid::None,
+                    false,
+                    false,
+                    None,
+                )
+            };
+            mission.position = Vec2::new(180.0, 80.0);
+            match kind {
+                "returning" => mission.recall(&map, 2),
+                "jump gate" => mission.jump_gate = true,
+                "patrolling" => {
+                    let patrol = mission.patrol.as_mut().unwrap();
+                    patrol.phase = crate::core::patrols::PatrolPhase::OnStation;
+                    mission.position = patrol.center;
+                },
+                _ => {},
+            }
+            for viewport in [egui::vec2(1280.0, 720.0), egui::vec2(800.0, 600.0)] {
+                for editable in [true, false] {
+                    let context = egui::Context::default();
+                    context.set_global_style(NordDark.custom_style());
+                    let scale = mission_panel_scale(viewport);
+                    let size = mission_panel_size(viewport / scale);
+                    let position = (viewport - size * scale) * 0.5;
+                    let mut state = UiState {
+                        mission: true,
+                        mission_tab: if owner == player.id {
+                            MissionTab::ActiveMissions
+                        } else {
+                            MissionTab::EnemyMissions
+                        },
+                        planet_selected: Some(0),
+                        focus_planet: Some(0),
+                        focus_position: Some(Vec2::ZERO),
+                        focus_zoom: Some(2.0),
+                        ..default()
+                    };
+                    let mut world = World::new();
+                    world.init_resource::<Messages<RecallMissionMsg>>();
+                    let mut params = bevy::ecs::system::SystemState::<
+                        MessageWriter<RecallMissionMsg>,
+                    >::new(&mut world);
+                    let mut target_rect = egui::Rect::NOTHING;
+                    // Settle layout, hover, secondary-click, then primary-click the animation.
+                    for frame in 0..8 {
+                        let mut events = Vec::new();
+                        if frame >= 3 {
+                            events.push(egui::Event::PointerMoved(target_rect.center()));
+                            if frame >= 4 {
+                                events.push(egui::Event::PointerButton {
+                                    pos: target_rect.center(),
+                                    button: if frame < 6 {
+                                        egui::PointerButton::Secondary
+                                    } else {
+                                        egui::PointerButton::Primary
+                                    },
+                                    pressed: frame % 2 == 0,
+                                    modifiers: egui::Modifiers::NONE,
+                                });
+                            }
+                        }
+                        let mut output = context.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    viewport,
+                                )),
+                                time: Some(frame as f64 * 0.1),
+                                events,
+                                ..default()
+                            },
+                            |ui| {
+                                draw_panel_on_context(
+                                    ui.ctx(),
+                                    "mission navigation",
+                                    "panel",
+                                    (position.x, position.y),
+                                    (size.x, size.y),
+                                    0.0,
+                                    scale,
+                                    &images,
+                                    |ui| {
+                                        draw_active_missions(
+                                            ui,
+                                            vec![&mission],
+                                            &mut params.get_mut(&mut world).unwrap(),
+                                            &mut state,
+                                            &map,
+                                            &player,
+                                            &MultiplayerSession::default(),
+                                            true,
+                                            &images,
+                                            editable,
+                                        )
+                                    },
+                                );
+                            },
+                        );
+                        output.textures_delta.clear();
+                        if frame == 2 {
+                            target_rect = output
+                                .shapes
+                                .iter()
+                                .find_map(|shape| match &shape.shape {
+                                    egui::Shape::LineSegment {
+                                        stroke,
+                                        ..
+                                    } if stroke.color
+                                        == Color32::from_rgba_unmultiplied(143, 158, 174, 52) =>
+                                    {
+                                        Some(shape.clip_rect)
+                                    },
+                                    egui::Shape::Path(path) if path.points.len() > 2 => {
+                                        Some(shape.clip_rect)
+                                    },
+                                    _ => None,
+                                })
+                                .unwrap();
+                            assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)
+                                .contains_rect(target_rect));
+                        }
+                        if frame == 3 {
+                            assert_eq!(
+                                output.platform_output.cursor_icon,
+                                CursorIcon::PointingHand,
+                                "owner {owner}, {kind}, viewport {viewport:?}, editable {editable}"
+                            );
+                        }
+                        if frame < 7 {
+                            assert!(state.mission, "only a primary click release should navigate");
+                            assert_eq!(state.focus_position, Some(Vec2::ZERO));
+                            assert!(state.location_marker.is_none());
+                        }
+                    }
+                    assert!(
+                        !state.mission,
+                        "owner {owner}, {kind}, viewport {viewport:?}, editable {editable}"
+                    );
+                    assert!(state.to_selected);
+                    assert_eq!(state.focus_position, Some(mission.position));
+                    assert_eq!(state.location_marker.as_ref().unwrap().position, mission.position);
+                    assert_eq!(
+                        state.location_marker.as_ref().unwrap().mission_id,
+                        Some(mission.id)
+                    );
+                    assert_eq!(state.focus_planet, None);
+                    assert_eq!(state.focus_zoom, None);
+                    assert_eq!(state.planet_selected, None);
+                    assert_eq!(state.planet_hover, None);
+                    assert_eq!(state.mission_planet_hover, None);
+                    assert_eq!(state.mission_hover, None);
+                    assert!(!state.mission_hover_from_ui);
+                    assert!(state.mission_battle_plan_changes.is_empty());
+                    assert!(world.resource::<Messages<RecallMissionMsg>>().is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn recall_hover_keeps_the_fleet_preview_and_preserves_click_behavior() {
     let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
     origin.owned = Some(1);
@@ -2265,7 +3347,10 @@ fn recall_hover_keeps_the_fleet_preview_and_preserves_click_behavior() {
                 style.interaction.tooltip_delay = 0.0;
                 style.interaction.show_tooltips_only_when_still = false;
             });
-            let mut state = UiState::default();
+            let mut state = UiState {
+                mission: true,
+                ..default()
+            };
             let mut world = World::new();
             world.init_resource::<Messages<RecallMissionMsg>>();
             let mut params =
@@ -2384,6 +3469,8 @@ fn recall_hover_keeps_the_fleet_preview_and_preserves_click_behavior() {
             let recalls =
                 world.resource_mut::<Messages<RecallMissionMsg>>().drain().collect::<Vec<_>>();
             assert_eq!(recalls.len(), usize::from(editable));
+            assert!(state.mission, "recalling a fleet must keep the mission panel open");
+            assert!(state.location_marker.is_none());
             if editable {
                 assert_eq!(recalls[0].mission_id, mission.id);
             }

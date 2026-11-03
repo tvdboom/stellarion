@@ -194,6 +194,52 @@ for (const kind of ["send_mission", "set_battle_plan", "set_mission_battle_plan"
   }
 }
 console.log("All Rust battle plans, required snapshot/report orders, and malformed command rejection passed.");
+const interceptSnapshot = fixtures.intercept_game.draft;
+for (const snapshot of [interceptSnapshot, ...fixtures.intercept_game.turns.map(turn => turn.resolved)]) {
+  await db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [snapshot, snapshot.state.turn]);
+}
+for (const corrupt of [
+  mission => { delete mission.intercept; },
+  mission => { mission.intercept = null; },
+  mission => { mission.intercept.target = 0; },
+  mission => { mission.intercept.target = mission.id; },
+  mission => { mission.intercept.target = "900"; },
+  mission => { mission.intercept.point = ["NaN", 0]; },
+  mission => { mission.intercept.point = [0]; },
+  mission => { mission.intercept.phase = "Unknown"; },
+  mission => { mission.intercept.encounter_turn = mission.send; },
+  mission => { mission.intercept.encounter_turn = mission.send + 257; },
+  mission => { mission.intercept.target_send = 0; },
+  mission => { delete mission.intercept.encounter_fraction; },
+  mission => { mission.intercept.encounter_fraction = 0; },
+  mission => { mission.intercept.encounter_fraction = -0.1; },
+  mission => { mission.intercept.encounter_fraction = 1.01; },
+  mission => { mission.intercept.encounter_fraction = "0.5"; },
+  mission => { mission.intercept.encounter_fraction = null; },
+  mission => { mission.intercept.extra = true; },
+  mission => { mission.objective = "Attack"; },
+  mission => { mission.jump_gate = true; },
+]) {
+  const malformed = structuredClone(interceptSnapshot);
+  corrupt(malformed.state.missions.find(mission => mission.objective === "Intercept"));
+  await assert.rejects(db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [malformed, malformed.state.turn]), /STLR_INVALID_DATA:mission_intercept/);
+}
+const interceptSubmission = { player_id: 1, turn: 1, generation: 0, commands: [fixtures.intercept_game.launch] };
+await db.query("select * from public.stellarion_submission_ids($1)", [interceptSubmission]);
+for (const corrupt of [
+  command => { delete command.target; },
+  command => { command.target = 0; },
+  command => { command.target = 1.5; },
+  command => { command.target = command.mission_id; },
+  command => { command.army = {}; },
+  command => { delete command.battle_plan; },
+  command => { command.extra = true; },
+]) {
+  const malformed = structuredClone(interceptSubmission);
+  corrupt(malformed.commands[0]);
+  await assert.rejects(db.query("select * from public.stellarion_submission_ids($1)", [malformed]), /STLR_INVALID_DATA:intercept_command/);
+}
+console.log("Targeted interception snapshots, reports, return phases and malformed orders passed.");
 const patrolSnapshot = fixtures.patrol_game.turns.find(({resolved}) => resolved.state.missions.length).resolved;
 await db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [patrolSnapshot, patrolSnapshot.state.turn]);
 for (const corrupt of [
@@ -203,6 +249,13 @@ for (const corrupt of [
   mission => { mission.patrol.phase = "Unknown"; },
   mission => { mission.patrol.remaining_turns = -1; },
   mission => { mission.patrol.remaining_turns = 1.5; },
+  mission => { delete mission.patrol.friendly_players; },
+  mission => { mission.patrol.friendly_players = null; },
+  mission => { mission.patrol.friendly_players = [1]; },
+  mission => { mission.patrol.friendly_players = [3]; },
+  mission => { mission.patrol.friendly_players = [2, 2]; },
+  mission => { mission.patrol.friendly_players = [2.5]; },
+  mission => { mission.patrol.friendly_players = ["2"]; },
   mission => { mission.patrol.extra = true; },
   mission => { mission.objective = "Attack"; },
 ]) {
@@ -226,6 +279,31 @@ for (const corrupt of [
   await assert.rejects(db.query("select * from public.stellarion_submission_ids($1)", [malformed]), /STLR_INVALID_DATA:patrol_command/);
 }
 console.log("Patrol snapshot phases, space destinations, durations and command shapes passed.");
+const friendshipSubmission = {
+  player_id: 1, turn: 1, generation: 0,
+  commands: [{kind: "set_patrol_friendly", mission_id: 9902, player_id: 2, friendly: true}],
+};
+await db.query("select * from public.stellarion_submission_ids($1)", [friendshipSubmission]);
+for (const corrupt of [
+  command => { delete command.friendly; },
+  command => { command.friendly = "true"; },
+  command => { command.player_id = 1; },
+  command => { command.player_id = 5; },
+  command => { command.player_id = 2.5; },
+  command => { command.mission_id = 0; },
+  command => { command.mission_id = 1.5; },
+  command => { command.extra = true; },
+]) {
+  const malformed = structuredClone(friendshipSubmission);
+  corrupt(malformed.commands[0]);
+  await assert.rejects(db.query("select * from public.stellarion_submission_ids($1)", [malformed]), /STLR_INVALID_DATA:patrol_friendly_command/);
+}
+console.log("Per-patrol friendly players and malformed friendship orders passed.");
+await db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [fixtures.patrol_contacts, fixtures.patrol_contacts.state.turn]);
+for (const player of fixtures.patrol_contacts.state.players) {
+  assert(player.reports.some(report => report.combat_report === null && report.mission.objective === "Patrol"));
+}
+console.log("Rust-generated friendly fleet contacts persist without combat rounds.");
 for (const route of fixtures.trade_routes) {
   const result = await db.query(
     `select public.stellarion_trade_route_valid($1, $2) as valid,
@@ -1330,6 +1408,29 @@ for (const { submissions, resolved } of fixtures.patrol_game.turns) {
 assert(patrolPhases.has("OnStation") && patrolPhases.has("Returning"));
 assert.equal(patrolGame.persisted.state.missions.length, 0);
 console.log("Patrol dispatch, operating duration, upkeep, return and docking passed through authenticated SQL RPCs.");
+const interceptLobbyState = structuredClone(fixtures.lobby);
+interceptLobbyState.state.rules.space_fauna_percent = 0;
+interceptLobbyState.state.rules.independent_populations = false;
+const interceptLobby = await create(host, "TRGX01", "authenticated", interceptLobbyState);
+const interceptJoined = await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result", [interceptLobby.game.code, "Guest", guestRecovery]);
+let interceptGame = await snapshotWrite(host, "select public.stellarion_start_game($1, $2, $3) as result", [interceptLobby.game.id, interceptJoined.game.revision, fixtures.intercept_game.initial]);
+for (const {submissions, resolved} of fixtures.intercept_game.turns) {
+  const turn = interceptGame.persisted.state.turn;
+  for (const [index, actor] of [host, guest].entries()) {
+    await rpc(actor, "select public.stellarion_save_game($1, $2, $3) as result", [interceptGame.id, interceptGame.revision, submissions[index]]);
+    const saved = await rpc(actor, "select public.stellarion_load_turn_submissions($1, $2, 'mine') as result", [interceptGame.id, turn]);
+    assert.deepEqual(saved[0].submission, submissions[index]);
+    for (const disposition of ["inserted", "duplicate"]) {
+      assert.equal((await rpc(actor, "select public.stellarion_submit_turn($1, $2) as result", [interceptGame.id, submissions[index]])).disposition, disposition);
+    }
+  }
+  interceptGame = await snapshotWrite(host, "select public.stellarion_publish_resolution($1, $2, $3, $4) as result", [interceptGame.id, interceptGame.revision, turn, resolved]);
+  assert.deepEqual((await rpc(guest, "select public.stellarion_load_game($1) as result", [interceptGame.id])).persisted, resolved);
+}
+assert.equal(interceptGame.persisted.state.missions.length, 0);
+assert(interceptGame.persisted.state.players[1].reports.some(report => report.mission.objective === "Intercept" && report.scout_probes === 0));
+assert(interceptGame.persisted.state.players[1].reports.some(report => report.mission.objective === "Spy" && report.turn === fixtures.intercept_game.initial.state.turn + 1));
+console.log("Final-approach interception, saved drafts, retry-safe submissions, same-turn survivor arrival, return and docking passed through authenticated SQL RPCs.");
 console.log("Host and guest presence expires after 15 seconds; read-only refreshes, resume guards, reconnects, and saved games remain consistent.");
 console.log("Direct authenticated SQL RPCs: create/join/recovery/start/save/ready/continue/resolve, stable recovery codes, permissions, lobby colors, readiness retries, revision races, events, and lobby deletion passed.");
 await db.close();

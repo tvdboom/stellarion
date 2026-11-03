@@ -6,6 +6,7 @@ use std::f32::consts::TAU;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy_egui::EguiContexts;
 
 use crate::core::camera::MainCamera;
 use crate::core::constants::MISSION_Z;
@@ -269,6 +270,7 @@ fn zone_part_pose(
 /// Keeps the coverage boundary fixed while light sweeps and an inner echo animate within it.
 pub(crate) fn update_patrol_zones(
     mut commands: Commands,
+    mut contexts: EguiContexts,
     mut zones: Query<(Entity, &PatrolZone, &mut Transform, &MeshMaterial2d<ColorMaterial>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -276,25 +278,28 @@ pub(crate) fn update_patrol_zones(
     state: Res<UiState>,
     missions: Res<Missions>,
     player: Res<Player>,
+    session: Res<MultiplayerSession>,
     camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     window: Single<&Window>,
     map: Res<Map>,
     time: Res<Time>,
 ) {
     let mut desired = BTreeMap::new();
-    for mission in missions.iter().filter(|mission| {
-        mission.owner == player.id && mission.patrol.is_some() && !mission.is_returning()
-    }) {
+    // Missions already contains only detected contacts. Coverage appears on arrival for every
+    // owner, and disappears when the patrol returns or leaves sensor coverage.
+    for mission in missions.iter().filter(|mission| mission.is_patrolling()) {
         if let Some(patrol) = &mission.patrol {
             desired.insert(
                 mission.id,
                 (
                     patrol.center,
-                    player.color().color().with_alpha(if mission.is_patrolling() {
-                        0.5
+                    (if mission.owner == player.id {
+                        player.color()
                     } else {
-                        0.2
-                    }),
+                        session.player_color(mission.owner)
+                    })
+                    .color()
+                    .with_alpha(0.5),
                     false,
                 ),
             );
@@ -303,20 +308,34 @@ pub(crate) fn update_patrol_zones(
     if state.selecting_patrol_zone || state.mission && state.mission_info.objective == Icon::Patrol
     {
         let (camera, transform) = camera.into_inner();
-        let center = if state.selecting_patrol_zone {
+        let reinforcing_hover = state.selecting_patrol_zone
+            && !player.spectator
+            && state
+                .mission_hover
+                .and_then(|id| missions.get(id))
+                .is_some_and(|mission| mission.owner == player.id && mission.is_patrolling());
+        let pointer_over_ui =
+            contexts.ctx_mut().is_ok_and(|context| context.is_pointer_over_egui());
+        let center = if reinforcing_hover || state.selecting_patrol_zone && pointer_over_ui {
+            None
+        } else if state.selecting_patrol_zone {
             window
                 .cursor_position()
                 .and_then(|cursor| camera.viewport_to_world_2d(transform, cursor).ok())
         } else {
-            state.patrol_center
+            // A selected reinforcement uses the existing zone's boundary as its preview.
+            state.patrol_center.filter(|center| {
+                !missions.iter().any(|mission| {
+                    mission.owner == player.id
+                        && mission.is_patrolling()
+                        && mission.patrol.as_ref().is_some_and(|patrol| patrol.center == *center)
+                })
+            })
         };
-        if let Some(center) = center {
-            let color = if valid_patrol_target(&map, state.mission_info.origin, center, None) {
-                player.color().color().with_alpha(0.7)
-            } else {
-                Color::srgba(1.0, 0.2, 0.2, 0.7)
-            };
-            desired.insert(0, (center, color, false));
+        if let Some(center) = center
+            .filter(|center| valid_patrol_target(&map, state.mission_info.origin, *center, None))
+        {
+            desired.insert(0, (center, player.color().color().with_alpha(0.7), false));
         }
     }
     for (entity, zone, mut transform, material) in &mut zones {

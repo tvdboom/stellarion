@@ -335,6 +335,52 @@ fn render_readme_screenshots() {
 }
 
 #[test]
+#[ignore = "requires generated assets and a GPU; captures raid report layout offline"]
+fn render_raid_report_screenshots() {
+    assert_eq!(std::env::var("STELLARION_BACKEND").as_deref(), Ok("mock"));
+    std::fs::create_dir_all("target/raid-report-preview").unwrap();
+    let mut app = capture_app();
+    app.add_systems(Last, |world: &mut World, mut frame: Local<usize>| {
+        if *world.resource::<State<AppState>>().get() != AppState::Game {
+            return;
+        }
+        *frame += 1;
+        if *frame == 80 {
+            let mut player = world.resource_mut::<Player>();
+            let report = &mut player.reports[0];
+            report.mission.objective = Icon::Raid;
+            report.raid_loot = Resources::new(61, 19, 4);
+            let report_id = report.id;
+            let mut ui = world.resource_mut::<UiState>();
+            ui.planet_selected = None;
+            ui.mission = true;
+            ui.mission_tab = MissionTab::MissionReports;
+            ui.mission_report = Some(report_id);
+        } else if *frame == 160 {
+            world.query::<&mut Window>().single_mut(world).unwrap().resolution.set(800.0, 600.0);
+        } else if *frame == 240 {
+            let mut player = world.resource_mut::<Player>();
+            player.reports[0].raid_loot = Resources::new(1_234_567, 8_901_234, 5_678_901);
+            player.reports[0].scout_probes = 2;
+        }
+        let name = match *frame {
+            120 => "report",
+            200 => "report-small",
+            280 => "large-totals",
+            _ => return,
+        };
+        let mut capture = world.spawn(Screenshot::primary_window());
+        capture.observe(save_to_disk(format!("target/raid-report-preview/{name}.png")));
+        if *frame == 280 {
+            capture.observe(|_: On<ScreenshotCaptured>, mut exit: MessageWriter<AppExit>| {
+                exit.write(AppExit::Success);
+            });
+        }
+    });
+    app.run();
+}
+
+#[test]
 #[ignore = "requires generated assets and a GPU; captures raid loot layering offline"]
 fn render_raid_loot_screenshots() {
     use crate::core::combat::systems::SalvagePickupCmp;
@@ -436,6 +482,134 @@ fn render_raid_loot_screenshots() {
     app.run();
 }
 
+#[test]
+#[ignore = "requires generated assets and a GPU; captures space-location echoes offline"]
+fn render_location_marker_screenshots() {
+    assert_eq!(std::env::var("STELLARION_BACKEND").as_deref(), Ok("mock"));
+    std::fs::create_dir_all("target/location-marker-preview").unwrap();
+    let mut app = capture_app();
+    app.add_systems(Last, |world: &mut World, mut arrived: Local<Option<usize>>| {
+        if *world.resource::<State<AppState>>().get() != AppState::Game {
+            return;
+        }
+        let frame = {
+            let mut scene = world.resource_mut::<CaptureScene>();
+            scene.frame += 1;
+            scene.frame
+        };
+        assert!(frame < 1_000, "location marker capture timed out");
+        if frame == 80 {
+            world.insert_resource(crate::core::messages::Messages::default());
+            let position = world.resource::<CaptureScene>().camera;
+            let mut state = world.resource_mut::<UiState>();
+            state.planet_selected = None;
+            state.focus_planet = None;
+            state.focus_position = Some(position);
+            state.focus_zoom = None;
+            state.to_selected = true;
+            state.mission = false;
+            state.combat_report = None;
+            state.location_marker =
+                Some(crate::core::ui::location_marker::LocationMarker::new(position));
+        }
+        if frame <= 80 || world.resource::<UiState>().to_selected {
+            return;
+        }
+        let age = frame - *arrived.get_or_insert(frame);
+        let name = match age {
+            20 => "early",
+            65 => "fading",
+            150 => {
+                assert!(world.resource::<UiState>().location_marker.is_none());
+                "finished"
+            },
+            _ => return,
+        };
+        let mut capture = world.spawn(Screenshot::primary_window());
+        capture.observe(save_to_disk(format!("target/location-marker-preview/{name}.png")));
+        if name == "finished" {
+            capture.observe(
+                |_: On<ScreenshotCaptured>, mut exit: MessageWriter<bevy::app::AppExit>| {
+                    exit.write(bevy::app::AppExit::Success);
+                },
+            );
+        }
+    });
+    app.run();
+}
+
+#[test]
+#[ignore = "requires generated assets and a GPU; captures fleet-following location echoes offline"]
+fn render_fleet_location_marker_screenshots() {
+    use crate::core::ui::location_marker::LocationMarker;
+
+    assert_eq!(std::env::var("STELLARION_BACKEND").as_deref(), Ok("mock"));
+    std::fs::create_dir_all("target/fleet-marker-preview").unwrap();
+    let mut app = capture_app();
+    app.add_systems(Last, |world: &mut World| {
+        if *world.resource::<State<AppState>>().get() != AppState::Game {
+            return;
+        }
+        let frame = {
+            let mut scene = world.resource_mut::<CaptureScene>();
+            scene.frame += 1;
+            scene.frame
+        };
+        assert!(frame < 1_000, "fleet marker capture timed out");
+        if frame == 60 {
+            world.insert_resource(crate::core::messages::Messages::default());
+            let scene = world.resource::<CaptureScene>();
+            let center = scene.camera + Vec2::Y * 350.0;
+            let mut mission = Mission::new_patrol(
+                9909,
+                scene.model.turn as usize,
+                1,
+                world.resource::<Map>().get(scene.origin),
+                center,
+                fleet(&[(Ship::LightFighter, 6), (Ship::Cruiser, 2)]),
+                None,
+            );
+            mission.position = center;
+            mission.patrol.as_mut().unwrap().phase = crate::core::patrols::PatrolPhase::OnStation;
+            world.resource_mut::<crate::core::missions::Missions>().0 = vec![mission];
+            let mut state = world.resource_mut::<UiState>();
+            state.planet_selected = None;
+            state.focus_planet = None;
+            state.focus_position = Some(center);
+            state.focus_zoom = None;
+            state.to_selected = true;
+            state.mission = false;
+            state.combat_report = None;
+        }
+        if frame == 300 {
+            let position = world.resource::<UiState>().focus_position.unwrap();
+            let mut fleets =
+                world.query::<(&crate::core::map::systems::MissionCmp, &GlobalTransform)>();
+            let (_, transform) = fleets.iter(world).find(|(fleet, _)| fleet.id == 9909).unwrap();
+            assert!(transform.translation().truncate().distance(position) > 25.0);
+            world.resource_mut::<UiState>().location_marker =
+                Some(LocationMarker::for_mission(9909, position));
+        }
+        let name = match frame {
+            320 => "early",
+            365 => "moving",
+            450 => {
+                assert!(world.resource::<UiState>().location_marker.is_none());
+                "finished"
+            },
+            _ => return,
+        };
+        let mut capture = world.spawn(Screenshot::primary_window());
+        capture.observe(save_to_disk(format!("target/fleet-marker-preview/{name}.png")));
+        if name == "finished" {
+            capture.observe(|_: On<ScreenshotCaptured>, mut exit: MessageWriter<AppExit>| {
+                exit.write(AppExit::Success);
+            });
+        }
+    });
+    app.run();
+}
+
 fn capture_app() -> App {
     let mut app = App::new();
     app.add_plugins(
@@ -495,6 +669,156 @@ fn render_patrol_screenshots() {
     let mut app = capture_app();
     app.add_systems(Last, capture_patrol_views);
     app.run();
+}
+
+#[test]
+#[ignore = "requires generated assets and a GPU; captures interception controls and dogfight offline"]
+fn render_intercept_screenshots() {
+    assert_eq!(std::env::var("STELLARION_BACKEND").as_deref(), Ok("mock"));
+    std::fs::create_dir_all("target/intercept-preview").unwrap();
+    let mut app = capture_app();
+    app.add_systems(Last, capture_intercept_views);
+    app.run();
+}
+
+fn capture_intercept_views(world: &mut World) {
+    use crate::core::map::planet::Planet;
+    use crate::core::missions::BombingRaid;
+    use crate::core::units::Amount;
+    use rand::SeedableRng;
+    if *world.resource::<State<AppState>>().get() != AppState::Game {
+        return;
+    }
+    let frame = {
+        let mut scene = world.resource_mut::<CaptureScene>();
+        scene.frame += 1;
+        scene.frame
+    };
+    if frame == 60 {
+        world.insert_resource(crate::core::messages::Messages::default());
+        let origin = world.resource::<CaptureScene>().origin;
+        world
+            .resource_mut::<Map>()
+            .get_mut(origin)
+            .army
+            .insert(Unit::Building(Building::SensorPhalanx), 30);
+        let map = world.resource::<Map>().clone();
+        let player = world.resource::<Player>().clone();
+        let enemy = world.resource::<CaptureScene>().model.players[1].home_planet;
+        let turn = world.resource::<Settings>().turn;
+        let mut target = Mission::new_with_id(
+            9901,
+            turn,
+            2,
+            map.get(enemy),
+            map.get(origin),
+            Icon::Attack,
+            fleet(&[(Ship::Battleship, 4)]),
+            BombingRaid::None,
+            true,
+            false,
+            None,
+        );
+        target.position = map.get(origin).position + Vec2::X * Planet::SIZE * 12.0;
+        world.resource_mut::<crate::core::missions::Missions>().0 = vec![target.clone()];
+        let mut ui = world.resource_mut::<UiState>();
+        ui.planet_selected = Some(origin);
+        ui.choose_intercept_target(&map, &player, turn, &target);
+        ui.mission_info.army = fleet(&[(
+            Ship::LightFighter,
+            8.min(map.get(origin).army.amount(&Unit::Ship(Ship::LightFighter))),
+        )]);
+    }
+    if frame == 160 || frame == 260 {
+        for mut window in world.query::<&mut Window>().iter_mut(world) {
+            window.resolution.set(
+                if frame == 160 {
+                    800.0
+                } else {
+                    1600.0
+                },
+                if frame == 160 {
+                    600.0
+                } else {
+                    900.0
+                },
+            );
+        }
+    }
+    if frame == 330 {
+        let mission = world.resource::<UiState>().mission_info.clone();
+        let intercept = mission.intercept.as_ref().expect("preview must plot a contact");
+        let point = intercept.point;
+        let mut site = world.resource::<Map>().get(mission.origin).clone();
+        site.position = point;
+        site.owned = None;
+        site.controlled = Some(2);
+        site.army = fleet(&[(Ship::LightFighter, 3), (Ship::Cruiser, 1)]).into();
+        let mut report = crate::core::combat::resolution::resolve_combat_with_rng(
+            world.resource::<Settings>().turn,
+            &mission,
+            &site,
+            &mut rand_chacha::ChaCha8Rng::from_seed([17; 32]),
+        );
+        report.mission.position = point;
+        world.resource_mut::<Player>().reports.push(report);
+        world.resource_mut::<UiState>().mission = false;
+        world.resource_mut::<UiState>().planet_selected = None;
+        for mut transform in
+            world.query_filtered::<&mut Transform, With<MainCamera>>().iter_mut(world)
+        {
+            transform.translation.x = point.x;
+            transform.translation.y = point.y;
+        }
+        for mut projection in
+            world.query_filtered::<&mut Projection, With<MainCamera>>().iter_mut(world)
+        {
+            if let Projection::Orthographic(projection) = &mut *projection {
+                projection.scale = 0.8;
+            }
+        }
+    }
+    if frame == 780 {
+        let origin = world.resource::<CaptureScene>().origin;
+        let map = world.resource::<Map>().clone();
+        let player = world.resource::<Player>().clone();
+        let enemy = world.resource::<CaptureScene>().model.players[1].home_planet;
+        let turn = world.resource::<Settings>().turn;
+        let mut target = Mission::new_with_id(
+            9902,
+            turn,
+            2,
+            map.get(enemy),
+            map.get(origin),
+            Icon::Attack,
+            fleet(&[(Ship::Battleship, 4)]),
+            BombingRaid::None,
+            true,
+            false,
+            None,
+        );
+        target.position = map.get(origin).position + Vec2::X * Planet::SIZE;
+        world.resource_mut::<crate::core::missions::Missions>().0 = vec![target.clone()];
+        let mut ui = world.resource_mut::<UiState>();
+        ui.planet_selected = Some(origin);
+        ui.choose_intercept_target(&map, &player, turn, &target);
+    }
+    let name = match frame {
+        130 => Some("draft"),
+        230 => Some("draft-small"),
+        440 => Some("dogfight"),
+        545 => Some("shockwave"),
+        660 => Some("aftermath"),
+        850 => Some("late-draft"),
+        _ => None,
+    };
+    if let Some(name) = name {
+        let path = format!("{}/target/intercept-preview/{name}.png", env!("CARGO_MANIFEST_DIR"));
+        world.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+    }
+    if frame == 900 {
+        world.write_message(AppExit::Success);
+    }
 }
 
 fn capture_patrol_views(world: &mut World) {

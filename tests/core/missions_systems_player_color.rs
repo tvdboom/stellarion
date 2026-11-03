@@ -60,7 +60,7 @@ fn joint_hover_groups_only_visible_contingents_from_the_same_attack() {
 }
 
 #[test]
-fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
+fn mission_colors_and_clicks_follow_current_owners_and_viewers() {
     let mut model = GameModel::new(
         [9; 32],
         GameRules {
@@ -123,6 +123,7 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
         .init_resource::<Assets<ColorMaterial>>()
         .init_resource::<WorldAssets>()
         .init_resource::<UiState>()
+        .init_resource::<Settings>()
         .insert_resource(model.map.clone())
         .insert_resource(model.players[0].clone())
         .insert_resource(session)
@@ -136,7 +137,7 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
                 update_mission_route_arrow,
             ),
         );
-    app.world_mut().spawn((Camera2d, MainCamera));
+    let camera = app.world_mut().spawn((Camera2d, MainCamera)).id();
     app.world_mut().resource_scope(|world, mut assets: Mut<WorldAssets>| {
         let server = world.resource::<AssetServer>().clone();
         assets.begin_gameplay_loading(
@@ -284,6 +285,165 @@ fn mission_colors_follow_owners_on_spawn_hover_and_viewer_change() {
 
             assert!(destination_surface - last_particle < 8.0);
         }
+    }
+
+    // Reuse the same sprite across player switches and projection updates. Its click observer
+    // must read the current identities rather than the owner/viewer captured when it spawned.
+    use bevy::camera::RenderTarget;
+    use bevy::picking::{
+        backend::HitData,
+        pointer::{Location, PointerId},
+    };
+    use bevy::window::WindowRef;
+    let window = app.world_mut().spawn(Window::default()).id();
+    let location = Location {
+        target: RenderTarget::Window(WindowRef::Entity(window)).normalize(Some(window)).unwrap(),
+        position: Vec2::ZERO,
+    };
+    {
+        let mut missions = app.world_mut().resource_mut::<Missions>();
+        let patrol = &mut missions.0[0];
+        patrol.objective = Icon::Patrol;
+        patrol.jump_gate = false;
+        patrol.patrol = Some(crate::core::patrols::Patrol {
+            center: patrol.position,
+            phase: crate::core::patrols::PatrolPhase::OnStation,
+            remaining_turns: None,
+            friendly_players: default(),
+        });
+    }
+    for (viewer, owner) in [(0, 0), (1, 0), (1, 1), (0, 1)] {
+        app.insert_resource(model.players[viewer].clone());
+        app.world_mut().resource_mut::<Missions>().0[0].owner = model.players[owner].id;
+        app.insert_resource(UiState {
+            planet_selected: Some(model.players[viewer].home_planet),
+            ..default()
+        });
+        app.update();
+        app.world_mut().trigger(Pointer::new(
+            PointerId::Mouse,
+            location.clone(),
+            Click {
+                button: PointerButton::Primary,
+                hit: HitData::new(camera, 0.0, None, None),
+                duration: Duration::from_millis(50),
+                count: 1,
+            },
+            mission_entities[&model.players[0].id],
+        ));
+        let state = app.world().resource::<UiState>();
+        assert!(state.mission);
+        assert_eq!(state.planet_selected, None);
+        assert_eq!(
+            state.mission_tab,
+            if owner == viewer {
+                MissionTab::ActiveMissions
+            } else {
+                MissionTab::EnemyMissions
+            }
+        );
+    }
+
+    // Both reinforcement shortcuts must use the saved zone center, never the orbiting sprite.
+    let player = model.players[0].clone();
+    let center = (1..20)
+        .flat_map(|x| (1..20).map(move |y| (x, y)))
+        .map(|(x, y)| {
+            model.map.rect.min + model.map.rect.size() * Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
+        })
+        .find(|point| {
+            crate::core::patrols::valid_patrol_target(&model.map, player.home_planet, *point, None)
+        })
+        .unwrap();
+    app.insert_resource(player.clone());
+    {
+        let mut missions = app.world_mut().resource_mut::<Missions>();
+        let target = &mut missions.0[0];
+        target.owner = player.id;
+        target.position = center;
+        target.patrol.as_mut().unwrap().center = center;
+    }
+    for button in [PointerButton::Secondary, PointerButton::Primary] {
+        let mut state = UiState {
+            planet_selected: Some(player.home_planet),
+            ..default()
+        };
+        if button == PointerButton::Primary {
+            state.mission_info.origin = player.home_planet;
+            state.begin_patrol_selection();
+        }
+        app.insert_resource(state);
+        app.update();
+        app.world_mut().trigger(Pointer::new(
+            PointerId::Mouse,
+            location.clone(),
+            Click {
+                button,
+                hit: HitData::new(
+                    camera,
+                    0.0,
+                    Some((center + Vec2::splat(40.0)).extend(0.0)),
+                    None,
+                ),
+                duration: Duration::from_millis(50),
+                count: 1,
+            },
+            mission_entities[&player.id],
+        ));
+        let state = app.world().resource::<UiState>();
+        assert!(state.mission);
+        assert_eq!(state.mission_tab, MissionTab::NewMission);
+        assert_eq!(state.mission_info.objective, Icon::Patrol);
+        assert_eq!(state.mission_info.origin, player.home_planet);
+        assert_eq!(state.mission_info.patrol.as_ref().unwrap().center, center);
+        assert_ne!(state.mission_info.id, player.id);
+        assert!(!state.selecting_patrol_zone);
+        assert_eq!(state.planet_selected, None);
+    }
+    // Both entry points select the live enemy contact through the map sprite's observer.
+    let home_position = app.world().resource::<Map>().get(player.home_planet).position;
+    app.world_mut()
+        .resource_mut::<Map>()
+        .get_mut(player.home_planet)
+        .army
+        .insert(Unit::Building(crate::core::units::buildings::Building::SensorPhalanx), 20);
+    {
+        let mut missions = app.world_mut().resource_mut::<Missions>();
+        let target = &mut missions.0[0];
+        target.owner = model.players[1].id;
+        target.origin = model.players[1].home_planet;
+        target.destination = player.home_planet;
+        target.position = home_position + Vec2::X * crate::core::map::planet::Planet::SIZE * 6.0;
+        target.objective = Icon::Attack;
+        target.patrol = None;
+        target.army = Army::from([(Unit::Ship(crate::core::units::ships::Ship::LightFighter), 3)]);
+    }
+    for button in [PointerButton::Secondary, PointerButton::Primary] {
+        let mut state = UiState {
+            planet_selected: Some(player.home_planet),
+            ..default()
+        };
+        if button == PointerButton::Primary {
+            state.begin_intercept_selection();
+        }
+        app.insert_resource(state);
+        app.update();
+        app.world_mut().trigger(Pointer::new(
+            PointerId::Mouse,
+            location.clone(),
+            Click {
+                button,
+                hit: HitData::new(camera, 0.0, None, None),
+                duration: Duration::from_millis(50),
+                count: 1,
+            },
+            mission_entities[&player.id],
+        ));
+        let state = app.world().resource::<UiState>();
+        assert!(state.mission);
+        assert_eq!(state.mission_info.objective, Icon::Intercept);
+        assert_eq!(state.intercept_target, Some(player.id));
+        assert!(!state.selecting_intercept);
     }
 }
 

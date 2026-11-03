@@ -87,3 +87,71 @@ fn camera_focus_zoom_reaches_the_widest_allowed_scale() {
     assert!(complete);
     assert_eq!(scale, MAX_ZOOM);
 }
+
+#[test]
+fn space_focus_reaches_and_holds_an_empty_location_beyond_the_worlds_until_manual_input() {
+    use bevy_egui::EguiUserTextures;
+    use std::time::Duration;
+
+    let map = Map {
+        rect: Rect::from_corners(Vec2::splat(-2_000.0), Vec2::splat(2_000.0)),
+        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        planets: vec![
+            crate::core::map::planet::Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0),
+            crate::core::map::planet::Planet::new(1, "Target".into(), Vec2::X * 100.0, false, 1.0),
+        ],
+    };
+    let destination = Vec2::new(900.0, -700.0);
+    let mut app = App::new();
+    let mut time = Time::<()>::default();
+    time.advance_by(Duration::from_secs_f32(1.0 / 60.0));
+    app.insert_resource(map)
+        .insert_resource(time)
+        .insert_resource(UiState {
+            focus_position: Some(destination),
+            to_selected: true,
+            ..default()
+        })
+        .init_resource::<EguiUserTextures>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .add_message::<MouseWheel>()
+        .add_systems(Update, (move_camera, move_camera_keyboard, clamp_camera_to_worlds).chain());
+    app.world_mut().spawn(Window::default());
+    let camera = app.world_mut().spawn((Camera2d, MainCamera)).id();
+    for _ in 0..240 {
+        app.update();
+    }
+    assert!(!app.world().resource::<UiState>().to_selected);
+    assert_eq!(app.world().resource::<UiState>().focus_position, Some(destination));
+    assert!(
+        app.world().get::<Transform>(camera).unwrap().translation.truncate().distance(destination)
+            < 0.75
+    );
+
+    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyA);
+    app.update();
+    assert!(app.world().resource::<UiState>().focus_position.is_none());
+    assert!(app.world().get::<Transform>(camera).unwrap().translation.y > destination.y + 1.0);
+}
+
+#[test]
+fn selecting_a_world_replaces_a_retained_space_focus() {
+    use bevy::ecs::system::RunSystemOnce;
+    use bevy_egui::EguiUserTextures;
+
+    let mut world = World::new();
+    world.insert_resource(Map::new(1, 0));
+    world.insert_resource(UiState {
+        planet_selected: Some(0),
+        focus_position: Some(Vec2::splat(2_000.0)),
+        to_selected: true,
+        ..default()
+    });
+    world.init_resource::<EguiUserTextures>();
+    world.init_resource::<Messages<MouseWheel>>();
+    world.spawn(Window::default());
+    world.spawn((Camera2d, MainCamera));
+    world.run_system_once(move_camera).unwrap();
+    assert!(world.resource::<UiState>().focus_position.is_none());
+}

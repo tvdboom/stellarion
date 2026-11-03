@@ -52,7 +52,7 @@ use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::NameFromEnum;
 
 const COMBAT_IDENTITY_EDGE_INSET: f32 = 18.0;
-const SPACE_FAUNA_BACKGROUND_TINT: Color = Color::srgb(0.72, 0.72, 0.72);
+const SPACE_ENCOUNTER_BACKGROUND_TINT: Color = Color::srgb(0.72, 0.72, 0.72);
 const COMBAT_SHIELD_DEFENSE_GAP: f32 = 12.0;
 const COMBAT_STATUS_FONT_SIZE: f32 = 36.0;
 // Use the displayed size directly so Bevy does not allocate a huge glyph atlas and scale it down.
@@ -1485,8 +1485,14 @@ pub fn setup_combat(
         })
         .map_or_else(
             || {
-                if report.mission.objective == Icon::Patrol {
-                    "combat".to_owned()
+                if report.is_space_encounter() {
+                    // Keep the same nebula on replay without using simulation randomness.
+                    match report.id % 3 {
+                        0 => "fauna combat blue",
+                        1 => "fauna combat violet",
+                        _ => "fauna combat amber",
+                    }
+                    .to_owned()
                 } else {
                     format!("{} large", destination.kind.to_lowername())
                 }
@@ -1498,8 +1504,10 @@ pub fn setup_combat(
         Sprite {
             image: assets.image(background),
             custom_size: Some(Vec2::new(width, height)),
-            color: if report.is_space_fauna_encounter() {
-                SPACE_FAUNA_BACKGROUND_TINT
+            // Match the menu's centered cover crop instead of stretching the art on entry.
+            image_mode: SpriteImageMode::Scale(SpriteScalingMode::FillCenter),
+            color: if report.is_space_encounter() {
+                SPACE_ENCOUNTER_BACKGROUND_TINT
             } else {
                 Color::WHITE
             },

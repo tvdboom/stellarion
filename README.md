@@ -120,6 +120,11 @@ defenses.
   enemy ships or Space Dock remaining, every War Sun has an initial 10% chance plus the planet's
   −2% to +2% Death Ray size modifier (the chance falls by 1% in later combat rounds). The fleet
   returns whether destruction succeeds. A destroyed planet can never be colonized again.
+- **Intercept:** Ambush a visible enemy fleet at a reachable point along its flight path, including
+  its final approach outside the destination's arrival radius. Both fleets use normal accelerated
+  movement, with fleet speed set by the slowest ship. The meeting point and time are committed at
+  launch; recalling or delaying the target can make the ambush miss. Surviving targets complete
+  their scheduled movement and can still arrive that turn. Interceptors return to port afterward.
 - **Patrol:** Patrols cover a fixed 3 AU radius and attack detected foreign fleets. Detection
   checks the whole route through the circle. With exposure equal to the fraction of the turn
   inside it and strength equal to `ship count × production_level`, the chance is

@@ -2105,6 +2105,12 @@ fn action_blocked_by_active_protection(planet: &Planet, player_id: PlayerId, ico
     planet.blocks_hostile_action_by(player_id) && icon.is_hostile_action()
 }
 
+/// Retained until the next press because picking also emits a click after a completed drag.
+#[derive(Component, Default)]
+struct MapDrag {
+    moved: bool,
+}
+
 /// Draws the map interface and emits any resulting local actions.
 pub fn draw_map(
     mut commands: Commands,
@@ -2125,6 +2131,7 @@ pub fn draw_map(
             Sprite::from_image(assets.image("bg")),
             Transform::from_xyz(0., 0., BACKGROUND_Z),
             Pickable::default(),
+            MapDrag::default(),
             ParallaxCmp::new(0.84, 0.6, 0.8, Vec2::ZERO),
             MapCmp,
         ))
@@ -2133,10 +2140,11 @@ pub fn draw_map(
             |event: On<Pointer<Press>>,
              mut commands: Commands,
              mut state: ResMut<UiState>,
+             mut drags: Query<&mut MapDrag>,
              window_e: Single<Entity, With<Window>>| {
                 if event.button == PointerButton::Primary {
-                    if state.selecting_patrol_zone {
-                        return;
+                    if let Ok(mut drag) = drags.get_mut(event.entity) {
+                        drag.moved = false;
                     }
                     state.planet_selected = None;
                     state.focus_planet = None;
@@ -2148,23 +2156,26 @@ pub fn draw_map(
             },
         )
         .observe(cursor::<Release>(SystemCursorIcon::Default))
+        .observe(cursor::<DragEnd>(SystemCursorIcon::Default))
         .observe(
-            |event: On<Pointer<Move>>,
+            |event: On<Pointer<Drag>>,
              camera_q: Single<(&mut Transform, &Projection), With<MainCamera>>,
              map: Res<Map>,
              mut state: ResMut<UiState>,
-             mouse: Res<ButtonInput<MouseButton>>,
-             window: Single<&CursorIcon, With<Window>>| {
-                if mouse.pressed(MouseButton::Left)
-                    && matches!(*window, CursorIcon::System(SystemCursorIcon::Grabbing))
-                {
+             mut drags: Query<&mut MapDrag>| {
+                if event.button == PointerButton::Primary {
                     let (mut camera_t, projection) = camera_q.into_inner();
 
                     let Projection::Orthographic(projection) = projection else {
                         return;
                     };
 
-                    if !event.delta.x.is_nan() && !event.delta.y.is_nan() {
+                    if event.delta.is_finite() {
+                        if let Ok(mut drag) = drags.get_mut(event.entity) {
+                            // Allow a little pointer jitter, but remember a drag even if it
+                            // returns to the press position before release.
+                            drag.moved |= event.distance.length_squared() > 3.0 * 3.0;
+                        }
                         let movement = Vec2::new(-event.delta.x, event.delta.y) * projection.scale;
                         camera_t.translation = drag_camera_position(
                             camera_t.translation.truncate(),
@@ -2188,7 +2199,14 @@ pub fn draw_map(
              map: Res<Map>,
              player: Res<Player>,
              settings: Res<Settings>,
+             drags: Query<&MapDrag>,
              mut messages: MessageWriter<MessageMsg>| {
+                if event.button == PointerButton::Primary
+                    && state.selecting_patrol_zone
+                    && drags.get(event.entity).is_ok_and(|drag| drag.moved)
+                {
+                    return;
+                }
                 if event.button == PointerButton::Secondary
                     || (state.selecting_patrol_zone && event.button == PointerButton::Primary)
                 {
@@ -2264,8 +2282,14 @@ pub fn draw_map(
                       mut state: ResMut<UiState>,
                       mut settings: ResMut<Settings>,
                       map: Res<Map>,
-                      player: Res<Player>| {
+                      player: Res<Player>,
+                      mut messages: MessageWriter<MessageMsg>| {
                     if state.selecting_patrol_zone {
+                        if matches!(event.button, PointerButton::Primary | PointerButton::Secondary) {
+                            messages.write(MessageMsg::error(
+                                "Choose a patrol center in empty space inside the map.",
+                            ));
+                        }
                         return;
                     }
                     let planet = map.get(planet_id);
@@ -2347,7 +2371,7 @@ pub fn draw_map(
 
                 // Destroyed planets have no resources nor icons
                 if !planet.is_destroyed {
-                    for (i, icon) in Icon::iter().filter(|icon| *icon != Icon::Patrol).enumerate() {
+                    for (i, icon) in Icon::iter().filter(|icon| !matches!(icon, Icon::Patrol | Icon::Intercept)).enumerate() {
                         parent
                             .spawn((
                                 Sprite {

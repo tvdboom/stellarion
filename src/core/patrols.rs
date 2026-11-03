@@ -6,7 +6,7 @@ use bevy::prelude::Vec2;
 use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 
-use crate::core::combat::report::combat_fleet_strength;
+use crate::core::combat::report::{combat_fleet_strength, MissionReport};
 use crate::core::combat::resolution::resolve_combat_with_rng;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
@@ -47,6 +47,8 @@ pub struct Patrol {
     pub remaining_turns: Option<usize>,
     /// Current travel or operating phase.
     pub phase: PatrolPhase,
+    /// Players observed without initiating combat. This does not prevent their attacks.
+    pub friendly_players: BTreeSet<PlayerId>,
 }
 
 impl Mission {
@@ -77,6 +79,7 @@ impl Mission {
             center,
             remaining_turns: turns,
             phase: PatrolPhase::Outbound,
+            friendly_players: BTreeSet::new(),
         });
         mission.position =
             origin.position + (center - origin.position).normalize_or_zero() * Planet::SIZE * 0.7;
@@ -90,6 +93,11 @@ impl Mission {
 
     /// Returns the authoritative space or world destination for this travel leg.
     pub fn target_position(&self, map: &Map) -> Vec2 {
+        if let Some(intercept) = &self.intercept {
+            if self.objective == Icon::Intercept {
+                return intercept.point;
+            }
+        }
         self.patrol
             .as_ref()
             .filter(|patrol| patrol.phase != PatrolPhase::Returning)
@@ -99,6 +107,31 @@ impl Mission {
     /// Whether the fleet currently supplies patrol coverage and owes operating fuel.
     pub fn is_patrolling(&self) -> bool {
         self.patrol.as_ref().is_some_and(|patrol| patrol.phase == PatrolPhase::OnStation)
+    }
+
+    /// Whether this destination has an owned operating combat patrol to reinforce.
+    pub(crate) fn reinforces_patrol(&self, missions: &[Mission]) -> bool {
+        self.objective == Icon::Patrol
+            && self.patrol.as_ref().is_some_and(|patrol| {
+                missions.iter().any(|target| {
+                    target.id != self.id
+                        && target.owner == self.owner
+                        && target.is_patrolling()
+                        && Icon::Patrol.accepts_army(&target.army)
+                        && target
+                            .patrol
+                            .as_ref()
+                            .is_some_and(|target| target.center == patrol.center)
+                })
+            })
+    }
+
+    /// Probes may travel alone only to join an existing combat patrol.
+    pub(crate) fn accepts_patrol_army(&self, missions: &[Mission]) -> bool {
+        Icon::Patrol.accepts_army(&self.army)
+            || (self.army.has_army()
+                && self.army.iter().all(|(unit, count)| *count == 0 || *unit == Unit::probe())
+                && self.reinforces_patrol(missions))
     }
 
     /// Fuel for one complete operating turn, using each surviving ship's one-AU consumption.
@@ -116,6 +149,7 @@ impl Mission {
         patrol.center.is_finite()
             && map.rect.contains(patrol.center)
             && patrol.remaining_turns.is_none_or(|turns| turns <= MAX_PATROL_TURNS)
+            && !patrol.friendly_players.contains(&self.owner)
             && !self.jump_gate
             && !self.deep_cover
             && self.joint_attack.is_none()
@@ -129,7 +163,8 @@ impl Mission {
                         && self.return_objective.is_none()
                         && self.origin == self.destination
                         && (patrol.phase != PatrolPhase::OnStation
-                            || self.position == patrol.center)
+                            || (self.position == patrol.center
+                                && Icon::Patrol.accepts_army(&self.army)))
                 },
                 PatrolPhase::Returning => {
                     self.objective == Icon::Deploy && self.return_objective == Some(Icon::Patrol)
@@ -236,6 +271,63 @@ pub(crate) fn reserve_upkeep(
     }
 }
 
+/// Arriving ships adopt an existing same-owner patrol's orders, duration, and return port.
+/// Exact strategic centers identify a shared zone; overlapping circles alone never merge.
+/// Prefer a fleet already on station, then the lowest ID for simultaneous arrivals.
+pub(crate) fn merge_arrivals(
+    missions: &mut Vec<Mission>,
+    arrivals: &BTreeSet<MissionId>,
+    map: &Map,
+    turn: usize,
+) {
+    for id in arrivals {
+        let Some(incoming) = missions.iter().find(|mission| mission.id == *id) else {
+            continue;
+        };
+        let Some(center) = incoming.patrol.as_ref().map(|patrol| patrol.center) else {
+            continue;
+        };
+        let target = missions
+            .iter()
+            .filter(|mission| {
+                mission.owner == incoming.owner
+                    && mission.is_patrolling()
+                    && Icon::Patrol.accepts_army(&mission.army)
+                    && mission.patrol.as_ref().is_some_and(|patrol| patrol.center == center)
+            })
+            .min_by_key(|mission| (arrivals.contains(&mission.id), mission.id))
+            .map(|mission| mission.id);
+        let Some(target) = target.filter(|target| target != id) else {
+            continue;
+        };
+        let Some(index) = missions.iter().position(|mission| mission.id == *id) else {
+            continue;
+        };
+        let incoming = missions.remove(index);
+        if let Some(patrol) = missions.iter_mut().find(|mission| mission.id == target) {
+            // Reinforcement adopts this patrol's standing orders rather than selecting a
+            // new plan from the strongest source fleet, as ordinary planet arrivals do.
+            patrol.battle_fleets.clear();
+            for (unit, count) in incoming.army {
+                let total = patrol.army.entry(unit).or_default();
+                *total = total.saturating_add(count);
+            }
+            patrol.logs.push_str(&format!(
+                "\n{}\n- ({turn}) Reinforcements from mission {} joined this patrol.",
+                incoming.logs, incoming.id
+            ));
+        }
+    }
+    // A lost or recalled target must never leave probes operating on their own.
+    // Merge first so simultaneous combat reinforcements can still provide their escort.
+    for mission in missions {
+        if mission.is_patrolling() && !Icon::Patrol.accepts_army(&mission.army) {
+            mission.return_patrol(map, turn);
+            mission.logs.push_str(" No combat ships available to patrol.");
+        }
+    }
+}
+
 /// Fraction of a linearly traversed turn inside a circle, plus the midpoint of its exposure.
 /// A stationary fleet inside has full exposure; tangency alone has zero exposure.
 pub fn route_exposure(start: Vec2, end: Vec2, center: Vec2) -> (f64, Vec2) {
@@ -266,6 +358,25 @@ pub fn route_exposure(start: Vec2, end: Vec2, center: Vec2) -> (f64, Vec2) {
     (exposure, (start.as_dvec2() + delta * ((entry + exit) * 0.5)).as_vec2())
 }
 
+/// Fraction of an operating patrol's circle shared with the observing patrol's circle.
+/// Patrol flight is abstracted across the zone, so center-point checks would miss overlapping
+/// patrols whose centers are outside each other's radius. The equal-radius overlap's midpoint
+/// provides a deterministic contact location without using client-only animated positions.
+fn patrol_overlap_exposure(target: Vec2, observer: Vec2) -> (f64, Vec2) {
+    let target = target.as_dvec2();
+    let observer = observer.as_dvec2();
+    let point = ((target + observer) * 0.5).as_vec2();
+    let separation = target.distance(observer) / (2.0 * f64::from(PATROL_RADIUS));
+    if separation >= 1.0 {
+        return (0.0, point);
+    }
+    // Area of the shared lens divided by the area of either fixed-radius patrol circle.
+    let exposure = 2.0
+        * (separation.acos() - separation * (1.0 - separation * separation).max(0.0).sqrt())
+        / std::f64::consts::PI;
+    (exposure.clamp(0.0, 1.0), point)
+}
+
 /// Contact probability with diminishing returns from production-weighted fleet size.
 pub fn detection_probability(exposure: f64, production: u128) -> f64 {
     let strength = exposure.clamp(0.0, 1.0) * production as f64;
@@ -292,10 +403,14 @@ fn combined_army(model: &GameModel, ids: &[MissionId]) -> Army {
 }
 
 /// Distributes each ship class's casualties proportionally, retaining each mission's own orders.
-fn install_survivors(model: &mut GameModel, ids: &[MissionId], survivors: &Army) {
+pub(crate) fn install_survivors(model: &mut GameModel, ids: &[MissionId], survivors: &Army) {
     let original = combined_army(model, ids);
     let mut allocated = BTreeMap::<MissionId, Army>::new();
     for (unit, total) in original {
+        // Combat results and saved fleets may retain ship classes with no remaining units.
+        if total == 0 {
+            continue;
+        }
         let alive = survivors.amount(&unit).min(total);
         let mut shares = model
             .missions
@@ -322,6 +437,33 @@ fn install_survivors(model: &mut GameModel, ids: &[MissionId], survivors: &Army)
     model.missions.retain(|mission| mission.army.has_army());
 }
 
+/// Virtual sites carry only the detected fleet, never the return world's garrison or resources.
+pub(crate) fn encounter_site(
+    model: &GameModel,
+    target: &Mission,
+    ids: &[MissionId],
+    point: Vec2,
+    port: PlanetId,
+) -> Planet {
+    let mut site = model.map.get(port).clone();
+    site.name = "Deep-space interception".to_owned();
+    site.position = point;
+    site.owned = None;
+    site.controlled = Some(target.owner);
+    site.army = combined_army(model, ids).into();
+    site.protection_permissions.clear();
+    site.protector_battle_plans.clear();
+    site.battle_plan = target.battle_plan;
+    site.fleet_withdrawal = FleetWithdrawal::Off;
+    site.shield_overload = ShieldOverloadState::Ready;
+    site.independent_population = IndependentPopulation::Empty;
+    site.resources = Resources::default();
+    site.raid_cache = Resources::default();
+    site.buy.clear();
+    site.is_destroyed = false;
+    site
+}
+
 /// One attempt per observing player/target each turn, using its strongest intersecting zone.
 /// Fleets in the same zone combine before rolling, so splitting never multiplies contact rolls.
 /// Space battles consume the participants' movement but never mutate any real planet.
@@ -329,6 +471,7 @@ pub(crate) fn resolve_encounters<R: Rng + ?Sized>(
     model: &mut GameModel,
     turn: usize,
     rng: &mut R,
+    engaged: &mut HashSet<MissionId>,
 ) -> HashSet<MissionId> {
     let mut groups = BTreeMap::<(PlayerId, u32, u32), PatrolGroup>::new();
     for mission in model.missions.iter().filter(|mission| mission.is_patrolling()) {
@@ -380,10 +523,20 @@ pub(crate) fn resolve_encounters<R: Rng + ?Sized>(
         let rotation = rng.random_range(0..target_ids.len());
         target_ids.rotate_left(rotation);
     }
-    let mut engaged = HashSet::new();
     let mut delayed = HashSet::new();
     let mut delayed_joint_attacks = BTreeSet::new();
     for target_id in target_ids {
+        // A mixed-order group may have sent only its hostile fleets into an earlier battle.
+        // Its remaining friendly patrols are still valid targets for another player's patrol.
+        let target_id = groups
+            .values()
+            .find(|group| group.ids.first() == Some(&target_id))
+            .and_then(|group| {
+                group.ids.iter().copied().find(|id| {
+                    !engaged.contains(id) && model.missions.iter().any(|mission| mission.id == *id)
+                })
+            })
+            .unwrap_or(target_id);
         if engaged.contains(&target_id) {
             continue;
         }
@@ -393,17 +546,40 @@ pub(crate) fn resolve_encounters<R: Rng + ?Sized>(
         };
         let end = target.next_turn_position(&model.map);
         let mut candidates = BTreeMap::<PlayerId, (f64, Vec2, PatrolGroup)>::new();
+        let mut hostile_candidates = BTreeMap::<PlayerId, (f64, Vec2, PatrolGroup)>::new();
         for group in groups.values().filter(|group| group.owner != target.owner) {
-            if group.ids.iter().any(|id| engaged.contains(id)) {
+            let mut group = group.clone();
+            group.ids.retain(|id| {
+                !engaged.contains(id) && model.missions.iter().any(|mission| mission.id == *id)
+            });
+            if group.ids.is_empty() {
                 continue;
             }
-            let (exposure, point) = route_exposure(target.position, end, group.center);
+            group.army = combined_army(model, &group.ids);
+            let (exposure, point) = if target.is_patrolling() {
+                patrol_overlap_exposure(target.position, group.center)
+            } else {
+                route_exposure(target.position, end, group.center)
+            };
             let probability = detection_probability(exposure, combat_fleet_strength(&group.army));
             if probability <= 0.0 {
                 continue;
             }
+            if group.ids.iter().any(|id| {
+                model
+                    .missions
+                    .iter()
+                    .find(|mission| mission.id == *id)
+                    .and_then(|mission| mission.patrol.as_ref())
+                    .is_some_and(|patrol| !patrol.friendly_players.contains(&target.owner))
+            }) && hostile_candidates
+                .get(&group.owner)
+                .is_none_or(|(best, _, _)| probability > *best)
+            {
+                hostile_candidates.insert(group.owner, (probability, point, group.clone()));
+            }
             if candidates.get(&group.owner).is_none_or(|(best, _, _)| probability > *best) {
-                candidates.insert(group.owner, (probability, point, group.clone()));
+                candidates.insert(group.owner, (probability, point, group));
             }
         }
         // Rotate player priority as well; a target can fight only one interception per turn.
@@ -413,9 +589,16 @@ pub(crate) fn resolve_encounters<R: Rng + ?Sized>(
             candidates.rotate_left(rotation);
         }
         for (probability, point, group) in candidates {
-            if rng.random::<f64>() >= probability {
+            let roll = rng.random::<f64>();
+            if roll >= probability {
                 continue;
             }
+            // Reuse the same roll for the strongest hostile zone. A stronger friendly zone can
+            // still report a contact, but cannot suppress a hostile patrol in an overlapping zone.
+            let (point, group) = hostile_candidates
+                .remove(&group.owner)
+                .filter(|(probability, _, _)| roll < *probability)
+                .map_or((point, group), |(_, point, group)| (point, group));
             let defender_ids = if target.is_patrolling() {
                 groups
                     .values()
@@ -429,10 +612,32 @@ pub(crate) fn resolve_encounters<R: Rng + ?Sized>(
             } else {
                 vec![target.id]
             };
+            let hostile_ids = group
+                .ids
+                .iter()
+                .copied()
+                .filter(|id| {
+                    model
+                        .missions
+                        .iter()
+                        .find(|mission| mission.id == *id)
+                        .and_then(|mission| mission.patrol.as_ref())
+                        .is_some_and(|patrol| !patrol.friendly_players.contains(&target.owner))
+                })
+                .collect::<Vec<_>>();
+            // Friendly patrols still contribute to the shared detection roll, but only fleets
+            // ordered to engage this player initiate combat. A contact consumes no movement or
+            // combat slot, so the detected patrol may subsequently attack in the other direction.
+            let contact = hostile_ids.is_empty();
+            let attacking_ids = if contact {
+                &group.ids
+            } else {
+                &hostile_ids
+            };
             let Some(leader) = model
                 .missions
                 .iter()
-                .filter(|mission| group.ids.contains(&mission.id))
+                .filter(|mission| attacking_ids.contains(&mission.id))
                 .max_by_key(|mission| {
                     (combat_fleet_strength(&mission.army), std::cmp::Reverse(mission.id))
                 })
@@ -441,24 +646,44 @@ pub(crate) fn resolve_encounters<R: Rng + ?Sized>(
                 continue;
             };
             let mut battle = leader.clone();
-            battle.army = combined_army(model, &group.ids);
+            battle.army = combined_army(model, attacking_ids);
             battle.battle_fleets.clear();
-            let mut site = model.map.get(battle.destination).clone();
-            site.name = "Deep-space interception".to_owned();
-            site.position = point;
-            site.owned = None;
-            site.controlled = Some(target.owner);
-            site.army = combined_army(model, &defender_ids).into();
-            site.protection_permissions.clear();
-            site.protector_battle_plans.clear();
-            site.battle_plan = target.battle_plan;
-            site.fleet_withdrawal = FleetWithdrawal::Off;
-            site.shield_overload = ShieldOverloadState::Ready;
-            site.independent_population = IndependentPopulation::Empty;
-            site.resources = Resources::default();
-            site.raid_cache = Resources::default();
-            site.buy.clear();
-            site.is_destroyed = false;
+            let mut site = encounter_site(model, &target, &defender_ids, point, battle.destination);
+            if contact {
+                site.name = "Friendly fleet contact".to_owned();
+                let log = format!(
+                    "\n- ({turn}) Friendly fleet of player {} detected in deep space. No combat.",
+                    target.owner
+                );
+                battle.logs.push_str(&log);
+                let report = MissionReport {
+                    id: rng.random(),
+                    turn,
+                    surviving_attacker: battle.army.clone(),
+                    surviving_defender: site.army.clone(),
+                    destination_owned: None,
+                    destination_controlled: Some(target.owner),
+                    mission: battle,
+                    planet: site,
+                    scout_probes: 0,
+                    planet_colonized: false,
+                    planet_destroyed: false,
+                    raid_loot: Resources::default(),
+                    combat_report: None,
+                    hidden: false,
+                };
+                for mission in
+                    model.missions.iter_mut().filter(|mission| group.ids.contains(&mission.id))
+                {
+                    mission.logs.push_str(&log);
+                }
+                if let Some(player) =
+                    model.players.iter_mut().find(|player| player.id == group.owner)
+                {
+                    player.push_report(report);
+                }
+                continue;
+            }
             let mut report = resolve_combat_with_rng(turn, &battle, &site, rng);
             report.planet_colonized = false;
             report.planet_destroyed = false;
@@ -468,10 +693,10 @@ pub(crate) fn resolve_encounters<R: Rng + ?Sized>(
                 "\n- ({turn}) Patrol intercepted player {} in deep space.",
                 target.owner
             ));
-            install_survivors(model, &group.ids, &report.surviving_attacker);
+            install_survivors(model, attacking_ids, &report.surviving_attacker);
             install_survivors(model, &defender_ids, report.surviving_defender.controller());
             for mission in
-                model.missions.iter_mut().filter(|mission| group.ids.contains(&mission.id))
+                model.missions.iter_mut().filter(|mission| attacking_ids.contains(&mission.id))
             {
                 mission.logs.push_str(&format!(
                     "\n- ({turn}) Patrol engaged player {} in deep space.",
@@ -500,7 +725,7 @@ pub(crate) fn resolve_encounters<R: Rng + ?Sized>(
             {
                 player.push_report(report.clone());
             }
-            engaged.extend(group.ids);
+            engaged.extend(attacking_ids.iter().copied());
             engaged.extend(defender_ids);
             break;
         }

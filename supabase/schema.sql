@@ -383,6 +383,8 @@ create policy stellarion_events_member_select
 -- Patrols use ordinary mission snapshots. Rust resolves movement, operating costs,
 -- contact rolls and combat; SQL checks the current transport shape. Patrol setup is
 -- fully contained in this reset and needs no additional scheduler or server.
+-- Each patrol persists its own directional friendly-player set. Friendly detections
+-- produce ordinary reports without combat; friendship never grants reciprocal immunity.
 create function public.stellarion_patrol_valid(p_patrol jsonb)
 returns boolean
 language sql immutable
@@ -391,15 +393,26 @@ as $$
     select coalesce(case
         when p_patrol = 'null'::jsonb then true
         when jsonb_typeof(p_patrol) <> 'object'
-          or not (p_patrol ?& array['center', 'remaining_turns', 'phase'])
-          or p_patrol - array['center', 'remaining_turns', 'phase'] <> '{}'::jsonb
-          or jsonb_typeof(p_patrol -> 'center') <> 'array' then false
+          or not (p_patrol ?& array['center', 'remaining_turns', 'phase', 'friendly_players'])
+          or p_patrol - array['center', 'remaining_turns', 'phase', 'friendly_players'] <> '{}'::jsonb
+          or jsonb_typeof(p_patrol -> 'center') <> 'array'
+          or jsonb_typeof(p_patrol -> 'friendly_players') <> 'array' then false
         when jsonb_array_length(p_patrol -> 'center') <> 2 then false
+        when jsonb_array_length(p_patrol -> 'friendly_players') > 3 then false
         when jsonb_typeof(p_patrol #> '{center,0}') <> 'number'
           or jsonb_typeof(p_patrol #> '{center,1}') <> 'number' then false
         else abs((p_patrol #>> '{center,0}')::numeric) <= 3.4028235e38
           and abs((p_patrol #>> '{center,1}')::numeric) <= 3.4028235e38
           and p_patrol ->> 'phase' in ('Outbound', 'OnStation', 'Returning')
+          and not exists (
+              select 1 from jsonb_array_elements(p_patrol -> 'friendly_players') player
+               where not case when jsonb_typeof(player) = 'number' then
+                   player::text::numeric between 1 and 4
+                   and trunc(player::text::numeric) = player::text::numeric
+                   else false end
+          )
+          and (select count(distinct player) from jsonb_array_elements(p_patrol -> 'friendly_players') player)
+              = jsonb_array_length(p_patrol -> 'friendly_players')
           and case when p_patrol -> 'remaining_turns' = 'null'::jsonb then true
               when jsonb_typeof(p_patrol -> 'remaining_turns') = 'number' then
                 (p_patrol ->> 'remaining_turns')::numeric between 0 and 10000
@@ -408,6 +421,48 @@ as $$
         end, false)
 $$;
 revoke all on function public.stellarion_patrol_valid(jsonb) from public, anon, authenticated;
+
+-- Intercept is a committed rendezvous with a visible travelling mission. Rust predicts
+-- normal accelerated flight segments, including final approach outside the arrival radius.
+-- The contact fraction fixes timing within the encounter turn; surviving targets keep their
+-- original movement and may still land that turn after fleet-only combat.
+-- A recalled/delayed target can make the ambush miss; survivors physically return home.
+-- Reports reveal neither launch-world intelligence nor the interceptor's origin in the UI.
+-- These snapshots and authenticated turn commands need no extra service or scheduled job.
+create function public.stellarion_intercept_valid(p_intercept jsonb)
+returns boolean
+language sql immutable
+set search_path = pg_catalog, public
+as $$
+    select coalesce(case
+        when p_intercept = 'null'::jsonb then true
+        when jsonb_typeof(p_intercept) <> 'object'
+          or not (p_intercept ?& array['target', 'target_send', 'point', 'encounter_turn', 'encounter_fraction', 'phase'])
+          or p_intercept - array['target', 'target_send', 'point', 'encounter_turn', 'encounter_fraction', 'phase'] <> '{}'::jsonb
+          or jsonb_typeof(p_intercept -> 'point') <> 'array' then false
+        when jsonb_array_length(p_intercept -> 'point') <> 2 then false
+        when jsonb_typeof(p_intercept -> 'target') <> 'number'
+          or jsonb_typeof(p_intercept -> 'target_send') <> 'number'
+          or jsonb_typeof(p_intercept -> 'encounter_turn') <> 'number'
+          or jsonb_typeof(p_intercept -> 'encounter_fraction') <> 'number' then false
+        when jsonb_typeof(p_intercept #> '{point,0}') <> 'number'
+          or jsonb_typeof(p_intercept #> '{point,1}') <> 'number' then false
+        else abs((p_intercept #>> '{point,0}')::numeric) <= 3.4028235e38
+          and abs((p_intercept #>> '{point,1}')::numeric) <= 3.4028235e38
+          and p_intercept ->> 'phase' in ('Outbound', 'Returning')
+          and (p_intercept ->> 'encounter_fraction')::numeric > 0
+          and (p_intercept ->> 'encounter_fraction')::numeric <= 1
+          and not exists (
+              select 1 from jsonb_each(p_intercept - array['point', 'phase', 'encounter_fraction']) entry
+               where not case when jsonb_typeof(entry.value) = 'number' then
+                   entry.value::text::numeric between 1 and 18446744073709551615
+                   and trunc(entry.value::text::numeric) = entry.value::text::numeric
+                   else false end
+          )
+          and (p_intercept ->> 'target_send')::numeric < (p_intercept ->> 'encounter_turn')::numeric
+        end, false)
+$$;
+revoke all on function public.stellarion_intercept_valid(jsonb) from public, anon, authenticated;
 
 create function public.stellarion_battle_plan_valid(p_plan jsonb)
 returns boolean
@@ -661,6 +716,13 @@ begin
         select value from jsonb_path_query(p_persisted, '$.state.players[*].reports[*].mission') as entries(value)
     loop
         if not (v_item ? 'patrol') or not public.stellarion_patrol_valid(v_item -> 'patrol')
+           or exists (
+               select 1 from jsonb_array_elements(case
+                   when jsonb_typeof(v_item #> '{patrol,friendly_players}') = 'array'
+                   then v_item #> '{patrol,friendly_players}' else '[]'::jsonb end) player
+                where player = v_item -> 'owner'
+                   or (case when jsonb_typeof(player) = 'number' then player::text::numeric > p_max_players else true end)
+           )
            or (case when v_item -> 'patrol' = 'null'::jsonb then
                 v_item ->> 'objective' = 'Patrol' or v_item ->> 'return_objective' = 'Patrol'
               when v_item #>> '{patrol,phase}' = 'Returning' then
@@ -671,6 +733,28 @@ begin
                 or v_item -> 'origin' is distinct from v_item -> 'destination'
               end) then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_patrol';
+        end if;
+        if not (v_item ? 'intercept') or not public.stellarion_intercept_valid(v_item -> 'intercept')
+           or (case when v_item -> 'intercept' = 'null'::jsonb then
+                v_item ->> 'objective' = 'Intercept' or v_item ->> 'return_objective' = 'Intercept'
+              else v_item -> 'patrol' <> 'null'::jsonb
+                or v_item -> 'jump_gate' <> 'false'::jsonb
+                or v_item -> 'deep_cover' <> 'false'::jsonb
+                or v_item -> 'joint_attack' <> 'null'::jsonb
+                or v_item -> 'protected_player' <> 'null'::jsonb
+                or v_item ->> 'bombing' is distinct from 'None'
+                or v_item #> '{intercept,target}' = v_item -> 'id'
+                or (case when v_item #>> '{intercept,phase}' = 'Returning' then
+                    v_item ->> 'objective' is distinct from 'Deploy'
+                    or v_item ->> 'return_objective' is distinct from 'Intercept'
+                  else v_item ->> 'objective' is distinct from 'Intercept'
+                    or v_item -> 'return_objective' <> 'null'::jsonb
+                    or v_item -> 'origin' is distinct from v_item -> 'destination'
+                    or (v_item #>> '{intercept,encounter_turn}')::numeric <= (v_item ->> 'send')::numeric
+                    or (v_item #>> '{intercept,encounter_turn}')::numeric - (v_item ->> 'send')::numeric > 256
+                  end)
+              end) then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_intercept';
         end if;
         if not public.stellarion_battle_plan_valid(v_item -> 'battle_plan') then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_battle_plan';
@@ -2589,17 +2673,51 @@ begin
     end if;
     for v_command in select value from jsonb_array_elements(p_submission -> 'commands')
     loop
+        if v_command ->> 'kind' = 'send_intercept' then
+            if not (v_command ?& array['kind', 'mission_id', 'origin', 'target', 'army', 'battle_plan'])
+               or v_command - array['kind', 'mission_id', 'origin', 'target', 'army', 'battle_plan'] <> '{}'::jsonb
+               or jsonb_typeof(v_command -> 'army') is distinct from 'object'
+               or v_command -> 'army' = '{}'::jsonb
+               or not public.stellarion_battle_plan_valid(v_command -> 'battle_plan')
+               or exists (
+                   select 1 from jsonb_each(v_command - array['kind', 'army', 'battle_plan']) entry
+                    where not case when jsonb_typeof(entry.value) = 'number' then
+                        entry.value::text::numeric between
+                            (case when entry.key = 'origin' then 0 else 1 end) and 18446744073709551615
+                        and trunc(entry.value::text::numeric) = entry.value::text::numeric
+                        else false end
+               ) or v_command -> 'mission_id' = v_command -> 'target' then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:intercept_command';
+            end if;
+        end if;
         if v_command ->> 'kind' = 'send_patrol' then
             if not (v_command ?& array['kind', 'mission_id', 'origin', 'center', 'army', 'turns'])
                or v_command - array['kind', 'mission_id', 'origin', 'center', 'army', 'turns'] <> '{}'::jsonb
                or not public.stellarion_patrol_valid(jsonb_build_object(
-                   'center', v_command -> 'center', 'remaining_turns', v_command -> 'turns', 'phase', 'Outbound'))
+                   'center', v_command -> 'center', 'remaining_turns', v_command -> 'turns',
+                   'phase', 'Outbound', 'friendly_players', '[]'::jsonb))
                or v_command -> 'turns' = '0'::jsonb
                or jsonb_typeof(v_command -> 'army') is distinct from 'object'
                or v_command -> 'army' = '{}'::jsonb
                or jsonb_typeof(v_command -> 'mission_id') is distinct from 'number'
                or jsonb_typeof(v_command -> 'origin') is distinct from 'number' then
                 raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:patrol_command';
+            end if;
+        end if;
+        if v_command ->> 'kind' = 'set_patrol_friendly' then
+            if not (v_command ?& array['kind', 'mission_id', 'player_id', 'friendly'])
+               or v_command - array['kind', 'mission_id', 'player_id', 'friendly'] <> '{}'::jsonb
+               or jsonb_typeof(v_command -> 'friendly') is distinct from 'boolean'
+               or not (case when jsonb_typeof(v_command -> 'mission_id') = 'number' then
+                   (v_command ->> 'mission_id')::numeric between 1 and 18446744073709551615
+                   and trunc((v_command ->> 'mission_id')::numeric) = (v_command ->> 'mission_id')::numeric
+                   else false end)
+               or not (case when jsonb_typeof(v_command -> 'player_id') = 'number' then
+                   (v_command ->> 'player_id')::numeric between 1 and 4
+                   and trunc((v_command ->> 'player_id')::numeric) = (v_command ->> 'player_id')::numeric
+                   and (v_command ->> 'player_id')::numeric <> v_player_id
+                   else false end) then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:patrol_friendly_command';
             end if;
         end if;
         if v_command ->> 'kind' in ('send_mission', 'set_battle_plan', 'set_mission_battle_plan')

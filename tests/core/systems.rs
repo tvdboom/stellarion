@@ -22,6 +22,41 @@ fn zero_height_resize_keeps_bevy_font_sizes_positive() {
 }
 
 #[test]
+fn combat_background_keeps_cover_scaling_when_the_viewport_changes() {
+    let mut app = App::new();
+    app.add_message::<WindowResized>().add_systems(Update, on_resize_system);
+    let camera = app
+        .world_mut()
+        .spawn((MainCamera, Projection::Orthographic(OrthographicProjection::default_2d())))
+        .id();
+    let background = app
+        .world_mut()
+        .spawn((
+            BackgroundImageCmp,
+            Sprite {
+                image_mode: SpriteImageMode::Scale(SpriteScalingMode::FillCenter),
+                ..default()
+            },
+        ))
+        .id();
+    // Both crop directions, including a zoomed map camera inherited on battle entry.
+    for (width, height, zoom) in [(1600., 900., 0.8), (800., 1000., 2.0)] {
+        let mut projection = OrthographicProjection::default_2d();
+        projection.area = Rect::from_center_size(Vec2::ZERO, Vec2::new(width, height) * zoom);
+        app.world_mut().entity_mut(camera).insert(Projection::Orthographic(projection));
+        app.world_mut().write_message(WindowResized {
+            window: Entity::PLACEHOLDER,
+            width,
+            height,
+        });
+        app.update();
+        let sprite = app.world().get::<Sprite>(background).unwrap();
+        assert_eq!(sprite.custom_size, Some(Vec2::new(width, height) * zoom));
+        assert_eq!(sprite.image_mode, SpriteImageMode::Scale(SpriteScalingMode::FillCenter));
+    }
+}
+
+#[test]
 fn spectator_cannot_open_missions_with_keyboard_shortcut() {
     let mut keyboard = ButtonInput::default();
     keyboard.press(KeyCode::KeyM);

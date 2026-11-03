@@ -3,11 +3,37 @@
 use super::*;
 
 impl UiState {
+    /// Targets an owned operating fleet's strategic center, independent of its animated sprite.
+    pub(crate) fn choose_patrol_reinforcement(
+        &mut self,
+        map: &Map,
+        player: &Player,
+        turn: usize,
+        target: &Mission,
+    ) -> bool {
+        if target.owner != player.id || !target.is_patrolling() || player.spectator {
+            return false;
+        }
+        let Some(patrol) = &target.patrol else {
+            return false;
+        };
+        if let Some(origin) = self
+            .planet_selected
+            .and_then(|id| map.try_get(id))
+            .filter(|planet| planet.can_launch_mission(player.id))
+        {
+            self.mission_info.origin = origin.id;
+        }
+        self.choose_patrol_zone(map, player, turn, patrol.center)
+    }
+
     /// Temporarily hides the ordinary draft while its space destination is picked.
     pub(crate) fn begin_patrol_selection(&mut self) {
         if self.mission_info.objective != Icon::Patrol {
             self.patrol_previous_destination = Some(self.mission_info.destination);
         }
+        self.selecting_intercept = false;
+        self.mission_info.intercept = None;
         self.mission_info.objective = Icon::Patrol;
         self.mission_info.jump_gate = false;
         self.mission_info.deep_cover = false;
@@ -19,6 +45,8 @@ impl UiState {
         self.planet_selected = None;
         self.planet_hover = None;
         self.mission_planet_hover = None;
+        self.mission_hover = None;
+        self.mission_hover_from_ui = false;
     }
 
     /// Opens a normal mission draft at a valid empty-space destination.
@@ -98,7 +126,7 @@ pub(super) fn draw_selection_toast(context: &egui::Context, state: &mut UiState,
         |ui| {
             super::missions::joint_attack_toast(
                 ui,
-                "Click empty space to choose a patrol zone.",
+                "Click empty space for a patrol zone, or your active patrol to reinforce it.",
                 |ui| {
                     if super::missions::joint_attack_toast_button(ui, "Cancel", true).clicked()
                         || cancel

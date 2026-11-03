@@ -288,7 +288,7 @@ impl Player {
                     })
                     .collect();
                 (None, army)
-            } else if !mission.objective.is_hidden() {
+            } else if !mission.conceals_origin() {
                 (Some(mission.owner), Army::new())
             } else {
                 return None;
@@ -300,7 +300,7 @@ impl Player {
             })
         };
         let reports = self.reports.iter().filter_map(|r| {
-            if r.mission.objective == Icon::Patrol {
+            if r.is_space_encounter() {
                 return None;
             }
             if r.mission.origin == planet.id {

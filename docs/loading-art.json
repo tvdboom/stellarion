@@ -1,5 +1,5 @@
 {
-  "description": "Seven distinct, logo-free OGame loading backgrounds. Downloaded 2026-10-30. Each original JPEG is the single source for the browser shell and generated KTX2 texture. Original artwork belongs to its respective rights holders; this record does not grant a redistribution license.",
+  "description": "Nine distinct, logo-free OGame match-loading backgrounds. Initially downloaded 2026-10-30; refreshed 2026-11-03 with four scenes replacing rift and nebula. Each original JPEG is the single source for its packaged JPEG and generated KTX2 texture. Original artwork belongs to its respective rights holders; this record does not grant a redistribution license.",
   "reference": "https://lobby.ogame.gameforge.com/en_GB/loading",
   "credits": "OGame artwork © Gameforge 4D GmbH",
   "images": [
@@ -7,8 +7,10 @@
     { "file": "assets/images/bg/loading/station.jpg", "source": "https://picfiles.alphacoders.com/325/325505.jpg" },
     { "file": "assets/images/bg/loading/fleet.jpg", "source": "https://picfiles.alphacoders.com/325/325504.jpg" },
     { "file": "assets/images/bg/loading/expedition.jpg", "source": "https://s3-static.geo.gfsrv.net/browsergamelobby/ogame/7.2.1-r2/media/maintenanceBG.a4fed578.jpg" },
-    { "file": "assets/images/bg/loading/nebula.jpg", "source": "https://s3-static.geo.gfsrv.net/browsergamelobby/ogame/7.2.1-r2/media/background.e2018855.jpg" },
     { "file": "assets/images/bg/loading/outpost.jpg", "source": "https://s3-static.geo.gfsrv.net/browsergamelobby/ogame/7.2.1-r2/media/sectionStart_bg.1c4a45f1.jpg" },
-    { "file": "assets/images/bg/loading/rift.jpg", "source": "https://s3-static.geo.gfsrv.net/browsergamelobby/ogame/7.2.1-r2/media/serverSettings_BG.0c47cef4.jpg" }
+    { "file": "assets/images/bg/loading/armada.jpg", "source": "https://imagenes.hobbyconsolas.com/uploads/imagenes/2023/04/25/6902c171a3c07.jpeg", "source_page": "https://www.hobbyconsolas.com/guias-trucos/guia-inicio-empezar-jugar-ogame-juego-gratuito-navegador-368861" },
+    { "file": "assets/images/bg/loading/battleship.jpg", "source": "https://img.redbull.com/images/c_crop%2Cw_1279%2Ch_639%2Cx_0%2Cy_138/c_auto%2Cw_1200%2Ch_600/f_auto%2Cq_auto/redbullcom/2020/11/4/nwyqnti7yyufzbsvxrnr/ogame-jeu-vaisseau-bataille", "source_page": "https://www.redbull.com/fr-fr/ogame-jeu-navigateur" },
+    { "file": "assets/images/bg/loading/asteroids.jpg", "source": "https://cdn.lugc.link/d3a51744-529a-452d-8a50-f6c8654def20/", "source_page": "https://play.ogame.gameforge.com/" },
+    { "file": "assets/images/bg/loading/gate.jpg", "source": "https://cdn.lugc.link/38519be7-de4e-4748-97f5-22823746cf98/", "source_page": "https://play.ogame.gameforge.com/" }
   ]
 }

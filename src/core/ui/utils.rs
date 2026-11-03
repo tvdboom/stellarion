@@ -9,7 +9,8 @@ use bevy_egui::egui::{self, *};
 use crate::core::constants::BG_COLOR;
 use crate::utils::ToColor32;
 
-const HOVER_TOOLTIP_TEXT_SIZE: f32 = 20.0;
+/// Shared font size for hover text and interactive picker headings.
+pub(super) const HOVER_TOOLTIP_TEXT_SIZE: f32 = 20.0;
 
 #[derive(Resource, Default)]
 /// Egui texture identifiers registered from Bevy image handles.

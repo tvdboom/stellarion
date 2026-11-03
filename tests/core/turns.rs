@@ -650,6 +650,30 @@ fn war_sun_fleets_use_the_destroy_icon_with_their_visible_route_treatment() {
 }
 
 #[test]
+fn friendly_patrol_contact_notification_opens_the_report_without_claiming_a_battle() {
+    let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
+    let mut target = Planet::new(1, "Friendly fleet contact".into(), Vec2::X, false, 1.0);
+    target.controlled = Some(2);
+    let mut mission = Mission::new_patrol(
+        700,
+        1,
+        1,
+        &origin,
+        Vec2::X,
+        Army::from([(Unit::Ship(Ship::Cruiser), 3)]),
+        None,
+    );
+    mission.patrol.as_mut().unwrap().friendly_players.insert(2);
+    let mut report = crate::test_support::empty_report(mission, target.clone());
+    report.id = 99;
+    report.destination_controlled = Some(2);
+    let notification = report_notification(&report, &Player::new(1, origin.id), &origin, &target);
+    assert_eq!(notification.message, "Your patrol detected a friendly fleet. No combat.");
+    assert_eq!(notification.level, MessageLevel::Info);
+    assert_eq!(notification.action, Some(MessageAction::OpenMissionReport(99)));
+}
+
+#[test]
 fn deep_space_notifications_do_not_disclose_the_fauna_formation_name() {
     let player = Player::default();
     let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);

@@ -216,6 +216,9 @@ pub struct Mission {
     /// Space destination and lifecycle for a patrol; ordinary missions have no patrol state.
     #[serde(deserialize_with = "crate::serialization::required_option")]
     pub patrol: Option<Patrol>,
+    /// Fixed rendezvous and return lifecycle of a targeted space interception.
+    #[serde(deserialize_with = "crate::serialization::required_option")]
+    pub intercept: Option<crate::core::interception::Intercept>,
     /// Turn on which the mission was dispatched.
     pub send: usize,
     /// Completed movement turns on this leg; acceleration resets on a new leg.
@@ -482,6 +485,7 @@ impl Mission {
             origin_army: origin.mission_origin_army(owner).cloned().unwrap_or_default(),
             destination: destination.id,
             patrol: None,
+            intercept: None,
             send: turn,
             travel_turns: 0,
             position: {
@@ -515,6 +519,23 @@ impl Mission {
         destination: &Planet,
         mission: &Mission,
     ) -> Self {
+        if mission.objective == Icon::Intercept {
+            let mut rebuilt = mission.clone();
+            rebuilt.owner = owner;
+            rebuilt.origin = origin.id;
+            rebuilt.destination = origin.id;
+            rebuilt.origin_owned = origin.owned;
+            rebuilt.origin_controlled = origin.controlled;
+            rebuilt.origin_army = origin.mission_origin_army(owner).cloned().unwrap_or_default();
+            rebuilt.send = turn;
+            rebuilt.travel_turns = 0;
+            let point =
+                rebuilt.intercept.as_ref().map_or(origin.position, |intercept| intercept.point);
+            rebuilt.position = origin.position
+                + (point - origin.position).normalize_or_zero()
+                    * (Planet::SIZE * 0.7).min(origin.position.distance(point));
+            return rebuilt;
+        }
         if mission.objective == Icon::Patrol {
             if let Some(patrol) = &mission.patrol {
                 return Self::new_patrol(
@@ -591,12 +612,14 @@ impl Mission {
     ///
     /// Hostile objectives stay concealed behind the generic enemy-fleet marker. Joint-attack
     /// participants know the shared objective once another contingent becomes visible to them,
-    /// and a protection target sees Protect.
+    /// and a protection target sees Protect. A visible patrol's deep-space destination exposes
+    /// Patrol even while outbound. Returning travel legs keep their objective concealed.
     #[cfg(feature = "app")]
     pub(crate) fn displayed_objective(&self, player_id: PlayerId) -> Icon {
         if self.owner == player_id
             || self.is_joint_attack_participant(player_id)
             || self.is_incoming_protection_for(player_id)
+            || self.objective == Icon::Patrol
         {
             self.objective
         } else {
@@ -656,7 +679,7 @@ impl Mission {
         map: &Map,
         player_id: PlayerId,
     ) -> bool {
-        if self.patrol.is_some() {
+        if self.patrol.is_some() || self.intercept.is_some() {
             return false;
         }
         self.origin_owned != Some(player_id)
@@ -669,6 +692,10 @@ impl Mission {
     /// Starts a free return leg from the fleet's exact current position to its original world.
     pub(crate) fn recall(&mut self, map: &Map, turn: usize) {
         debug_assert!(!self.is_returning());
+        if self.intercept.is_some() {
+            self.return_intercept(map, turn);
+            return;
+        }
         if self.patrol.is_some() {
             self.return_patrol(map, turn);
             return;
@@ -734,7 +761,9 @@ impl Mission {
 
     /// Returns remaining world-space distance from the mission to its destination.
     pub fn distance(&self, map: &Map) -> f32 {
-        if self.patrol.as_ref().is_some_and(|patrol| patrol.phase != PatrolPhase::Returning) {
+        if self.objective == Icon::Intercept
+            || self.patrol.as_ref().is_some_and(|patrol| patrol.phase != PatrolPhase::Returning)
+        {
             return self.position.distance(self.target_position(map)) / Planet::SIZE;
         }
         // Minus 0.7 since the mission ends at the edge of the planet
