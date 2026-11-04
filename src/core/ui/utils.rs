@@ -9,9 +9,6 @@ use bevy_egui::egui::{self, *};
 use crate::core::constants::BG_COLOR;
 use crate::utils::ToColor32;
 
-/// Shared font size for hover text and interactive picker headings.
-pub(super) const HOVER_TOOLTIP_TEXT_SIZE: f32 = 20.0;
-
 #[derive(Resource, Default)]
 /// Egui texture identifiers registered from Bevy image handles.
 pub struct ImageIds(pub HashMap<String, TextureId>);
@@ -113,46 +110,42 @@ pub fn toggle(on: &mut bool) -> impl Widget + '_ {
     }
 }
 
-/// Extension trait adding compact tooltip helpers to egui responses.
+/// Plain-text tooltips using the same Small text style as the planet diameter.
 pub trait CustomResponse {
-    /// Handles the hover small interaction.
+    /// Shows a tooltip with wrapping as needed.
     fn on_hover_small(self, text: impl Into<RichText>) -> Self;
-    /// Handles the hover small ext interaction.
+    /// Shows a tooltip without wrapping.
     fn on_hover_small_ext(self, text: impl Into<RichText>) -> Self;
-    /// Handles the disabled hover small interaction.
+    /// Shows a tooltip on a disabled widget with wrapping as needed.
     fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self;
-    /// Handles the disabled hover small ext interaction.
+    /// Shows a tooltip on a disabled widget without wrapping.
     fn on_disabled_hover_small_ext(self, text: impl Into<RichText>) -> Self;
 }
 
 impl CustomResponse for Response {
-    /// Handles the hover small interaction.
+    /// Shows a tooltip with wrapping as needed.
     fn on_hover_small(self, text: impl Into<RichText>) -> Self {
-        self.on_hover_ui(|ui| {
-            ui.label(text.into().size(HOVER_TOOLTIP_TEXT_SIZE));
-        })
+        self.on_hover_text(text.into().small())
     }
 
-    /// Handles the hover small ext interaction.
+    /// Shows a tooltip without wrapping.
     fn on_hover_small_ext(self, text: impl Into<RichText>) -> Self {
         self.on_hover_ui(|ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-            ui.label(text.into().size(HOVER_TOOLTIP_TEXT_SIZE));
+            ui.label(text.into().small());
         })
     }
 
-    /// Handles the disabled hover small interaction.
+    /// Shows a tooltip on a disabled widget with wrapping as needed.
     fn on_disabled_hover_small(self, text: impl Into<RichText>) -> Self {
-        self.on_disabled_hover_ui(|ui| {
-            ui.label(text.into().size(HOVER_TOOLTIP_TEXT_SIZE));
-        })
+        self.on_disabled_hover_text(text.into().small())
     }
 
-    /// Handles the disabled hover small ext interaction.
+    /// Shows a tooltip on a disabled widget without wrapping.
     fn on_disabled_hover_small_ext(self, text: impl Into<RichText>) -> Self {
         self.on_disabled_hover_ui(|ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-            ui.label(text.into().size(HOVER_TOOLTIP_TEXT_SIZE));
+            ui.label(text.into().small());
         })
     }
 }

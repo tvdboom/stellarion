@@ -90,6 +90,8 @@ use shop::draw_shop;
 mod trading;
 use trading::draw_trade_notifications;
 
+const PICKER_HEADING_FONT_SIZE: f32 = 20.0;
+
 #[derive(Component)]
 /// Marker for entities owned by the in-game UI projection.
 pub struct UiCmp;
@@ -210,10 +212,6 @@ pub struct UiState {
     pub mission_info: Mission,
     /// Contact selected for a targeted interception draft.
     pub(crate) intercept_target: Option<MissionId>,
-    /// Ordinary planet destination restored when leaving a moving-target draft.
-    pub(crate) intercept_previous_destination: Option<PlanetId>,
-    /// The next enemy fleet click chooses an interception contact.
-    pub(crate) selecting_intercept: bool,
     /// The next empty-space map click selects a patrol center instead of closing its draft.
     pub(crate) selecting_patrol_zone: bool,
     /// Selected patrol center, retained while the launch panel is temporarily hidden.
@@ -2291,7 +2289,7 @@ fn draw_mission_report_unit(
             0
         };
         let response = if escaped > 0 {
-            response.on_hover_text(format!("{escaped} withdrew to the homeworld."))
+            response.on_hover_small(format!("{escaped} withdrew to the homeworld."))
         } else {
             response
         };
@@ -3611,16 +3609,11 @@ fn draw_planet_overview(
                 detail_line_progress[1],
                 right_side,
             )
-            .on_hover_ui(|ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "Smaller worlds are easier to destroy with War Suns and Orbital Railguns. \
-                        Size modifier: {:+}%.",
-                        f32::from(planet.death_ray_size_modifier_basis_points()) / 100.0,
-                    ))
-                    .small(),
-                );
-            });
+            .on_hover_small(format!(
+                "Smaller worlds are easier to destroy with War Suns and Orbital Railguns. \
+                Size modifier: {:+}%.",
+                f32::from(planet.death_ray_size_modifier_basis_points()) / 100.0,
+            ));
             draw_sliding_text(
                 ui,
                 RichText::new(format!(
@@ -5420,7 +5413,7 @@ fn draw_mission_participant_row(
         let name_pos =
             egui::pos2(name_rect.left(), name_rect.center().y - name_galley.size().y * 0.5);
         ui.painter().galley(name_pos, name_galley, name_color);
-        name_response.on_hover_text(&name);
+        name_response.on_hover_small(&name);
 
         ui.add_space(MISSION_HOVER_ALLIED_NAME_ICON_GAP);
         let (icon_rect, icon) = ui
@@ -5834,11 +5827,6 @@ pub fn draw_ui(
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
-            missions::interception::draw_selection_toast(
-                context,
-                &mut state,
-                keyboard.just_pressed(KeyCode::Escape),
-            );
             patrols::draw_selection_toast(
                 context,
                 &mut state,

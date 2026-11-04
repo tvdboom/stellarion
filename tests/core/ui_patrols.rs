@@ -85,26 +85,25 @@ fn patrol_objective_is_next_to_deploy_for_friendly_worlds_and_space_drafts_only(
     let (mut model, player, state, _) = patrol_setup();
     let enemy = model.map.get(state.mission_info.destination);
     assert_eq!(
-        draft_objectives(&player, enemy, false),
+        draft_objectives(&player, enemy, Icon::Attack),
         vec![
             Icon::Colonize,
             Icon::Attack,
             Icon::Raid,
             Icon::Spy,
             Icon::MissileStrike,
-            Icon::Intercept,
             Icon::Destroy,
         ]
     );
-    assert_eq!(draft_objectives(&player, enemy, true), vec![Icon::Deploy, Icon::Patrol]);
+    assert_eq!(draft_objectives(&player, enemy, Icon::Patrol), vec![Icon::Deploy, Icon::Patrol]);
     assert_eq!(
-        draft_objectives(&player, model.map.get(player.home_planet), false),
+        draft_objectives(&player, model.map.get(player.home_planet), Icon::Deploy),
         vec![Icon::Deploy, Icon::Patrol]
     );
     let controlled = model.map.get_mut(state.mission_info.destination);
     controlled.controlled = Some(player.id);
     assert_eq!(
-        draft_objectives(&player, controlled, false),
+        draft_objectives(&player, controlled, Icon::Deploy),
         vec![Icon::Colonize, Icon::Deploy, Icon::Patrol]
     );
 }

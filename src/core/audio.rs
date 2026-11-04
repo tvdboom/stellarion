@@ -18,7 +18,7 @@ use crate::core::missions::Missions;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::ui::systems::{viewport_ui_scale, UiState};
-use crate::core::ui::utils::{sized_image_tile_button, ImageIds};
+use crate::core::ui::utils::{sized_image_tile_button, CustomResponse, ImageIds};
 use crate::core::units::Unit;
 
 /// Short feedback cues balanced for repeated menu and gameplay actions.
@@ -642,7 +642,7 @@ fn combat_settings_popover(
                             egui::Label::new(egui::RichText::new("Individual units").size(16.0))
                                 .sense(egui::Sense::click()),
                         )
-                        .on_hover_text("Show every ship and defense separately")
+                        .on_hover_small("Show every ship and defense separately")
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if label.clicked() {
                         settings.combat_individual_units = !settings.combat_individual_units;
@@ -719,7 +719,7 @@ fn combat_view_popover(
                                 label,
                             )
                         });
-                        if response.on_hover_text(label).clicked() && !selected {
+                        if response.on_hover_small(label).clicked() && !selected {
                             *view = mode;
                             set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
                         }

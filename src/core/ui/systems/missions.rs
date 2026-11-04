@@ -6,7 +6,6 @@ use crate::core::identity::PlayerId;
 use crate::core::map::systems::JUMP_GATE_HELIX_ANGULAR_SPEED;
 use crate::core::messages::show_notification_area;
 use crate::core::missions::MissionRouteStyle;
-use crate::core::ui::utils::HOVER_TOOLTIP_TEXT_SIZE;
 
 /// Shows the launch-only Energy charge while the draft uses a Jump Gate.
 pub(super) fn draw_jump_energy_cost(ui: &mut Ui, mission: &Mission, images: &ImageIds) {
@@ -97,26 +96,6 @@ const PATROL_REINFORCEMENT_TOOLTIP: &str = "Ships merge into your patrol on arri
     its orders and return destination. Probes can reinforce alone, but return if no combat patrol \
     remains. Reinforcements with combat ships can start a new patrol at the same location.";
 
-/// Matches mission-planning tooltip text to the small labels in the panel.
-trait MissionTooltip {
-    fn on_hover_mission(self, text: impl Into<RichText>) -> Self;
-    fn on_disabled_hover_mission(self, text: impl Into<RichText>) -> Self;
-}
-
-impl MissionTooltip for Response {
-    fn on_hover_mission(self, text: impl Into<RichText>) -> Self {
-        self.on_hover_ui(|ui| {
-            ui.label(text.into().small());
-        })
-    }
-
-    fn on_disabled_hover_mission(self, text: impl Into<RichText>) -> Self {
-        self.on_disabled_hover_ui(|ui| {
-            ui.label(text.into().small());
-        })
-    }
-}
-
 /// Keeps the cover option tied to a completed origin relay without revealing target levels.
 fn draw_deep_cover_option(ui: &mut Ui, mission: &mut Mission, origin: &Planet) {
     let available =
@@ -147,14 +126,14 @@ fn draw_deep_cover_option(ui: &mut Ui, mission: &mut Mission, origin: &Planet) {
         })
         .inner;
     response
-        .on_hover_mission(format!(
+        .on_hover_small(format!(
             "Costs {} extra deuterium per Probe. If the origin's completed Command Relay level is \
         higher than the destination's when the mission arrives, all Probes scan and return \
         without combat or alerting the defender. Otherwise, the Probes face normal Spy combat. \
         Deep Cover missions never encounter space fauna.",
             crate::core::constants::DEEP_COVER_DEUTERIUM_PER_PROBE,
         ))
-        .on_disabled_hover_mission("Build a Command Relay at the origin to enable Deep Cover.");
+        .on_disabled_hover_small("Build a Command Relay at the origin to enable Deep Cover.");
 }
 
 /// Keeps mission-planning and active-mission movement explanations in agreement.
@@ -245,7 +224,12 @@ fn draw_mission_objective_button(
     objective: Icon,
     selected: bool,
 ) -> Response {
-    let (rect, response) = ui.allocate_exact_size(MISSION_OBJECTIVE_BUTTON_SIZE, Sense::click());
+    let sense = if objective == Icon::Intercept {
+        Sense::hover()
+    } else {
+        Sense::click()
+    };
+    let (rect, response) = ui.allocate_exact_size(MISSION_OBJECTIVE_BUTTON_SIZE, sense);
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::RadioButton,
@@ -311,7 +295,11 @@ fn draw_mission_objective_button(
             );
         }
     }
-    response.on_hover_cursor(CursorIcon::PointingHand)
+    if sense.senses_click() {
+        response.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        response
+    }
 }
 
 /// Sizes and centers the active-mission row while preserving equal outer breathing room.
@@ -772,7 +760,7 @@ fn handle_mission_planet_link(
             .planet_selected
             .filter(|&selected| map.get(selected).can_launch_mission(player.id))
             .unwrap_or(player.home_planet);
-        state.mission_info.destination = planet.id;
+        state.set_planet_mission_destination(planet.id);
     } else if image.hovered() || name.hovered() {
         state.planet_hover = None;
         state.mission_planet_hover = Some(planet.id);
@@ -1161,7 +1149,7 @@ fn draw_joint_attack_invite_picker(
                     ui.set_min_width(width - 20.0);
                     ui.set_max_width(width - 20.0);
                     ui.label(
-                        RichText::new("Invite players").strong().size(HOVER_TOOLTIP_TEXT_SIZE),
+                        RichText::new("Invite players").strong().size(PICKER_HEADING_FONT_SIZE),
                     );
                     ui.add_space(6.0);
                     ScrollArea::vertical()
@@ -1186,7 +1174,7 @@ fn draw_joint_attack_invite_picker(
                                     enabled && (!invited || invitees_revocable),
                                 );
                                 let response = if invited {
-                                    response.on_hover_mission(if invitees_revocable {
+                                    response.on_hover_small(if invitees_revocable {
                                         "Click to remove this player from the draft."
                                     } else {
                                         "Invited players cannot be removed after sending a proposal."
@@ -1211,19 +1199,10 @@ fn draw_joint_attack_invite_picker(
     changed
 }
 
-/// Keeps a space draft's Deploy alternative on a friendly world.
+/// Supplies the launch world for interceptions and a friendly Deploy alternative for patrols.
 fn draft_planet_destination(state: &UiState, map: &Map, player: &Player) -> PlanetId {
     if state.mission_info.objective == Icon::Intercept {
-        return state
-            .intercept_previous_destination
-            .and_then(|id| map.try_get(id))
-            .filter(|planet| !planet.is_destroyed && planet.id != state.mission_info.origin)
-            .or_else(|| {
-                map.planets
-                    .iter()
-                    .find(|planet| !planet.is_destroyed && planet.id != state.mission_info.origin)
-            })
-            .map_or(state.mission_info.origin, |planet| planet.id);
+        return state.mission_info.origin;
     }
     if state.mission_info.objective == Icon::Patrol {
         state
@@ -1247,10 +1226,12 @@ fn draft_planet_destination(state: &UiState, map: &Map, player: &Player) -> Plan
     }
 }
 
-/// Space drafts keep navigation choices together; hostile actions stay with enemy targets.
-fn draft_objectives(player: &Player, destination: &Planet, space_patrol: bool) -> Vec<Icon> {
-    if space_patrol {
-        return vec![Icon::Deploy, Icon::Patrol];
+/// Lists the objectives for the draft's current target type.
+fn draft_objectives(player: &Player, destination: &Planet, objective: Icon) -> Vec<Icon> {
+    match objective {
+        Icon::Intercept => return vec![Icon::Intercept],
+        Icon::Patrol => return vec![Icon::Deploy, Icon::Patrol],
+        _ => {},
     }
     let mut objectives = Icon::objectives(
         player.owns(destination),
@@ -1260,22 +1241,6 @@ fn draft_objectives(player: &Player, destination: &Planet, space_patrol: bool) -
     );
     if let Some(index) = objectives.iter().position(|icon| *icon == Icon::Deploy) {
         objectives.insert(index + 1, Icon::Patrol);
-    }
-    if let Some(index) = objectives.iter().position(|icon| *icon == Icon::Destroy) {
-        objectives.insert(index, Icon::Intercept);
-    }
-    objectives
-}
-
-/// Retains an existing intercept draft without adding it to friendly planet objectives.
-fn draft_objectives_for_mission(
-    player: &Player,
-    destination: &Planet,
-    mission: &Mission,
-) -> Vec<Icon> {
-    let mut objectives = draft_objectives(player, destination, mission.objective == Icon::Patrol);
-    if mission.objective == Icon::Intercept && !objectives.contains(&Icon::Intercept) {
-        objectives.push(Icon::Intercept);
     }
     objectives
 }
@@ -1398,7 +1363,7 @@ fn draw_new_mission(
         state.mission_info.objective = Icon::Deploy;
     }
 
-    let objectives = draft_objectives_for_mission(player, destination, &state.mission_info);
+    let objectives = draft_objectives(player, destination, state.mission_info.objective);
     if !objectives.contains(&state.mission_info.objective) {
         state.mission_info.objective = objectives.first().copied().unwrap_or_default();
     }
@@ -1469,7 +1434,7 @@ fn draw_new_mission(
                         }
                     } else if r.secondary_clicked() && !planet.is_destroyed {
                         state.mission_tab = MissionTab::NewMission;
-                        state.mission_info.destination = planet.id;
+                        state.set_planet_mission_destination(planet.id);
                     } else if r.hovered() {
                         state.planet_hover = None;
                         state.mission_planet_hover = Some(planet.id);
@@ -1495,21 +1460,14 @@ fn draw_new_mission(
                     route_responses.into_iter().zip([origin, destination]).enumerate()
                 {
                     if let Some(response) = response {
-                        if index == 1
-                            && matches!(
-                                state.mission_info.objective,
-                                Icon::Patrol | Icon::Intercept
-                            )
-                        {
-                            if response.clicked() {
-                                if state.mission_info.objective == Icon::Intercept {
-                                    state.begin_intercept_selection();
-                                } else {
+                        match (index, state.mission_info.objective) {
+                            (1, Icon::Intercept) => {},
+                            (1, Icon::Patrol) => {
+                                if response.clicked() {
                                     state.begin_patrol_selection();
                                 }
-                            }
-                        } else {
-                            action(response, planet, &mut changed_hover, state);
+                            },
+                            _ => action(response, planet, &mut changed_hover, state),
                         }
                     }
                 }
@@ -1653,7 +1611,7 @@ fn draw_new_mission(
                                 || !state.joint_attack_invitees.is_empty()
                                 || active_invitation.is_some();
 
-                            for icon in draft_objectives_for_mission(player, destination, &state.mission_info) {
+                            for icon in draft_objectives(player, destination, state.mission_info.objective) {
                                 let unavailable_reason = mission_objective_unavailable_reason(
                                     icon,
                                     &origin_army,
@@ -1664,8 +1622,6 @@ fn draw_new_mission(
                                 );
                                 let unavailable_reason = if icon == Icon::Patrol && origin_army.amount(&Unit::probe()) > 0 && state.mission_info.reinforces_patrol(missions) {
                                     None
-                                } else if icon == Icon::Intercept && state.mission_info.objective != Icon::Intercept && !missions.iter().any(|target| crate::core::interception::target_available(target, map, player)) {
-                                    Some("No enemy mission can currently be intercepted.")
                                 } else { unavailable_reason };
                                 let available = unavailable_reason.is_none();
                                 let allied_compatible = !allied_objectives_only
@@ -1691,8 +1647,7 @@ fn draw_new_mission(
                                             .on_hover_ui(|ui| on_hover(ui, &icon, None))
                                             .on_disabled_hover_ui(|ui| {
                                                 on_hover(ui, &icon, disabled_reason);
-                                            })
-                                            .on_hover_cursor(CursorIcon::PointingHand);
+                                            });
 
                                         if button.clicked() {
                                             match icon {
@@ -1718,9 +1673,7 @@ fn draw_new_mission(
                                                 },
                                             }
 
-                                            if icon == Icon::Intercept {
-                                                state.begin_intercept_selection();
-                                            } else if icon == Icon::Patrol {
+                                            if icon == Icon::Patrol {
                                                 state.begin_patrol_selection();
                                             } else {
                                                 state.mission_info.patrol = None;
@@ -1790,7 +1743,7 @@ fn draw_new_mission(
                                     draw_jump_energy_cost(ui, &state.mission_info, images);
                                 })
                                 .response
-                                .on_hover_mission(
+                                .on_hover_small(
                                     "Whether to send this mission through the Jump Gate. Missions \
                                 through the Jump Gate always take 1 turn and cost no fuel. The \
                                 army's total production can't surpass the Gate's limit. Each jump \
@@ -1828,7 +1781,7 @@ fn draw_new_mission(
                 let response = ui
                     .interact(icon_rect, ui.id().with("invite players"), Sense::hover())
                     .on_hover_cursor(CursorIcon::Default)
-                    .on_disabled_hover_mission(
+                    .on_disabled_hover_small(
                         "Players can join Attack, Colonize, and Destroy missions.",
                     );
                 response.widget_info(|| {
@@ -2305,7 +2258,7 @@ fn draw_mission_route(
             let (rect, mut response) =
                 ui.cell(50., |ui| ui.allocate_exact_size([50.; 2].into(), Sense::click()));
 
-            response = response.on_hover_cursor(CursorIcon::PointingHand).on_hover_mission(
+            response = response.on_hover_cursor(CursorIcon::PointingHand).on_hover_small(
                 "Click to select all units on the origin planet. Right-click to unselect all.",
             );
 
@@ -2353,7 +2306,7 @@ fn draw_mission_route(
                             .extend()
                             .halign(Align::Center),
                         )
-                        .on_hover_mission(if reinforcing {
+                        .on_hover_small(if reinforcing {
                             PATROL_REINFORCEMENT_TOOLTIP
                         } else {
                             "Choose a space destination, or select your active patrol to reinforce it."
@@ -2410,9 +2363,7 @@ fn draw_mission_route(
             let response = ui.cell(70., |ui| {
                 if mission.objective == Icon::Intercept {
                     return ui.add_image(images.get("deep space"), [60.; 2])
-                        .interact(Sense::click())
-                        .on_hover_cursor(CursorIcon::PointingHand)
-                        .on_hover_mission("Select an enemy mission on the map.");
+                        .on_hover_small("Right-click an enemy mission on the map to intercept it.");
                 }
                 let image = ui.add_image(
                     images.get(if mission.objective == Icon::Patrol {
@@ -2462,8 +2413,8 @@ pub(super) fn draw_mission_fleet_picker(
                             .add_image(images.get(unit.to_lowername()), [65., 65.])
                             .interact(Sense::click())
                             .on_hover_cursor(CursorIcon::PointingHand)
-                            .on_hover_mission(unit.to_name())
-                            .on_disabled_hover_mission(unit.to_name());
+                            .on_hover_small(unit.to_name())
+                            .on_disabled_hover_small(unit.to_name());
 
                         if response.clicked() {
                             *selected.entry(*unit).or_insert(0) = n;
@@ -2641,9 +2592,8 @@ fn draw_mission_strength_badge(
         font,
         Color32::WHITE,
     );
-    ui.interact(badge, ui.id().with("mission strength badge"), Sense::hover()).on_hover_ui(|ui| {
-        ui.small("Fleet strength: total production points of the selected fleet.");
-    });
+    ui.interact(badge, ui.id().with("mission strength badge"), Sense::hover())
+        .on_hover_small("Fleet strength: total production points of the selected fleet.");
     icon
 }
 
@@ -2779,7 +2729,7 @@ fn draw_mission_details(
     ui.small(format!(
         "📏 Target distance: {}",
         distance.map_or_else(|| "---".to_owned(), |distance| format!("{distance:.1} AU")),
-    )).on_hover_mission(if is_intercept {
+    )).on_hover_small(if is_intercept {
         "Distance from the origin world to the interception point. Select a fleet that can reach a meeting point to calculate the route."
     } else {
         "AU means astronomical unit, the distance scale used on the galaxy map. \
@@ -2801,7 +2751,7 @@ fn draw_mission_details(
             format!("{speed} AU")
         }
     ))
-    .on_hover_mission(movement_tooltip);
+    .on_hover_small(movement_tooltip);
     let arrival_turn = mission_arrival_turn(turn, duration);
     let duration_response = ui.small(format!(
         "⏱ Duration: {}",
@@ -2822,9 +2772,9 @@ fn draw_mission_details(
     ));
     if duration == 0 {
         duration_response
-            .on_hover_mission("Select a valid fleet and route to calculate its arrival turn.");
+            .on_hover_small("Select a valid fleet and route to calculate its arrival turn.");
     } else {
-        duration_response.on_hover_mission(if let Some(intercept) = mission.intercept.as_ref().filter(|_| is_intercept) {
+        duration_response.on_hover_small(if let Some(intercept) = mission.intercept.as_ref().filter(|_| is_intercept) {
             format!("Your fleet reaches the interception point on turn {arrival_turn}. Contact is planned for turn {}, along the enemy's flight path before landing. If your fleet reaches the meeting point early, it waits there. A recall can cause a miss; surviving targets continue their movement.", intercept.encounter_turn)
         } else if invitation.is_some() {
             format!("All participating fleets arrive at turn {arrival_turn}. The slowest arrival sets the shared duration; each fleet adjusts its own movement.")
@@ -2847,7 +2797,7 @@ fn draw_mission_details(
     } else {
         ui.colored_label(Color32::RED, RichText::new(fuel_text).small())
     };
-    fuel_response.on_hover_mission(if !has_route {
+    fuel_response.on_hover_small(if !has_route {
         "Select a fleet that can reach an interception point to calculate its deuterium cost."
     } else if is_patrol {
         PATROL_FUEL_TOOLTIP
@@ -2865,7 +2815,7 @@ fn draw_mission_details(
             icon | ui.small(format!("Detection probability: {:.1}%", probability * 100.0))
         })
         .inner
-        .on_hover_mission(PATROL_DETECTION_TOOLTIP);
+        .on_hover_small(PATROL_DETECTION_TOOLTIP);
         return;
     }
     draw_deep_cover_option(ui, mission, origin);
@@ -2875,7 +2825,7 @@ fn draw_mission_details(
             "📦 Cargo capacity: {}",
             crate::core::raids::cargo_capacity(&mission.army)
         ))
-        .on_hover_mission("Per ship, production levels 1-5 carry 0, 10, 30, 70, and 150 resources respectively. Loot is credited when the fleet returns.");
+        .on_hover_small("Per ship, production levels 1-5 carry 0, 10, 30, 70, and 150 resources respectively. Loot is credited when the fleet returns.");
     }
 
     if mission.objective == Icon::Destroy {
@@ -2887,7 +2837,7 @@ fn draw_mission_details(
             per_sun * 100.0,
             combined * 100.0,
         ))
-        .on_hover_mission(
+        .on_hover_small(
             "The first number is the probability of destroying the world per War Sun if \
             they shoot the first round of combat. The second number is the total chance for \
             all selected War Suns.",
@@ -2914,7 +2864,7 @@ fn draw_mission_details(
             Probes always stay if the combat takes only one round.",
             );
         })
-        .on_disabled_hover_mission("No Probes selected for this mission.");
+        .on_disabled_hover_small("No Probes selected for this mission.");
 
         if probes == 0 {
             mission.combat_probes = false;
@@ -2953,7 +2903,7 @@ fn draw_mission_details(
                                     RichText::new(item.to_name()).small(),
                                 )
                                 .on_hover_cursor(CursorIcon::PointingHand)
-                                .on_hover_mission(item.description());
+                                .on_hover_small(item.description());
                             }
                         })
                         .response
@@ -2962,13 +2912,13 @@ fn draw_mission_details(
             },
         )
         .response
-        .on_hover_mission(
+        .on_hover_small(
             "Command Bombers to bomb enemy buildings. Every round of combat, \
         every bomber has a 25% chance to decrease a target building's level by \
         one. The Planetary Shield must first be destroyed before bombing can \
         take place.",
         )
-        .on_disabled_hover_mission(if bombing_fixed_by_inviter {
+        .on_disabled_hover_small(if bombing_fixed_by_inviter {
             "The player who created the allied attack fixed its bombing objective."
         } else if destination.is_moon() {
             "Moons cannot be bombed."
@@ -4372,7 +4322,7 @@ fn draw_joint_attack_strengths(
                         egui::Label::new(RichText::new(name.clone()).size(12.0).color(name_color))
                             .truncate(),
                     )
-                    .on_hover_text(format!("{name}{strength_text}"));
+                    .on_hover_small(format!("{name}{strength_text}"));
                     ui.label(RichText::new(strength_text).size(12.0).color(Color32::WHITE));
                     ui.add_space(3.0);
                     egui::Frame::new()
@@ -5072,7 +5022,7 @@ pub(super) fn draw_mission(
     images: &ImageIds,
     editable: bool,
 ) {
-    if state.joint_attack_draft_id.is_none() {
+    if state.mission_info.objective != Icon::Intercept && state.joint_attack_draft_id.is_none() {
         if let Some(invitation) = session.joint_attacks.iter().find(|item| {
             item.inviter == player.id
                 && !item.canceled

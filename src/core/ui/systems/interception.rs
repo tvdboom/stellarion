@@ -11,27 +11,14 @@ pub(super) fn visible_contact(target: &Mission, map: &Map, player: &Player) -> b
 }
 
 impl UiState {
-    pub(crate) fn begin_intercept_selection(&mut self) {
-        if self.mission_info.objective != Icon::Intercept {
-            self.intercept_previous_destination = Some(self.mission_info.destination);
+    /// Switches an interception draft back to planet objectives when a world is targeted.
+    pub(crate) fn set_planet_mission_destination(&mut self, destination: PlanetId) {
+        if self.mission_info.objective == Icon::Intercept {
             self.intercept_target = None;
+            self.mission_info.intercept = None;
+            self.mission_info.objective = Icon::Attack;
         }
-        self.mission_info.objective = Icon::Intercept;
-        self.mission_info.patrol = None;
-        self.mission_info.intercept = None;
-        self.mission_info.jump_gate = false;
-        self.mission_info.deep_cover = false;
-        self.mission_info.bombing = BombingRaid::None;
-        self.selecting_patrol_zone = false;
-        self.selecting_intercept = true;
-        self.allied_mission = false;
-        self.joint_attack_invitees.clear();
-        self.joint_attack_draft_id = None;
-        self.mission = false;
-        self.planet_selected = None;
-        self.planet_hover = None;
-        self.mission_hover = None;
-        self.mission_planet_hover = None;
+        self.mission_info.destination = destination;
     }
 
     /// Accepts visible contacts even when unreachable, so the draft can explain the restriction.
@@ -61,9 +48,6 @@ impl UiState {
             .filter(|(unit, _)| unit.is_ship())
             .map(|(unit, count)| (*unit, *count))
             .collect();
-        if self.mission_info.objective != Icon::Intercept {
-            self.intercept_previous_destination = Some(self.mission_info.destination);
-        }
         self.mission_info = Mission::new_with_id(
             rand::random::<u64>().max(1),
             turn,
@@ -78,7 +62,6 @@ impl UiState {
             None,
         );
         self.intercept_target = Some(target.id);
-        self.selecting_intercept = false;
         self.selecting_patrol_zone = false;
         self.mission = true;
         self.mission_tab = MissionTab::NewMission;
@@ -93,32 +76,6 @@ impl UiState {
         self.mission_battle_plan_origin = None;
         true
     }
-}
-
-pub(crate) fn draw_selection_toast(context: &egui::Context, state: &mut UiState, cancel: bool) {
-    if !state.selecting_intercept {
-        return;
-    }
-    crate::core::messages::show_notification_area(
-        context,
-        "intercept target selection",
-        true,
-        560.0,
-        |ui| {
-            joint_attack_toast(ui, "Select a visible enemy fleet to plot an interception.", |ui| {
-                if joint_attack_toast_button(ui, "Cancel", true).clicked() || cancel {
-                    state.selecting_intercept = false;
-                    if state.intercept_target.is_none() {
-                        state.mission_info.objective = Icon::Attack;
-                        if let Some(destination) = state.intercept_previous_destination {
-                            state.mission_info.destination = destination;
-                        }
-                    }
-                    state.mission = true;
-                }
-            });
-        },
-    );
 }
 
 pub(super) const TARGET_LABEL_WIDTH: f32 = 160.0;
@@ -221,7 +178,7 @@ pub(super) fn unavailable_reason(
     let Some(target) =
         state.intercept_target.and_then(|id| contacts.iter().find(|target| target.id == id))
     else {
-        return Some("Select a visible enemy mission to intercept. The previous contact may no longer be visible.");
+        return Some("Right-click a visible enemy mission to intercept. The previous contact may no longer be visible.");
     };
     if !visible_contact(target, map, player) {
         return Some("This enemy mission is no longer visible.");
@@ -239,7 +196,7 @@ pub(super) fn unavailable_reason(
         return Some("Select at least one combat ship for interception.");
     }
     if state.mission_info.intercept.is_none() {
-        return Some("The selected fleet cannot reach a meeting point along the enemy's flight path before landing. Choose a closer launch world or a faster fleet; its slowest ship sets the speed.");
+        return Some("The selected fleet cannot reach a meeting point along the enemy's flight path before landing. Choose a closer launch world or a faster fleet.");
     }
     None
 }

@@ -190,7 +190,7 @@ fn draw_unit_tactic_affinities(ui: &mut Ui, unit: Unit, images: &ImageIds) {
                     },
                 )
                 .response
-                .on_hover_text(RichText::new(tactic.name()).small());
+                .on_hover_small(tactic.name());
             }
         });
     });
@@ -540,7 +540,7 @@ pub(super) fn draw_unit_hover(
                                     ui.small(format!("{}%", rf));
                                 })
                                 .response
-                                .on_hover_text(RichText::new(rf_unit.to_name()).small());
+                                .on_hover_small(rf_unit.to_name());
 
                                 if (index + 1) % 4 == 0 {
                                     ui.end_row();

@@ -32,7 +32,6 @@ impl UiState {
         if self.mission_info.objective != Icon::Patrol {
             self.patrol_previous_destination = Some(self.mission_info.destination);
         }
-        self.selecting_intercept = false;
         self.mission_info.intercept = None;
         self.mission_info.objective = Icon::Patrol;
         self.mission_info.jump_gate = false;

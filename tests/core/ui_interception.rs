@@ -2,20 +2,6 @@ use super::*;
 use crate::core::simulation::{GameModel, GameRules};
 
 #[test]
-fn selecting_intercept_clears_other_target_modes_and_hides_the_draft() {
-    let mut state = UiState {
-        selecting_patrol_zone: true,
-        mission: true,
-        ..Default::default()
-    };
-    state.begin_intercept_selection();
-    assert!(state.selecting_intercept);
-    assert!(!state.selecting_patrol_zone);
-    assert!(!state.mission);
-    assert_eq!(state.mission_info.objective, Icon::Intercept);
-}
-
-#[test]
 fn right_clicking_a_visible_contact_opens_a_draft_and_preserves_selected_origin() {
     let mut model = GameModel::new([73; 32], GameRules::default()).unwrap();
     model.start().unwrap();
@@ -38,6 +24,7 @@ fn right_clicking_a_visible_contact_opens_a_draft_and_preserves_selected_origin(
     target.position = model.map.get(home).position + Vec2::X * Planet::SIZE;
     let mut state = UiState {
         planet_selected: Some(home),
+        selecting_patrol_zone: true,
         ..Default::default()
     };
     assert!(state.choose_intercept_target(&model.map, player, 1, &target));
@@ -45,13 +32,28 @@ fn right_clicking_a_visible_contact_opens_a_draft_and_preserves_selected_origin(
     assert_eq!(state.mission_info.origin, home);
     assert_eq!(state.intercept_target, Some(900));
     assert_eq!(state.mission_tab, MissionTab::NewMission);
-    assert!(!state.selecting_intercept);
+    assert!(!state.selecting_patrol_zone);
+    assert_eq!(state.mission_info.objective, Icon::Intercept);
     target.owner = player.id;
     assert!(!state.choose_intercept_target(&model.map, player, 1, &target));
+
+    let enemy_home = model.players[1].home_planet;
+    state.set_planet_mission_destination(enemy_home);
+    assert_eq!(state.mission_info.destination, enemy_home);
+    assert_eq!(state.mission_info.objective, Icon::Attack);
+    assert!(state.intercept_target.is_none());
 }
 
 #[test]
 fn intercept_uses_the_normal_panel_send_button_and_disabled_hover_reasons() {
+    let objective_icons = Icon::iter().filter(Icon::is_mission).collect::<Vec<_>>();
+    let images = ImageIds(
+        objective_icons
+            .iter()
+            .enumerate()
+            .map(|(index, icon)| (icon.asset_key(), egui::TextureId::User(index as u64 + 1)))
+            .collect(),
+    );
     for size in [egui::vec2(820.0, 560.0), egui::vec2(520.0, 380.0), egui::vec2(320.0, 280.0)] {
         for case in [
             "reachable",
@@ -200,7 +202,7 @@ fn intercept_uses_the_normal_panel_send_button_and_disabled_hover_reasons() {
                                 &mut requests,
                                 true,
                                 &keyboard,
-                                &ImageIds::default(),
+                                &images,
                             );
                         });
                     },
@@ -219,6 +221,18 @@ fn intercept_uses_the_normal_panel_send_button_and_disabled_hover_reasons() {
                     assert!(!text.iter().any(|text| text.galley.text().ends_with("'s fleet")));
                 }
                 if frame == 0 && size.x >= 520.0 {
+                    let visible_objectives = objective_icons
+                        .iter()
+                        .copied()
+                        .filter(|icon| {
+                            output.shapes.iter().any(|shape| {
+                                matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                                    if mesh.texture_id == images.get(icon.asset_key())
+                                        && mesh.calc_bounds().size() == egui::Vec2::splat(40.0))
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(visible_objectives, [Icon::Intercept], "{case} at {size:?}");
                     let mission = &state.mission_info;
                     let expected_details = if let Some(intercept) = &mission.intercept {
                         let distance =

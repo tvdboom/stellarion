@@ -189,7 +189,7 @@ fn resource_controls(
             *amount = 0;
         }
         ui.add_enabled(enabled, egui::DragValue::new(amount).range(0..=maximum).speed(10))
-            .on_hover_text(RichText::new(resource.to_name()).size(15.0));
+            .on_hover_small(resource.to_name());
     });
 }
 
@@ -260,7 +260,7 @@ fn draw_bundle(ui: &mut Ui, resources: Resources, images: &ImageIds) {
             egui::vec2(width, 34.0),
             egui::Label::new(RichText::new(resources.get(&resource).to_string()).small().strong()),
         )
-        .on_hover_text(RichText::new(resource.to_name()).size(15.0));
+        .on_hover_small(resource.to_name());
     });
     ui.add_space(8.0);
     ui.label(
@@ -289,7 +289,7 @@ fn draw_resource_hub_bundle(ui: &mut Ui, resources: Resources, images: &ImageIds
             egui::vec2(width, 34.0),
             egui::Label::new(RichText::new(resources.get(&resource).to_string()).small().strong()),
         )
-        .on_hover_text(RichText::new(resource.to_name()).size(15.0));
+        .on_hover_small(resource.to_name());
     });
     ui.add_space(8.0);
     resource_hub_text_label(
@@ -724,7 +724,7 @@ fn draw_resource_hub_panel(
                         "Repay early",
                         pending.can_accept_commands() && player.resources.contains(repayment),
                     )
-                    .on_disabled_hover_text("The complete repayment bundle is not available.")
+                    .on_disabled_hover_small("The complete repayment bundle is not available.")
                     .clicked();
                 } else if show_borrow {
                     borrow = draw_modal_button(

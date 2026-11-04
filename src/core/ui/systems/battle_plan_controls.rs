@@ -202,9 +202,8 @@ fn selection_card(
             *automatic_tactic = !*automatic_tactic;
             set_ui_sound(ui.ctx(), Some(SoundEffect::Button));
         }
-        (label | toggle_ui.add(toggle(automatic_tactic))).on_hover_ui(|ui| {
-            ui.label(RichText::new("Auto-select highest affinity").size(16.0));
-        });
+        (label | toggle_ui.add(toggle(automatic_tactic)))
+            .on_hover_small("Auto-select highest affinity");
     }
     let arrow = rect.right_top() + egui::vec2(-12.0, heading_center);
     ui.painter().add(egui::Shape::line(

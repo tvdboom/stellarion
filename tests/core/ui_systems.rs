@@ -962,7 +962,10 @@ fn colonial_withdrawal_image_tiles_explain_each_stance_on_hover() {
         });
         output.textures_delta.clear();
 
-        assert!(has_text(&output.shapes, tooltip), "missing tooltip for texture {texture}");
+        assert_eq!(
+            text_font_size(&output.shapes, tooltip),
+            TextStyle::Small.resolve(&context.global_style()).size,
+        );
     }
 }
 

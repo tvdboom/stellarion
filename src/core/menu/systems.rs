@@ -29,7 +29,6 @@ const MENU_ACTION_TEXT_SIZE: f32 = 23.0;
 const MENU_TITLE_TEXT_SIZE: f32 = 38.0;
 const MENU_CARD_LABEL_TEXT_SIZE: f32 = 17.0;
 const MENU_CONTROL_TEXT_SIZE: f32 = 20.0;
-const MENU_TOOLTIP_TEXT_SIZE: f32 = 15.0;
 // Form width stays independent of the larger standalone navigation buttons.
 const MENU_CONTENT_WIDTH: f32 = 452.0;
 const RESUME_MENU_WIDTH: f32 = 560.0;
@@ -1395,7 +1394,7 @@ fn code_info_icon(ui: &mut egui::Ui, tooltip: &str) {
     );
     response.on_hover_ui(|ui| {
         ui.set_max_width(300.0);
-        ui.label(egui::RichText::new(tooltip).size(MENU_TOOLTIP_TEXT_SIZE));
+        ui.small(tooltip);
     });
 }
 

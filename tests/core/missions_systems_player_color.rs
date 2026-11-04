@@ -400,7 +400,7 @@ fn mission_colors_and_clicks_follow_current_owners_and_viewers() {
         assert!(!state.selecting_patrol_zone);
         assert_eq!(state.planet_selected, None);
     }
-    // Both entry points select the live enemy contact through the map sprite's observer.
+    // The map observer opens an interception draft on right-click and mission details on left-click.
     let home_position = app.world().resource::<Map>().get(player.home_planet).position;
     app.world_mut()
         .resource_mut::<Map>()
@@ -419,14 +419,10 @@ fn mission_colors_and_clicks_follow_current_owners_and_viewers() {
         target.army = Army::from([(Unit::Ship(crate::core::units::ships::Ship::LightFighter), 3)]);
     }
     for button in [PointerButton::Secondary, PointerButton::Primary] {
-        let mut state = UiState {
+        app.insert_resource(UiState {
             planet_selected: Some(player.home_planet),
             ..default()
-        };
-        if button == PointerButton::Primary {
-            state.begin_intercept_selection();
-        }
-        app.insert_resource(state);
+        });
         app.update();
         app.world_mut().trigger(Pointer::new(
             PointerId::Mouse,
@@ -441,9 +437,14 @@ fn mission_colors_and_clicks_follow_current_owners_and_viewers() {
         ));
         let state = app.world().resource::<UiState>();
         assert!(state.mission);
-        assert_eq!(state.mission_info.objective, Icon::Intercept);
-        assert_eq!(state.intercept_target, Some(player.id));
-        assert!(!state.selecting_intercept);
+        if button == PointerButton::Secondary {
+            assert_eq!(state.mission_tab, MissionTab::NewMission);
+            assert_eq!(state.mission_info.objective, Icon::Intercept);
+            assert_eq!(state.intercept_target, Some(player.id));
+        } else {
+            assert_eq!(state.mission_tab, MissionTab::EnemyMissions);
+            assert_eq!(state.intercept_target, None);
+        }
     }
 }
 

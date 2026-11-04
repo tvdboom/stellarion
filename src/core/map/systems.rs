@@ -2303,6 +2303,7 @@ pub fn draw_map(
                             state.mission_info.patrol = None;
                             state.mission_info.objective = Icon::Attack;
                         }
+                        state.set_planet_mission_destination(planet_id);
                         state.mission = true;
                         state.combat_report = None;
                         state.mission_tab = MissionTab::NewMission;

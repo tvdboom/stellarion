@@ -342,12 +342,7 @@ pub fn update_missions(
                         let Some(mission) = missions.get(id) else {
                             return;
                         };
-                        if state.selecting_intercept && mission.owner == player.id {
-                            return;
-                        }
-                        if (event.button == PointerButton::Secondary || state.selecting_intercept)
-                            && mission.owner != player.id
-                        {
+                        if event.button == PointerButton::Secondary && mission.owner != player.id {
                             state.choose_intercept_target(&map, &player, settings.turn, mission);
                         } else if event.button == PointerButton::Secondary {
                             state.choose_patrol_reinforcement(

@@ -3,7 +3,6 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::core::ui::utils::HOVER_TOOLTIP_TEXT_SIZE;
 
 #[derive(Clone)]
 struct AccessHover {
@@ -62,7 +61,7 @@ pub(super) fn draw_player_access_picker(
         .frame(frame)
         .show(|ui| {
             ui.set_width(width - 20.0);
-            ui.label(RichText::new(title).strong().size(HOVER_TOOLTIP_TEXT_SIZE));
+            ui.label(RichText::new(title).strong().size(PICKER_HEADING_FONT_SIZE));
             if !explanation.is_empty() {
                 ui.small(explanation);
             }

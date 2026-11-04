@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn enemy_mission_origin_shows_all_foreign_planet_objectives() {
+fn enemy_mission_origin_shows_foreign_planet_objectives_without_intercept() {
     use crate::core::turns::filter_missions;
 
     let mut home = Planet::new(0, "Home".into(), Vec2::ZERO, false, 1.0);
@@ -36,7 +36,8 @@ fn enemy_mission_origin_shows_all_foreign_planet_objectives() {
         [Icon::Colonize, Icon::Attack, Icon::Raid, Icon::Spy, Icon::MissileStrike, Icon::Destroy];
     let images = ImageIds(
         objectives
-            .iter()
+            .into_iter()
+            .chain([Icon::Intercept])
             .enumerate()
             .map(|(index, icon)| (icon.asset_key(), egui::TextureId::User(index as u64 + 1)))
             .collect(),
@@ -146,6 +147,10 @@ fn enemy_mission_origin_shows_all_foreign_planet_objectives() {
                             "missing or clipped {objective:?}: resolved={resolved}, viewport={viewport:?}"
                         );
                     }
+                    assert!(!output.shapes.iter().any(|shape| {
+                        matches!(&shape.shape, egui::Shape::Mesh(mesh)
+                            if mesh.texture_id == images.get(Icon::Intercept.asset_key()))
+                    }));
                     assert_eq!(state.mission_info.objective, selected);
                 }
             }
@@ -244,22 +249,6 @@ fn deploy_drafts_hide_intercept_and_keep_colonize_on_controlled_planets() {
                 assert_eq!(state.mission_info.objective, Icon::Deploy);
             }
         }
-    }
-}
-
-#[test]
-fn intercept_drafts_remain_selected_with_a_friendly_previous_destination() {
-    let player = Player::new(1, 1);
-    let mission = Mission {
-        objective: Icon::Intercept,
-        ..default()
-    };
-    for owned in [false, true] {
-        let mut destination = Planet::new(2, "Friendly".into(), Vec2::X, false, 1.0);
-        destination.controlled = Some(player.id);
-        destination.owned = owned.then_some(player.id);
-        assert!(draft_objectives_for_mission(&player, &destination, &mission)
-            .contains(&Icon::Intercept));
     }
 }
 
@@ -1377,7 +1366,15 @@ fn report_player_names_show_full_name_tooltips_only_when_truncated() {
                         1
                     }
                 );
-                assert_eq!(names.iter().filter(|text| !text.galley.elided).count(), 1);
+                let mut full_names = names.iter().filter(|text| !text.galley.elided);
+                let full_name = full_names.next().expect("missing full player name");
+                assert!(full_names.next().is_none());
+                if truncated {
+                    assert_eq!(
+                        full_name.galley.job.sections[0].format.font_id.size,
+                        TextStyle::Small.resolve(&context.global_style()).size,
+                    );
+                }
             }
         }
     }
