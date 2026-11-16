@@ -243,11 +243,6 @@ Things to keep in mind:
 
 <br>
 
-Settings begin at their defaults whenever Stellarion starts. New games use the current
-session's settings. **Save Game** stores your audio, map display, and combat preferences
-with your player slot on the backend; loading that game restores them. Settings are never
-saved in the local computer or browser profile.
-
 ### Mouse + Key bindings
 
 - `escape`: Enter/exit the in-game menu.

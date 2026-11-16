@@ -250,15 +250,13 @@ pub(super) fn paint_atmosphere(painter: &Painter, center: Pos2, radius: f32, col
     const SEGMENTS: u32 = 128;
     let mut mesh = Mesh::default();
     for (scale, opacity) in
-        [(0.992, 0.0), (1.002, 0.40), (1.012, 0.19), (1.035, 0.055), (1.08, 0.0)]
+        [(0.992, 0.0), (1.002, 0.20), (1.012, 0.095), (1.035, 0.028), (1.08, 0.0)]
     {
         for step in 0..=SEGMENTS {
             let angle = step as f32 / SEGMENTS as f32 * TAU;
-            // The planet artwork is lit from the upper left; its rim shares that light.
-            let light = 0.16 + 0.84 * (0.5 + 0.5 * (angle + 2.35).cos()).powi(2);
             mesh.colored_vertex(
                 center + Vec2::angled(angle) * radius * scale,
-                alpha(color, opacity * light),
+                alpha(color, opacity),
             );
         }
     }

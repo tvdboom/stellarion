@@ -197,6 +197,8 @@ pub struct UiState {
     pub focus_planet: Option<PlanetId>,
     /// Coordinate focus retained as a camera-boundary anchor until manual input or world selection.
     pub(crate) focus_position: Option<Vec2>,
+    /// Absolute camera position requested by the minimap for the next camera update.
+    pub(crate) minimap_target: Option<Vec2>,
     /// Fading echoes at the last space location opened from a mission or report.
     pub(crate) location_marker: Option<LocationMarker>,
     /// Optional orthographic scale approached while moving to a camera-only world focus.
@@ -949,7 +951,7 @@ fn hud_panel_frame() -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(9, 9))
 }
 
-fn scaled_hud_panel_frame(scale: f32) -> egui::Frame {
+pub(super) fn scaled_hud_panel_frame(scale: f32) -> egui::Frame {
     hud_panel_frame()
         .stroke(Stroke::new(scale, HUD_PANEL_STROKE))
         .corner_radius((6.0 * scale).round() as u8)

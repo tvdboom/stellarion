@@ -4,6 +4,24 @@ use crate::core::combat::resolution::CombatUnit;
 use crate::core::missions::Mission;
 
 #[test]
+fn atmosphere_mesh_has_uniform_opacity_at_each_radius() {
+    let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
+    let shapes = super::super::tests::capture_planet_shapes(scene, |painter| {
+        paint_atmosphere(painter, scene.planet, scene.planet_radius, BLUE);
+    });
+    let [Shape::Mesh(mesh)] = shapes.as_slice() else {
+        panic!("Expected one atmosphere mesh");
+    };
+    assert!(mesh.vertices.iter().any(|vertex| vertex.color.a() > 0));
+    for ring in mesh.vertices.chunk_by(|a, b| {
+        (a.pos.distance(scene.planet) - b.pos.distance(scene.planet)).abs() < 0.001
+    }) {
+        assert!(ring.len() >= 4);
+        assert!(ring.iter().all(|vertex| vertex.color == ring[0].color));
+    }
+}
+
+#[test]
 fn later_nonpenetrating_contacts_do_not_remove_surface_scars() {
     let mut report = super::super::tests::bombing_report();
     let attackers = &mut report.combat_report.as_mut().unwrap().rounds[0].attacker;

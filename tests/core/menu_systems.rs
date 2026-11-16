@@ -221,7 +221,10 @@ fn option_boxes_align_and_contain_controls_on_each_page() {
                 ],
             ),
             (AppState::JoinGame, vec!["PLAYER NAME", "GAME CODE"]),
-            (AppState::Settings, vec!["AUDIO", "MAP CELLS", "PLANET INFORMATION", "HOVER DETAILS"]),
+            (
+                AppState::Settings,
+                vec!["AUDIO", "MAP CELLS", "PLANET INFORMATION", "HOVER DETAILS", "MINIMAP"],
+            ),
         ] {
             let (mut app, context) = menu_app();
             for _ in 0..3 {
@@ -247,7 +250,7 @@ fn in_game_settings_boxes_fit_and_back_remains_reachable() {
         if viewport.y >= 900.0 {
             assert_option_cards(
                 &shapes,
-                &["AUDIO", "MAP CELLS", "PLANET INFORMATION", "HOVER DETAILS"],
+                &["AUDIO", "MAP CELLS", "PLANET INFORMATION", "HOVER DETAILS", "MINIMAP"],
                 viewport_ui_scale(viewport),
             );
         }
@@ -258,6 +261,58 @@ fn in_game_settings_boxes_fit_and_back_remains_reachable() {
             app.world().resource::<NextState<GameState>>(),
             NextState::Pending(GameState::GameMenu)
         ));
+    }
+}
+
+#[test]
+fn in_game_minimap_choice_is_reachable_and_toggles_visibility() {
+    let (mut app, context) = menu_app();
+    app.insert_resource(State::new(GameState::Settings))
+        .init_resource::<NextState<GameState>>()
+        .add_systems(Update, draw_game_overlay);
+    let viewport = egui::vec2(320.0, 480.0);
+    for _ in 0..4 {
+        menu_app_frame(&mut app, &context, viewport, AppState::Game, vec![]);
+    }
+    assert!(app.world().resource::<Settings>().show_minimap);
+
+    menu_app_frame(
+        &mut app,
+        &context,
+        viewport,
+        AppState::Game,
+        vec![
+            egui::Event::PointerMoved(egui::Pos2::ZERO + viewport * 0.5),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -1000.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    for _ in 0..30 {
+        menu_app_frame(&mut app, &context, viewport, AppState::Game, vec![]);
+    }
+
+    for (label, shown) in [("Hidden", false), ("Shown", true)] {
+        let shapes = menu_app_frame(&mut app, &context, viewport, AppState::Game, vec![]);
+        let heading = visible_menu_label(&shapes, "MINIMAP").unwrap();
+        let option = shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => {
+                    let bounds = text.galley.rect.translate(text.pos.to_vec2());
+                    (bounds.top() >= heading.bottom() && shape.clip_rect.contains_rect(bounds))
+                        .then_some(bounds.center())
+                },
+                _ => None,
+            })
+            .unwrap();
+        click_menu_app(&mut app, &context, viewport, AppState::Game, option);
+        let settings = app.world().resource::<Settings>();
+        assert_eq!(settings.show_minimap, shown);
+        assert!(settings.show_cells);
     }
 }
 

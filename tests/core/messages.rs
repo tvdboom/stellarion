@@ -5,6 +5,7 @@ use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
 use crate::core::simulation::{GameModel, GameRules};
 use crate::core::turns::StartTurnMsg;
+use crate::core::ui::location_marker::LocationMarkerTarget;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Army, Unit};
 use crate::multiplayer::client::MultiplayerRequest;
@@ -567,6 +568,58 @@ fn public_world_toast_centers_planets_and_moons_without_opening_hidden_informati
     assert!(!state.to_selected);
     model.map.get_mut(planet).is_destroyed = true;
     assert!(!focus_planet(planet, &model.map, &mut state));
+}
+
+#[test]
+fn clicking_a_construction_toast_focuses_its_planet_and_marks_the_named_structure() {
+    for structure in [PublicStructure::SpaceDock, PublicStructure::OrbitalRailgun] {
+        let (mut app, context) = notification_test_app();
+        let mut map = Map::new(2, 0);
+        let planet = map.planets[0].id;
+        map.get_mut(planet).army.insert(structure.unit(), 1);
+        app.insert_resource(map);
+        let toast = MessageMsg::info("A structure has been built.")
+            .with_action(MessageAction::FocusStructure(planet, structure));
+        app.world_mut().write_message(toast.clone());
+        let size = egui::vec2(1280.0, 720.0);
+        for _ in 0..3 {
+            notification_system_frame(&mut app, &context, size);
+        }
+        let pos = notification_area_rect(&context).unwrap().center();
+        for pressed in [true, false] {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events: vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..default()
+                },
+                |_| app.world_mut().run_schedule(EguiPrimaryContextPass),
+            );
+            output.textures_delta.clear();
+        }
+        let state = app.world().resource::<UiState>();
+        assert_eq!(state.focus_planet, Some(planet));
+        assert!(state.to_selected);
+        assert_eq!(state.planet_selected, None);
+        assert_eq!(
+            state.location_marker.as_ref().unwrap().target,
+            LocationMarkerTarget::Structure(planet, structure),
+        );
+        assert!(app.world().resource::<Messages>().0.is_empty());
+
+        app.world_mut().resource_mut::<Map>().get_mut(planet).army.remove(&structure.unit());
+        app.world_mut().write_message(toast);
+        assert!(!notification_system_frame(&mut app, &context, size).contains("has been built"));
+        assert!(app.world().resource::<Messages>().0.is_empty());
+    }
 }
 
 #[test]

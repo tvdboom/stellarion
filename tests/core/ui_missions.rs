@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::ui::location_marker::LocationMarkerTarget;
 
 #[test]
 fn enemy_mission_origin_shows_foreign_planet_objectives_without_intercept() {
@@ -1566,7 +1567,10 @@ fn space_report_images_and_caption_focus_the_recorded_encounter_at_each_viewport
                 }
             }
             assert_eq!(state.focus_position, Some(encounter_position));
-            assert_eq!(state.location_marker.as_ref().unwrap().position, encounter_position);
+            assert_eq!(
+                state.location_marker.as_ref().unwrap().target,
+                LocationMarkerTarget::Site(encounter_position)
+            );
             assert_eq!(state.combat_report, None);
             assert!(state.to_selected);
             assert!(!state.mission);
@@ -3283,10 +3287,9 @@ fn mission_animations_focus_the_current_location_with_a_marker_at_each_panel_sca
                     );
                     assert!(state.to_selected);
                     assert_eq!(state.focus_position, Some(mission.position));
-                    assert_eq!(state.location_marker.as_ref().unwrap().position, mission.position);
                     assert_eq!(
-                        state.location_marker.as_ref().unwrap().mission_id,
-                        Some(mission.id)
+                        state.location_marker.as_ref().unwrap().target,
+                        LocationMarkerTarget::Fleet(mission.id)
                     );
                     assert_eq!(state.focus_planet, None);
                     assert_eq!(state.focus_zoom, None);

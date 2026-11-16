@@ -3180,7 +3180,7 @@ fn draw_active_missions(
                                 changed_hover = true;
                             }
                             if handle_space_location_link(preview, mission.position, state).clicked() {
-                                state.location_marker = Some(LocationMarker::for_mission(mission.id, mission.position));
+                                state.location_marker = Some(LocationMarker::for_mission(mission.id));
                             }
 
                             if let Some(intercept) = mission.intercept.as_ref().filter(|_| mission.objective == Icon::Intercept || mission.owner != player.id) {

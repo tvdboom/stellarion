@@ -7,12 +7,12 @@ use bevy::prelude::*;
 use super::model::{Map, MapCmp};
 use super::planet::PlanetId;
 use super::systems::{
-    draw_map, update_planet_defenses, OrbitalRailgunCmp, PlanetCmp, SpaceDockCmp,
+    draw_map, update_planet_defenses, OrbitalRailgunCmp, PlanetCmp, PublicStructure, SpaceDockCmp,
 };
 use crate::core::assets::WorldAssets;
 use crate::core::constants::MISSION_Z;
 use crate::core::loading::{
-    refresh_gameplay_projection, refresh_turn_draft, PublicStructure, PublicStructureChange,
+    refresh_gameplay_projection, refresh_turn_draft, PublicStructureChange,
     PublicStructureChangeMsg,
 };
 use crate::core::messages::{MessageAction, MessageMsg};

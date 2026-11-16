@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::simulation::{GameModel, GameRules};
+use crate::core::ui::location_marker::LocationMarkerTarget;
 
 fn patrol_setup() -> (GameModel, Player, UiState, Vec2) {
     let mut model = GameModel::new([73; 32], GameRules::default()).unwrap();
@@ -1489,7 +1490,10 @@ fn active_patrol_space_links_focus_the_zone_at_each_viewport_scale() {
                 continue;
             }
             assert_eq!(state.focus_position, Some(center));
-            assert_eq!(state.location_marker.as_ref().unwrap().position, center);
+            assert_eq!(
+                state.location_marker.as_ref().unwrap().target,
+                LocationMarkerTarget::Site(center)
+            );
             assert!(state.to_selected);
             assert!(!state.mission);
             assert_eq!(state.planet_selected, None);

@@ -14,10 +14,11 @@ use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::Planet;
 use crate::core::map::planet::PlanetId;
-use crate::core::map::systems::select_planet;
+use crate::core::map::systems::{select_planet, PublicStructure};
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::states::{AppState, GameState};
+use crate::core::ui::location_marker::LocationMarker;
 use crate::core::ui::systems::{resource_bar_bottom, viewport_ui_scale, MissionTab, UiState};
 use crate::core::units::Amount;
 use crate::multiplayer::client::MultiplayerSession;
@@ -108,6 +109,8 @@ pub enum MessageAction {
     FocusColony(PlanetId),
     /// Centers the strategic map on a public world without opening its information panel.
     FocusPlanet(PlanetId),
+    /// Centers on the planet and highlights the visible structure that was built there.
+    FocusStructure(PlanetId, PublicStructure),
     /// Centers a revoked protection world and opens a mission from its stationed fleet.
     OpenRevokedProtectionMission(PlanetId),
     /// Centers the strategic map on a Railgun target and zooms out as far as possible.
@@ -116,6 +119,21 @@ pub enum MessageAction {
     FocusDestroyedPlanet(PlanetId),
     /// Centers the strategic map closely on an in-flight space-fauna encounter.
     FocusSpaceEncounter(MissionId),
+}
+
+impl MessageAction {
+    fn requires_playing_map(self) -> bool {
+        matches!(
+            self,
+            Self::FocusColony(_)
+                | Self::FocusPlanet(_)
+                | Self::FocusStructure(..)
+                | Self::OpenRevokedProtectionMission(_)
+                | Self::FocusRailgunTarget(_)
+                | Self::FocusDestroyedPlanet(_)
+                | Self::FocusSpaceEncounter(_)
+        )
+    }
 }
 
 /// Requests a transient notification.
@@ -206,26 +224,10 @@ impl Messages {
             action: message.action,
             pending_sound: !message.silent,
             remaining_seconds: message.display_duration.map_or_else(
-                || {
-                    if matches!(
-                        message.action,
-                        Some(
-                            MessageAction::FocusColony(_)
-                                | MessageAction::FocusPlanet(_)
-                                | MessageAction::FocusRailgunTarget(_)
-                                | MessageAction::FocusDestroyedPlanet(_)
-                                | MessageAction::FocusSpaceEncounter(_)
-                        )
-                    ) {
-                        10.0
-                    } else if matches!(
-                        message.action,
-                        Some(MessageAction::OpenRevokedProtectionMission(_))
-                    ) {
-                        f32::INFINITY
-                    } else {
-                        MESSAGE_DURATION as f32
-                    }
+                || match message.action {
+                    Some(MessageAction::OpenRevokedProtectionMission(_)) => f32::INFINITY,
+                    Some(action) if action.requires_playing_map() => 10.0,
+                    _ => MESSAGE_DURATION as f32,
                 },
                 |duration| duration.as_secs_f32(),
             ),
@@ -332,6 +334,10 @@ fn check_messages(
             Some(MessageAction::FocusPlanet(id)) => map
                 .as_ref()
                 .is_some_and(|map| map.try_get(id).is_some_and(|planet| !planet.is_destroyed)),
+            Some(MessageAction::FocusStructure(id, structure)) => map
+                .as_ref()
+                .and_then(|map| map.try_get(id))
+                .is_some_and(|planet| structure.is_built_on(planet)),
             Some(MessageAction::OpenRevokedProtectionMission(id)) => {
                 map.as_ref().zip(player.as_ref()).is_some_and(|(map, player)| {
                     map.try_get(id).is_some_and(|planet| revoked_protection_fleet(planet, player))
@@ -348,17 +354,7 @@ fn check_messages(
             }),
             _ => true,
         };
-        if matches!(
-            message.action,
-            Some(
-                MessageAction::FocusColony(_)
-                    | MessageAction::FocusPlanet(_)
-                    | MessageAction::OpenRevokedProtectionMission(_)
-                    | MessageAction::FocusRailgunTarget(_)
-                    | MessageAction::FocusDestroyedPlanet(_)
-                    | MessageAction::FocusSpaceEncounter(_)
-            )
-        ) {
+        if message.action.is_some_and(MessageAction::requires_playing_map) {
             if !in_game || !actionable_planet_is_valid {
                 return false;
             }
@@ -423,6 +419,16 @@ fn check_messages(
                     if playing {
                         if let Some(map) = &map {
                             focus_planet(planet_id, map, state);
+                        }
+                    }
+                },
+                MessageAction::FocusStructure(planet_id, structure) => {
+                    if playing {
+                        if let Some(map) = &map {
+                            if focus_planet(planet_id, map, state) {
+                                state.location_marker =
+                                    Some(LocationMarker::for_structure(planet_id, structure));
+                            }
                         }
                     }
                 },
@@ -538,19 +544,7 @@ fn draw_notifications(
             );
             // Each frame measures only its own label; the stack shares a right edge, not a width.
             for (index, message) in messages.0.iter().enumerate() {
-                if !playing
-                    && matches!(
-                        message.action,
-                        Some(
-                            MessageAction::FocusColony(_)
-                                | MessageAction::FocusPlanet(_)
-                                | MessageAction::OpenRevokedProtectionMission(_)
-                                | MessageAction::FocusRailgunTarget(_)
-                                | MessageAction::FocusDestroyedPlanet(_)
-                                | MessageAction::FocusSpaceEncounter(_)
-                        )
-                    )
-                {
+                if !playing && message.action.is_some_and(MessageAction::requires_playing_map) {
                     continue;
                 }
                 let (fill, accent) = match message.level {

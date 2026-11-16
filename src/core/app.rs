@@ -71,7 +71,8 @@ use crate::core::turns::{
     clear_end_game_presentation, end_game_presentation_inactive, finish_end_game_presentation,
     EndGamePresentation,
 };
-use crate::core::ui::location_marker::{draw_location_marker, FleetMarkerRing};
+use crate::core::ui::location_marker::{draw_location_marker, SpriteMarkerRing};
+use crate::core::ui::minimap::{block_minimap_world_picking, draw_minimap, minimap_shown};
 use crate::core::ui::systems::{add_ui_images, draw_ui, set_ui_style};
 use crate::core::ui::utils::ImageIds;
 use crate::core::utils::despawn;
@@ -166,6 +167,14 @@ impl Plugin for GamePlugin {
             // Camera
             .add_systems(Startup, setup_camera)
             .add_systems(
+                PreUpdate,
+                block_minimap_world_picking
+                    .in_set(bevy::picking::PickingSystems::Backend)
+                    .in_set(InPlayingGameSet)
+                    .run_if(minimap_shown)
+                    .run_if(end_game_presentation_inactive),
+            )
+            .add_systems(
                 Update,
                 (move_camera, move_camera_keyboard, clamp_camera_to_worlds, update_parallax)
                     .chain()
@@ -250,10 +259,19 @@ impl Plugin for GamePlugin {
                     .run_if(in_state(GameState::Playing))
                     .in_set(InGameSet),
             )
-            .add_systems(OnExit(GameState::Playing), despawn::<FleetMarkerRing>)
+            .add_systems(
+                EguiPrimaryContextPass,
+                draw_minimap
+                    .before(draw_ui)
+                    .run_if(minimap_shown)
+                    .run_if(end_game_presentation_inactive)
+                    .run_if(in_state(GameState::Playing))
+                    .in_set(InGameSet),
+            )
+            .add_systems(OnExit(GameState::Playing), despawn::<SpriteMarkerRing>)
             .add_systems(
                 Update,
-                despawn::<FleetMarkerRing>
+                despawn::<SpriteMarkerRing>
                     .run_if(not(end_game_presentation_inactive))
                     .in_set(InGameSet),
             )

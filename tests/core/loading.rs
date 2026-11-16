@@ -355,13 +355,20 @@ fn newly_completed_enemy_strategic_structures_create_focusable_notifications_onc
         notifications[0].1.message,
         format!("A Space Dock has been built on planet {}.", model.map.get(enemy_planet).name)
     );
-    assert_eq!(notifications[0].1.action, Some(MessageAction::FocusPlanet(enemy_planet)));
+    assert_eq!(
+        notifications[0].1.action,
+        Some(MessageAction::FocusStructure(enemy_planet, PublicStructure::SpaceDock)),
+    );
     assert_eq!(
         notifications[1].1.message,
         format!(
             "An Orbital Railgun has been built on planet {}.",
             model.map.get(enemy_planet).name
         )
+    );
+    assert_eq!(
+        notifications[1].1.action,
+        Some(MessageAction::FocusStructure(enemy_planet, PublicStructure::OrbitalRailgun)),
     );
 
     assert!(public_structure_notifications(Some(&model.map), &model, local_player_id).is_empty());
@@ -414,7 +421,8 @@ fn battle_destruction_notifies_only_nonparticipants_for_each_public_structure() 
     assert_eq!(notifications.len(), 2);
     assert!(notifications
         .iter()
-        .all(|(change, _)| change.change == PublicStructureChange::Destroyed));
+        .all(|(change, notification)| change.change == PublicStructureChange::Destroyed
+            && notification.action == Some(MessageAction::FocusPlanet(target))));
     assert_eq!(
         notifications[0].1.message,
         format!("A Space Dock has been destroyed on planet {}.", model.map.get(target).name)

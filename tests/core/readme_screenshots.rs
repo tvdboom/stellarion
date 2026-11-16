@@ -588,7 +588,7 @@ fn render_fleet_location_marker_screenshots() {
             let (_, transform) = fleets.iter(world).find(|(fleet, _)| fleet.id == 9909).unwrap();
             assert!(transform.translation().truncate().distance(position) > 25.0);
             world.resource_mut::<UiState>().location_marker =
-                Some(LocationMarker::for_mission(9909, position));
+                Some(LocationMarker::for_mission(9909));
         }
         let name = match frame {
             320 => "early",

@@ -174,6 +174,18 @@ pub fn move_camera(
         return;
     };
 
+    if let Some(position) = state.minimap_target.take() {
+        camera_t.translation = position.extend(camera_t.translation.z);
+        state.to_selected = false;
+        state.focus_planet = None;
+        // Minimap movement uses the same overscroll and settling as map dragging.
+        state.focus_position = None;
+        state.focus_zoom = None;
+        state.location_marker = None;
+        scroll_msg.clear();
+        return;
+    }
+
     // Ignore scrolling if pointer is over UI
     let pointer_over_ui = context.ctx_mut().is_ok_and(|ctx| ctx.is_pointer_over_egui());
     if !pointer_over_ui {

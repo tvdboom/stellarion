@@ -87,6 +87,8 @@ pub struct Settings {
     pub show_info: bool,
     /// Keeps hover cards to prices and unit-specific controls where practical.
     pub brief_hover_info: bool,
+    /// Whether the strategic minimap is visible in this app session.
+    pub show_minimap: bool,
     pub show_menu: bool,
     pub combat_paused: bool,
     pub combat_speed: f32,
@@ -206,6 +208,7 @@ impl Default for Settings {
             show_cells: true,
             show_info: false,
             brief_hover_info: false,
+            show_minimap: true,
             show_menu: true,
             combat_paused: false,
             combat_speed: 1.0,

@@ -10,34 +10,20 @@ use crate::core::loading_screen::LoadingScreen;
 use crate::core::map::model::Map;
 use crate::core::map::orbital_railgun::OrbitalStrikes;
 use crate::core::map::planet::PlanetId;
+use crate::core::map::systems::PublicStructure;
 use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::missions::Missions;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, GameState};
 use crate::core::turns::{filter_missions, PublicPlanetDestructions, StartTurnMsg};
 use crate::core::ui::systems::UiState;
-use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Unit};
 use crate::multiplayer::client::{
     ConnectionStatus, MultiplayerSession, PendingTurnCommands, RefreshGameplayProjection,
     RefreshTurnDraft,
 };
 
-/// A strategic structure whose existence publicly identifies a planet's owner.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum PublicStructure {
-    SpaceDock,
-    OrbitalRailgun,
-}
-
 impl PublicStructure {
-    pub(crate) fn unit(self) -> Unit {
-        match self {
-            Self::SpaceDock => Unit::space_dock(),
-            Self::OrbitalRailgun => Unit::Building(Building::OrbitalRailgun),
-        }
-    }
-
     fn label(self) -> &'static str {
         match self {
             Self::SpaceDock => "Space Dock",
@@ -454,8 +440,15 @@ fn public_structure_notifications(
                         planet.name
                     ));
                     if !planet.is_destroyed {
-                        notification =
-                            notification.with_action(MessageAction::FocusPlanet(planet.id));
+                        let action = match change {
+                            PublicStructureChange::Built => {
+                                MessageAction::FocusStructure(planet.id, structure)
+                            },
+                            PublicStructureChange::Destroyed => {
+                                MessageAction::FocusPlanet(planet.id)
+                            },
+                        };
+                        notification = notification.with_action(action);
                     }
                     Some((
                         PublicStructureChangeMsg {

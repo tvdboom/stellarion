@@ -38,6 +38,7 @@ pub(crate) fn suspend_gameplay_interactions(
         commands.spawn((add_root_node(true), GameplayInputBlocker, MapCmp));
     }
     if let Some(state) = state.as_mut() {
+        state.minimap_target = None;
         state.planet_hover = None;
         state.world_shortcut_hover = None;
         state.jump_gate_hover = None;

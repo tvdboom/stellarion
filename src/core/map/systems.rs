@@ -27,7 +27,7 @@ use crate::core::constants::{
     MAX_ZOOM, MISSION_Z, OWN_COLOR, PLANET_Z, SOLAR_STAR_SIZE, TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::identity::PlayerId;
-use crate::core::loading::{PublicStructure, PublicStructureChange};
+use crate::core::loading::PublicStructureChange;
 #[cfg(test)]
 use crate::core::map::asteroids::{
     asteroid_belt_asteroid_count, asteroid_belt_layout, asteroid_belt_placements, solar_band_gaps,
@@ -429,6 +429,28 @@ fn approach(current: f32, target: f32, max_delta: f32) -> f32 {
         (current + max_delta).min(target)
     } else {
         (current - max_delta).max(target)
+    }
+}
+
+/// A strategic orbital whose presence publicly identifies a planet's owner.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PublicStructure {
+    /// The Space Dock orbiting the planet.
+    SpaceDock,
+    /// The Orbital Railgun stationed beside the planet.
+    OrbitalRailgun,
+}
+
+impl PublicStructure {
+    pub(crate) fn unit(self) -> Unit {
+        match self {
+            Self::SpaceDock => Unit::space_dock(),
+            Self::OrbitalRailgun => Unit::Building(Building::OrbitalRailgun),
+        }
+    }
+
+    pub(crate) fn is_built_on(self, planet: &Planet) -> bool {
+        !planet.is_destroyed && planet.army.amount(&self.unit()) > 0
     }
 }
 

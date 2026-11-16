@@ -56,10 +56,7 @@ enum TextureKind {
 fn pixel(kind: TextureKind, point: Vec2, phase: f32) -> [u8; 4] {
     let radius = point.length();
     let alpha = match kind {
-        TextureKind::Rim => {
-            let edge = (-((radius - 0.89) / 0.035).powi(2)).exp();
-            edge * (0.22 + 0.78 * (point.x / radius.max(0.01)).max(0.0))
-        },
+        TextureKind::Rim => (-((radius - 0.89) / 0.035).powi(2)).exp(),
         TextureKind::Flash => (1.0 - radius).max(0.0).powi(3),
         TextureKind::Clouds | TextureKind::Bands => {
             if radius >= 0.99 {
@@ -206,7 +203,7 @@ fn spawn_weather(commands: &mut Commands, map: &Map, textures: &WeatherTextures)
         let Some(color) = atmosphere_color(planet.kind).filter(|_| !planet.is_destroyed) else {
             continue;
         };
-        let mut layers = vec![(WeatherLayer::Rim, textures.rim.clone(), color, 0.42, 1.12)];
+        let mut layers = vec![(WeatherLayer::Rim, textures.rim.clone(), color, 0.20, 1.12)];
         let (clouds, tint, opacity) = match planet.kind {
             PlanetKind::Gas => (&textures.bands, Color::srgb(1.0, 0.91, 0.78), 0.18),
             PlanetKind::Dry => (&textures.clouds, Color::srgb(1.0, 0.82, 0.64), 0.10),
@@ -313,11 +310,7 @@ fn animate_weather(
         };
         let aurora = matches!(*layer, WeatherLayer::Aurora(_));
         let brightness = match *layer {
-            WeatherLayer::Rim => {
-                transform.rotation =
-                    Quat::from_rotation_z((map.solar_star_position() - planet.position).to_angle());
-                1.0
-            },
+            WeatherLayer::Rim => 1.0,
             WeatherLayer::Clouds(frame_layer) | WeatherLayer::Aurora(frame_layer) => {
                 let cycle = (elapsed.0
                     / if aurora {

@@ -1876,6 +1876,13 @@ fn settings_choice_rows(
         &mut settings.brief_hover_info,
         &[(false, "Full"), (true, "Brief")],
     );
+    choice_row(
+        ui,
+        "Minimap",
+        "Show or hide the minimap in the lower-right corner of the star map.",
+        &mut settings.show_minimap,
+        &[(true, "Shown"), (false, "Hidden")],
+    );
 }
 
 /// Draws pause/settings/end-game overlays while the map remains loaded.

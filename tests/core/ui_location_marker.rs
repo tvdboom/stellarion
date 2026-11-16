@@ -102,7 +102,7 @@ fn location_echoes_wait_for_arrival_then_expand_fade_and_expire_without_capturin
         assert_eq!(alive, time < 22.0);
         assert!(!context.is_pointer_over_egui());
     }
-    assert_eq!(marker.position, Vec2::new(900.0, -700.0));
+    assert_eq!(marker.target, LocationMarkerTarget::Site(Vec2::new(900.0, -700.0)));
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn fleet_rings_follow_the_displayed_icon_and_surround_its_image_at_every_display
         [(0.5, 1.0, 1.0), (1.8, 1.0, 1.0), (0.5, 2.0, 1.0), (1.8, 2.0, 1.5)]
     {
         let (mut app, context, _) =
-            marker_scene(zoom, dpi, ui_scale, LocationMarker::for_mission(7, stored_position));
+            marker_scene(zoom, dpi, ui_scale, LocationMarker::for_mission(7));
         // Another fleet at the patrol center must not attract the selected fleet's rings.
         app.world_mut().spawn((
             MissionCmp::new(8),
@@ -222,7 +222,7 @@ fn fleet_rings_follow_the_displayed_icon_and_surround_its_image_at_every_display
                 &MeshMaterial2d<ColorMaterial>,
                 &Visibility,
                 &Pickable,
-            ), With<FleetMarkerRing>>();
+            ), With<SpriteMarkerRing>>();
             let rings = query
                 .iter(app.world())
                 .filter(|(_, _, _, _, visibility, _)| **visibility != Visibility::Hidden)
@@ -271,7 +271,10 @@ fn fleet_rings_follow_the_displayed_icon_and_surround_its_image_at_every_display
             if time > 12.0 {
                 assert!(state.location_marker.is_none());
             } else {
-                assert_eq!(state.location_marker.as_ref().unwrap().position, stored_position);
+                assert_eq!(
+                    state.location_marker.as_ref().unwrap().target,
+                    LocationMarkerTarget::Fleet(7)
+                );
             }
             assert_eq!(state.focus_position, Some(stored_position));
         }
@@ -281,8 +284,7 @@ fn fleet_rings_follow_the_displayed_icon_and_surround_its_image_at_every_display
 #[test]
 fn fleet_highlight_ends_when_the_selected_image_is_hidden_or_removed() {
     for despawn in [false, true] {
-        let (mut app, context, _) =
-            marker_scene(1.0, 1.0, 1.0, LocationMarker::for_mission(7, Vec2::ZERO));
+        let (mut app, context, _) = marker_scene(1.0, 1.0, 1.0, LocationMarker::for_mission(7));
         app.world_mut().spawn((
             MissionCmp::new(8),
             GlobalTransform::default(),
@@ -319,11 +321,95 @@ fn fleet_highlight_ends_when_the_selected_image_is_hidden_or_removed() {
                 .shapes
                 .iter()
                 .any(|shape| matches!(shape.shape, egui::Shape::Circle(_))));
-            let mut rings = app.world_mut().query_filtered::<&Visibility, With<FleetMarkerRing>>();
+            let mut rings = app.world_mut().query_filtered::<&Visibility, With<SpriteMarkerRing>>();
             assert_eq!(
                 rings.iter(app.world()).any(|visibility| *visibility != Visibility::Hidden),
                 time == 0.0
             );
+        }
+    }
+}
+
+#[test]
+fn structure_rings_wait_for_camera_then_follow_the_requested_orbital() {
+    use crate::core::constants::PLANET_Z;
+
+    for structure in [PublicStructure::SpaceDock, PublicStructure::OrbitalRailgun] {
+        let (mut app, context, _) =
+            marker_scene(1.0, 1.0, 1.0, LocationMarker::for_structure(3, structure));
+        let world = app.world_mut();
+        let planet = world.spawn(PlanetCmp::new(3)).id();
+        let position = Vec3::new(155.0, -45.0, PLANET_Z + 0.22);
+        let (dock, railgun) = (
+            world
+                .spawn((
+                    SpaceDockCmp,
+                    ChildOf(planet),
+                    Sprite::from_color(Color::WHITE, Vec2::splat(20.0)),
+                    Visibility::Inherited,
+                    GlobalTransform::from_translation(position - Vec3::X * 50.0),
+                ))
+                .id(),
+            world
+                .spawn((
+                    OrbitalRailgunCmp {
+                        planet: 3,
+                        anchor: Vec2::ZERO,
+                        base_rotation: 0.0,
+                        phase: 0.0,
+                    },
+                    ChildOf(planet),
+                    Sprite::from_color(Color::WHITE, Vec2::splat(20.0)),
+                    Visibility::Inherited,
+                    GlobalTransform::from_translation(position + Vec3::X * 50.0),
+                ))
+                .id(),
+        );
+        let orbital = match structure {
+            PublicStructure::SpaceDock => dock,
+            PublicStructure::OrbitalRailgun => railgun,
+        };
+
+        for (frame, time, waiting) in
+            [(0, 0.0, true), (1, 10.0, false), (2, 10.6, false), (3, 10.8, false)]
+        {
+            let world = app.world_mut();
+            let mut state = world.resource_mut::<UiState>();
+            state.to_selected = waiting;
+            state.focus_planet = waiting.then_some(3);
+            if frame == 2 {
+                *world.get_mut::<GlobalTransform>(orbital).unwrap() =
+                    GlobalTransform::from_translation(position + Vec3::Y * 30.0);
+            } else if frame == 3 {
+                *world.get_mut::<Visibility>(orbital).unwrap() = Visibility::Hidden;
+            }
+            let expected = world.get::<GlobalTransform>(orbital).unwrap().translation();
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..default()
+                },
+                |_| app.update(),
+            );
+            output.textures_delta.clear();
+            let mut query = app
+                .world_mut()
+                .query_filtered::<(&Transform, &Visibility), With<SpriteMarkerRing>>();
+            let rings = query
+                .iter(app.world())
+                .filter(|(_, visibility)| **visibility != Visibility::Hidden)
+                .collect::<Vec<_>>();
+            if waiting || frame == 3 {
+                assert!(rings.is_empty());
+            } else {
+                assert!(!rings.is_empty());
+                for (pose, _) in rings {
+                    assert_eq!(pose.translation.truncate(), expected.truncate());
+                    assert!(pose.translation.z > PLANET_Z && pose.translation.z < expected.z);
+                    assert!(pose.scale.x < 35.0, "the ring should stay close to the structure");
+                }
+            }
+            assert_eq!(app.world().resource::<UiState>().location_marker.is_none(), frame == 3);
         }
     }
 }

@@ -60,6 +60,21 @@ fn atmospheric_overlays_exclude_airless_and_destroyed_worlds_and_never_intercept
 }
 
 #[test]
+fn atmosphere_rim_fades_evenly_at_every_angle() {
+    let alpha_at = |point| pixel(TextureKind::Rim, point, 0.0)[3];
+    for radius in [0.85, 0.89, 0.93] {
+        let expected = alpha_at(Vec2::X * radius);
+        assert!(expected > 0);
+        for step in 1..16 {
+            let angle = step as f32 / 16.0 * TAU;
+            assert_eq!(alpha_at(Vec2::from_angle(angle) * radius), expected);
+        }
+    }
+    assert!(alpha_at(Vec2::X * 0.93) < alpha_at(Vec2::X * 0.89));
+    assert_eq!(alpha_at(Vec2::X), 0);
+}
+
+#[test]
 fn clouds_and_weather_remain_inside_the_globe_and_loop_without_a_seam() {
     for kind in [TextureKind::Clouds, TextureKind::Bands, TextureKind::Aurora] {
         for phase in [0.0, 0.4, 1.8, 4.1] {
