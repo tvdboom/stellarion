@@ -238,11 +238,7 @@ fn report_notification(
                     .with_action(MessageAction::OpenMissionReport(report.id));
             }
             let text = if sabotage.succeeded {
-                format!(
-                    "Sabotage succeeded: {} on {}.",
-                    sabotage.target.name(),
-                    destination.name
-                )
+                format!("Sabotage succeeded: {} on {}.", sabotage.target.name(), destination.name)
             } else {
                 format!("Sabotage failed on {}.", destination.name)
             };

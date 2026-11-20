@@ -2186,7 +2186,9 @@ pub fn draw_map(
                             messages.write(MessageMsg::error(
                                 if state.mission_info.objective == Icon::Expedition {
                                     "Choose a point inside the map, away from the launch world."
-                                } else { "Choose a patrol center inside the map." },
+                                } else {
+                                    "Choose a patrol center inside the map."
+                                },
                             ));
                         }
                     }
