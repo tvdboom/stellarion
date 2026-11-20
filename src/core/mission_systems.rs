@@ -174,7 +174,7 @@ fn wave_mission_flag(mesh: &mut Mesh, time: f32) {
         return;
     };
     // The cloth stays attached to the pole. Only its free edge can reach full amplitude.
-    for (column, pair) in positions.chunks_exact_mut(2).enumerate() {
+    for (column, pair) in positions.as_chunks_mut::<2>().0.iter_mut().enumerate() {
         let fraction = column as f32 / MISSION_FLAG_SEGMENTS as f32;
         let phase = time * 6.0 - fraction * 7.0;
         let x = fraction * (30.0 + 2.5 * phase.cos());

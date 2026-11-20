@@ -1,6 +1,7 @@
 use super::*;
 use strum::IntoEnumIterator;
 
+#[cfg(target_os = "windows")]
 use crate::core::units::ships::Ship;
 
 fn creature(fauna: SpaceFauna, slot: usize, count: usize) -> Creature {

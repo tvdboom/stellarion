@@ -1,8 +1,12 @@
 use super::*;
 
-use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
+#[cfg(target_os = "windows")]
+use crate::core::combat::plan::TargetPriority;
+use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture};
 use crate::core::identity::{GameCode, GameId, UserId};
-use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+#[cfg(target_os = "windows")]
+use crate::core::simulation::MatchStatus;
+use crate::core::simulation::{GameModel, GameRules, PersistedGame};
 use crate::multiplayer::model::{GameMembership, GameRecord};
 
 #[path = "ui_notifications.rs"]

@@ -24,10 +24,9 @@ fn fleet_staging_reserves_capital_footprints_without_shrinking_ships() {
         let sizes: Vec<_> = movie.visuals.iter().map(|visual| visual.size).collect();
         layout_fleets(&mut movie.visuals, &movie.timeline.actors);
         assert_eq!(sizes, movie.visuals.iter().map(|visual| visual.size).collect::<Vec<_>>());
-        for left in 0..24 {
-            let a = &movie.visuals[left];
-            for right in left + 1..24 {
-                let b = &movie.visuals[right];
+        let fleet = &movie.visuals[..24];
+        for (left, a) in fleet.iter().enumerate() {
+            for (right, b) in fleet.iter().enumerate().skip(left + 1) {
                 let distance = ((a.home - b.home) / (footprint(a) + footprint(b))).length();
                 assert!(distance > 0.80, "Hull {left} overlaps {right}: {distance}");
             }
@@ -71,8 +70,8 @@ fn staging_leaves_ground_stations_and_hidden_actors_untouched() {
 fn fleet_staging_stays_finite_and_on_canvas_for_small_and_large_hulls() {
     for side in [Side::Attacker, Side::Defender] {
         let mut movie = mixed_fleet(side);
-        for index in 0..24 {
-            movie.visuals[index].size = if index % 3 == 0 {
+        for (index, visual) in movie.visuals[..24].iter_mut().enumerate() {
+            visual.size = if index % 3 == 0 {
                 242.0
             } else {
                 42.0

@@ -2,6 +2,7 @@ use super::*;
 use bevy::color::ColorToComponents;
 use bevy_kira_audio::AudioSource;
 
+#[cfg(target_os = "windows")]
 use crate::core::basis_texture::{BasisTexturePlugin, BasisTextureSettings};
 use crate::core::camera::update_parallax;
 use crate::core::combat::report::{CombatReport, MissionReport};
