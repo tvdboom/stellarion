@@ -3,6 +3,8 @@ use bevy::camera::{CameraProjection, ComputedCameraValues, RenderTargetInfo};
 use bevy::window::WindowResolution;
 use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
+use crate::core::constants::PLANET_Z;
+
 fn marker_scene(
     zoom: f32,
     dpi: f32,
@@ -332,8 +334,6 @@ fn fleet_highlight_ends_when_the_selected_image_is_hidden_or_removed() {
 
 #[test]
 fn structure_rings_wait_for_camera_then_follow_the_requested_orbital() {
-    use crate::core::constants::PLANET_Z;
-
     for structure in [PublicStructure::SpaceDock, PublicStructure::OrbitalRailgun] {
         let (mut app, context, _) =
             marker_scene(1.0, 1.0, 1.0, LocationMarker::for_structure(3, structure));

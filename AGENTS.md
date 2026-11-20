@@ -46,6 +46,8 @@ between desktop and WebAssembly. Multiplayer uses Supabase and a mock backend.
 | `src/core/mod.rs`, `app.rs`, `states.rs`, `turns.rs`, `audio.rs` | Module boundaries, Bevy system registration, application states, turn presentation, sound |
 | `src/core/missions.rs`, `src/core/mission_systems.rs` | Persisted missions and shared rules, optional Bevy mission presentation and commands |
 | `src/core/patrols.rs` | Patrol zones, operating fuel, return rules, and deterministic space interception |
+| `src/core/sabotage.rs` | Probe sabotage, known orbital targets, and one-turn infrastructure outages |
+| `src/core/expeditions.rs` | Expeditions, distance-based discovery odds, cargo capacity, rewards, and physical returns |
 | `src/core/patrol_visuals.rs` | Client-only patrol flight, wakes, and animated coverage borders |
 | `src/core/interception.rs`, `src/core/map/interception.rs` | Fixed targeted rendezvous, deterministic space combat, and report-driven dogfight animation |
 | `src/multiplayer/` | Backend contract, transport models, Supabase RPCs, mock storage, recovery, client coordination, Realtime |
@@ -137,6 +139,8 @@ against modified clients. No service-role key belongs in the client.
 
 - Follow the existing module boundaries and `rustfmt.toml`. Prefer small,
   cohesive functions and explicit types over new generic frameworks.
+- Keep crate imports at the top of each Rust file, including test files. Import
+  names there instead of using inline `crate::` paths or function-local imports.
 - Use enums and the existing game/player identity types to express valid
   states. Prefer exhaustive matches to silently ignoring new variants.
 - Borrow data where practical; clone when ownership or an asynchronous task

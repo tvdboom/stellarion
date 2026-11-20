@@ -1,10 +1,21 @@
 use super::*;
+
 use crate::core::constants::MIN_SPY_PROBES;
+use crate::core::identity::{GameCode, GameId};
 use crate::core::map::icon::Icon;
-use crate::core::missions::{JointAttackMission, Mission};
-use crate::core::simulation::MAX_COMMANDS_PER_SUBMISSION;
+use crate::core::missions::{JointAttackMission, JointMissionLaunch, Mission};
+use crate::core::simulation::{
+    preview_commands, GameModel, GameRules, JointAttackContribution, PersistedGame,
+    MAX_COMMANDS_PER_SUBMISSION,
+};
+use crate::core::turns::filter_missions;
 use crate::core::units::buildings::Building;
+use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
+use crate::multiplayer::client::MultiplayerRequest;
+use crate::multiplayer::model::{
+    GameRecord, JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
+};
 
 /// Exercises the mission command system with a valid fleet and optional full command draft.
 fn launch_mission(draft_full: bool) -> App {
@@ -54,7 +65,7 @@ fn launch_mission(draft_full: bool) -> App {
         .add_message::<MissionRecallAnimationMsg>()
         .add_message::<MessageMsg>()
         .add_message::<PlayAudioMsg>()
-        .add_message::<crate::multiplayer::client::MultiplayerRequest>()
+        .add_message::<MultiplayerRequest>()
         .add_systems(Update, (send_mission, recall_mission));
     app.world_mut().write_message(SendMissionMsg::new(mission));
     app.update();
@@ -87,17 +98,11 @@ fn rejected_mission_keeps_error_feedback_without_an_action_cue() {
 
 #[test]
 fn solo_dispatch_after_inviting_players_cancels_only_after_the_launch_is_accepted() {
-    use crate::core::simulation::JointAttackContribution;
-    use crate::multiplayer::client::MultiplayerRequest;
-    use crate::multiplayer::model::{
-        JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
-    };
-
     for (selected, succeeds) in [(2, true), (4, false)] {
         let mut map = Map::new(2, 0);
         let origin_id = map.planets[0].id;
         let destination_id = map.planets[1].id;
-        let fighter = Unit::Ship(crate::core::units::ships::Ship::LightFighter);
+        let fighter = Unit::Ship(Ship::LightFighter);
         map.planets[0].army.insert(fighter, 3);
         map.planets[0].owned = Some(1);
         map.planets[0].controlled = Some(1);
@@ -184,12 +189,6 @@ fn solo_dispatch_after_inviting_players_cancels_only_after_the_launch_is_accepte
 
 #[test]
 fn sending_allied_mission_projects_only_own_contingent_and_requests_publication() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::missions::JointMissionLaunch;
-    use crate::core::simulation::{GameModel, GameRules, JointAttackContribution, PersistedGame};
-    use crate::multiplayer::client::MultiplayerRequest;
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = GameModel::new(
         [71; 32],
         GameRules {
@@ -265,7 +264,7 @@ fn sending_allied_mission_projects_only_own_contingent_and_requests_publication(
     ));
     app.update();
     let pending = app.world().resource::<PendingTurnCommands>();
-    let expected = crate::core::simulation::preview_commands(&model, 1, &pending.commands).unwrap();
+    let expected = preview_commands(&model, 1, &pending.commands).unwrap();
     let missions = app.world().resource::<Missions>();
     assert_eq!(missions.0.len(), 1);
     assert_eq!(
@@ -274,7 +273,7 @@ fn sending_allied_mission_projects_only_own_contingent_and_requests_publication(
     );
     assert_eq!(
         serde_json::to_value(&missions.0).unwrap(),
-        serde_json::to_value(crate::core::turns::filter_missions(
+        serde_json::to_value(filter_missions(
             &expected.missions,
             &expected.map,
             &expected.players[0],
@@ -287,7 +286,7 @@ fn sending_allied_mission_projects_only_own_contingent_and_requests_publication(
             0
         );
         assert_eq!(
-            crate::core::turns::filter_missions(&expected.missions, &expected.map, player)
+            filter_missions(&expected.missions, &expected.map, player)
                 .iter()
                 .map(|mission| mission.owner)
                 .collect::<Vec<_>>(),
@@ -309,7 +308,7 @@ fn stationed_protection_recall_bypasses_the_new_mission_editor() {
     let mut map = Map::new(3, 0);
     let home = map.planets[0].id;
     let protected = map.planets[1].id;
-    let fleet = Army::from([(Unit::Ship(crate::core::units::ships::Ship::LightFighter), 3)]);
+    let fleet = Army::from([(Unit::Ship(Ship::LightFighter), 3)]);
     map.get_mut(home).owned = Some(1);
     map.get_mut(home).controlled = Some(1);
     map.get_mut(protected).controlled = Some(2);

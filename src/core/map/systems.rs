@@ -24,7 +24,8 @@ use crate::core::assets::{WorldAssets, ASTEROID_IMAGE_NAMES};
 use crate::core::camera::{drag_camera_position, MainCamera, ParallaxCmp};
 use crate::core::constants::{
     BACKGROUND_Z, BUTTON_TEXT_SIZE, HOME_CROWN_INDICES, HOME_CROWN_VERTICES, HOME_PLANET_COLOR,
-    MAX_ZOOM, MISSION_Z, OWN_COLOR, PLANET_Z, SOLAR_STAR_SIZE, TITLE_TEXT_SIZE, VORONOI_Z,
+    JUMP_GATE_HELIX_ANGULAR_SPEED, MAX_ZOOM, MISSION_Z, OWN_COLOR, PLANET_Z, SOLAR_STAR_SIZE,
+    TITLE_TEXT_SIZE, VORONOI_Z,
 };
 use crate::core::identity::PlayerId;
 use crate::core::loading::PublicStructureChange;
@@ -49,7 +50,11 @@ use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::orbital_railgun::{OrbitalRailgunFiring, OrbitalStrikeEffect};
 use crate::core::map::planet::{Planet, PlanetId};
-use crate::core::map::scenery::CelestialKind;
+#[cfg(test)]
+use crate::core::map::scenery::CELESTIAL_MAP_MARGIN;
+use crate::core::map::scenery::{
+    celestial_position, map_scenery_selection, CelestialKind, CELESTIAL_SIZE,
+};
 use crate::core::map::utils::{
     cursor, spawn_main_button, MainButtonLabelCmp, TransformOrbitLens, TransformSpinLens,
     MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT, MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH,
@@ -61,6 +66,7 @@ use crate::core::recycling::{
     recycler_sources_with_asteroid_targets, visible_debris_sites, DebrisSite, RecyclerSource,
 };
 use crate::core::resources::{ResourceName, Resources};
+use crate::core::sabotage::known_targets;
 use crate::core::settings::Settings;
 use crate::core::simulation::{orbital_railgun_origins, TurnCommand};
 use crate::core::states::GameState;
@@ -69,7 +75,7 @@ use crate::core::ui::systems::{viewport_ui_scale, MapRangePreview, MissionTab, U
 use crate::core::units::buildings::Building;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Unit};
-use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands};
+use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands, SubmissionState};
 use crate::utils::NameFromEnum;
 
 const MAP_ICON_IDLE_TINT: Color = Color::srgb(0.82, 0.82, 0.82);
@@ -82,8 +88,6 @@ const TRADE_LINK_LANES: usize = 2;
 const TRADE_LINK_PARTICLE_SPACING: f32 = 22.0;
 const TRADE_LINK_PARTICLE_SPEED: f32 = 32.0;
 const TRADE_LINK_LANE_OFFSET: f32 = 3.8;
-/// Shared rotation rate for gate links and mission helices, in radians per second.
-pub(crate) const JUMP_GATE_HELIX_ANGULAR_SPEED: f32 = 5.0;
 
 /// Returns the controller or owner whose affiliation is visible to this player.
 ///
@@ -303,8 +307,6 @@ const NEBULA_SIZE: Vec2 = Vec2::new(1_900.0, 1_566.0);
 const NEBULA_DEPTH: f32 = BACKGROUND_Z + 0.1;
 const NEBULA_PARALLAX_FOLLOW: f32 = 0.9;
 const NEBULA_ZOOM_POWER: f32 = 1.0;
-const CELESTIAL_SIZE: Vec2 = Vec2::new(480.0, 270.0);
-const CELESTIAL_MAP_MARGIN: f32 = 8.0;
 const CELESTIAL_TINT: f32 = 0.92;
 
 impl PlanetCmp {
@@ -1879,23 +1881,8 @@ pub(crate) fn ensure_asteroid_belt(
     spawn_asteroid_belt(&mut commands, &map, &images);
 }
 
-/// Only fixed coordinates contribute: conquest, destruction and economy cannot reroll scenery.
-fn map_scenery_seed(map: &Map) -> u32 {
-    map.scenery_seed()
-}
-
 fn map_scenery_corner(map: &Map) -> Vec2 {
     map.solar_corner()
-}
-
-/// One compact landmark accompanies the large solar arc in every game.
-fn map_scenery_selection(map: &Map) -> CelestialKind {
-    let seed = map_scenery_seed(map);
-    match (seed >> 8) % 3 {
-        0 => CelestialKind::NeutronStar,
-        1 => CelestialKind::Magnetar,
-        _ => CelestialKind::BlackHole,
-    }
 }
 
 #[cfg(test)]
@@ -1917,58 +1904,6 @@ fn map_corner(map: &Map, direction: Vec2) -> Vec2 {
 /// Hangs a large arc over a map-dependent corner while keeping most of the star off-map.
 fn solar_star_position(map: &Map) -> Vec2 {
     map.solar_star_position()
-}
-
-fn celestial_planet_clearance(map: &Map, position: Vec2, size: Vec2) -> f32 {
-    map.planets
-        .iter()
-        .map(|planet| {
-            let gap = (planet.position - position).abs() - size * 0.5;
-            gap.max(Vec2::ZERO).length() - planet.size() * 0.5
-        })
-        .fold(f32::INFINITY, f32::min)
-}
-
-fn celestial_position(map: &Map, kind: CelestialKind) -> Vec2 {
-    let sun_corner = map_scenery_corner(map);
-    let size = CELESTIAL_SIZE * kind.size_scale();
-    let edge_direction = Vec2::new(-sun_corner.x, 0.0);
-    let edge_x = if edge_direction.x < 0.0 {
-        map.rect.min.x
-    } else {
-        map.rect.max.x
-    };
-    // Keep the complete landmark on the map opposite the large sun. Very small synthetic maps
-    // cannot contain the full sprite, so clamp their center to the inner tenth of the bounds.
-    let horizontal_inset = (size.x * 0.5 + CELESTIAL_MAP_MARGIN).min(map.rect.half_size().x * 0.9);
-    let x = edge_x - edge_direction.x * horizontal_inset;
-    let usable_half_height =
-        (map.rect.half_size().y - size.y * 0.5 - CELESTIAL_MAP_MARGIN).max(0.0);
-    let corner = |side: f32| Vec2::new(x, map.rect.center().y + usable_half_height * side);
-    let clearance = |candidate| celestial_planet_clearance(map, candidate, size);
-    let first = corner(sun_corner.y);
-    let second = corner(-sun_corner.y);
-    if kind != CelestialKind::Magnetar {
-        return if clearance(first) >= clearance(second) {
-            first
-        } else {
-            second
-        };
-    }
-
-    // The wider magnetar may need an opening between corners. Score the full sprite footprint,
-    // not just its center, and prefer a corner when several placements are equally clear.
-    [sun_corner.y, -sun_corner.y, -0.5, 0.0, 0.5]
-        .into_iter()
-        .map(corner)
-        .reduce(|best, candidate| {
-            if clearance(candidate) > clearance(best) {
-                candidate
-            } else {
-                best
-            }
-        })
-        .unwrap_or(first)
 }
 
 fn nebula_position(map: &Map) -> Vec2 {
@@ -2249,7 +2184,9 @@ pub fn draw_map(
                         }
                         if !state.choose_patrol_zone(&map, &player, settings.turn, center) {
                             messages.write(MessageMsg::error(
-                                "Choose a patrol center in empty space inside the map.",
+                                if state.mission_info.objective == Icon::Expedition {
+                                    "Choose a point inside the map, away from the launch world."
+                                } else { "Choose a patrol center inside the map." },
                             ));
                         }
                     }
@@ -2308,9 +2245,21 @@ pub fn draw_map(
                       mut messages: MessageWriter<MessageMsg>| {
                     if state.selecting_patrol_zone {
                         if matches!(event.button, PointerButton::Primary | PointerButton::Secondary) {
-                            messages.write(MessageMsg::error(
-                                "Choose a patrol center in empty space inside the map.",
-                            ));
+                            if state.choosing_expedition_destination() {
+                                let center = event.hit.position.map_or(
+                                    map.get(planet_id).position,
+                                    |position| position.truncate(),
+                                );
+                                if !state.choose_patrol_zone(&map, &player, settings.turn, center) {
+                                    messages.write(MessageMsg::error(
+                                        "Choose a point inside the map away from the launch world.",
+                                    ));
+                                }
+                            } else {
+                                messages.write(MessageMsg::error(
+                                    "Choose a patrol center in empty space inside the map.",
+                                ));
+                            }
                         }
                         return;
                     }
@@ -2394,7 +2343,9 @@ pub fn draw_map(
 
                 // Destroyed planets have no resources nor icons
                 if !planet.is_destroyed {
-                    for (i, icon) in Icon::iter().filter(|icon| !matches!(icon, Icon::Patrol | Icon::Intercept)).enumerate() {
+                    for icon in Icon::iter()
+                        .filter(|icon| !matches!(icon, Icon::Patrol | Icon::Expedition | Icon::Intercept))
+                    {
                         parent
                             .spawn((
                                 Sprite {
@@ -2403,11 +2354,8 @@ pub fn draw_map(
                                     color: MAP_ICON_IDLE_TINT,
                                     ..default()
                                 },
-                                Transform::from_translation(Vec3::new(
-                                    planet.size() * 0.45,
-                                    planet.size() * 0.4 - i as f32 * Icon::SIZE,
-                                    0.8,
-                                )),
+                                Transform::from_xyz(0.0, 0.0, 0.8),
+                                Visibility::Hidden,
                                 Pickable::default(),
                                 icon,
                             ))
@@ -2463,6 +2411,9 @@ pub fn draw_map(
                                       mut settings: ResMut<Settings>,
                                       map: Res<Map>,
                                       player: Res<Player>| {
+                                    if state.choosing_expedition_destination() {
+                                        return;
+                                    }
                                     // Prevent the event from bubbling up to the planet
                                     event.propagate(false);
 
@@ -2541,7 +2492,7 @@ pub fn draw_map(
                                                             Unit::Ship(Ship::ColonyShip),
                                                             1,
                                                         )]),
-                                                        Icon::Spy => Army::from([(
+                                                        Icon::Spy | Icon::Sabotage => Army::from([(
                                                             Unit::probe(),
                                                             origin_army.amount(&Unit::probe()),
                                                         )]),
@@ -3084,8 +3035,8 @@ pub fn draw_map(
         .observe(
             |_: On<Pointer<Click>>,
              mut state: ResMut<UiState>,
-             session: Res<crate::multiplayer::client::MultiplayerSession>,
-             pending: Res<crate::multiplayer::client::PendingTurnCommands>| {
+             session: Res<MultiplayerSession>,
+             pending: Res<PendingTurnCommands>| {
                 if state.end_turn_blocked(Some(&session), &pending) {
                     return;
                 }
@@ -3165,6 +3116,7 @@ fn infrastructure_preview_radius(
 ) -> f32 {
     let unit = Unit::Building(building);
     if planet.is_destroyed
+        || ((player.owns(planet) || player.controls(planet)) && planet.sabotage.is_disabled(building))
         || planet.is_moon() != (building == Building::OrbitalRadar)
         // Railgun destruction is public; hidden infrastructure keeps its recorded intelligence.
         || (building == Building::OrbitalRailgun && !planet.has(&unit))
@@ -3244,6 +3196,7 @@ pub fn update_planet_info(
     time: Res<Time>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut visible_icons: Local<Vec<Entity>>,
 ) {
     let map: &Map = &world.map;
     let player: &Player = &world.player;
@@ -3290,9 +3243,9 @@ pub fn update_planet_info(
         });
 
         // Show/hide planet icons
-        let mut count = 0;
+        visible_icons.clear();
         for child in children_q.iter_descendants(planet_e) {
-            if let Ok((mut icon_v, mut icon_t, icon)) = icon_q.get_mut(child) {
+            if let Ok((mut icon_v, _, icon)) = icon_q.get_mut(child) {
                 let stationed_protection =
                     *icon == Icon::Protect && has_stationed_protection_fleet(planet, player.id);
                 let visible = match icon {
@@ -3348,7 +3301,7 @@ pub fn update_planet_info(
                                 && m.destination == planet.id
                         });
 
-                        let has_condition = {
+                        let has_condition = || {
                             map.planets.iter().any(|p| {
                                 p.id != planet.id
                                     && p.can_launch_mission(player.id)
@@ -3372,13 +3325,16 @@ pub fn update_planet_info(
 
                         stationed_protection
                             || has_mission
-                            || ((hovered || settings.show_info) && has_condition)
+                            || ((hovered || settings.show_info)
+                                && has_condition()
+                                && (*icon != Icon::Sabotage
+                                    || !known_targets(player, planet, &world.missions.0)
+                                        .is_empty()))
                     },
                 };
 
                 *icon_v = if visible && !planet.is_destroyed {
-                    icon_t.translation.y = planet.size() * 0.4 - count as f32 * Icon::SIZE;
-                    count += 1;
+                    visible_icons.push(child);
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
@@ -3420,6 +3376,28 @@ pub fn update_planet_info(
                 } else {
                     *visibility = Visibility::Hidden;
                 }
+            }
+        }
+
+        if visible_icons.is_empty() {
+            continue;
+        }
+        // Center the first column against the world and fill it before wrapping.
+        // The first column overlaps the sprite and adjacent hit areas touch, keeping hover open.
+        let rows_per_column = if planet.is_moon() {
+            4
+        } else {
+            5
+        };
+        let rows = visible_icons.len().min(rows_per_column);
+        let top = (rows - 1) as f32 * Icon::SIZE * 0.5;
+        let left = planet.size() * 0.45;
+        for (index, &entity) in visible_icons.iter().enumerate() {
+            if let Ok((_, mut transform, _)) = icon_q.get_mut(entity) {
+                let column = index / rows_per_column;
+                let row = index % rows_per_column;
+                transform.translation.x = left + column as f32 * Icon::SIZE;
+                transform.translation.y = top - row as f32 * Icon::SIZE;
             }
         }
     }
@@ -4022,13 +4000,13 @@ pub fn update_end_turn(
         ),
     >,
     state: Option<Res<UiState>>,
-    session: Option<Res<crate::multiplayer::client::MultiplayerSession>>,
+    session: Option<Res<MultiplayerSession>>,
     mut label_q: Query<
         &mut Visibility,
         (With<EndTurnLabelCmp>, Without<SpectatorLabelCmp>, Without<EndTurnButtonCmp>),
     >,
     game_state: Res<State<GameState>>,
-    pending: Res<crate::multiplayer::client::PendingTurnCommands>,
+    pending: Res<PendingTurnCommands>,
     player: Res<Player>,
     windows: Query<&Window>,
 ) {
@@ -4107,9 +4085,7 @@ pub fn update_end_turn(
             && !pending.resume_requested
             && matches!(
                 pending.submission,
-                crate::multiplayer::client::SubmissionState::Sending
-                    | crate::multiplayer::client::SubmissionState::Accepted
-                    | crate::multiplayer::client::SubmissionState::Retry
+                SubmissionState::Sending | SubmissionState::Accepted | SubmissionState::Retry
             )
             && !player.spectator
         {

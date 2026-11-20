@@ -2,17 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::core::constants::{TRADE_RESOURCES_PER_LEVEL, TRADING_POST_RANGE_PER_LEVEL};
+
 use crate::core::identity::PlayerId;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Unit};
-
-/// Tradable resources one completed Trading Post level can send in a turn.
-pub const TRADE_RESOURCES_PER_LEVEL: usize = 500;
-/// Center-to-center reach granted by each completed Trading Post level, in AU.
-pub const TRADING_POST_RANGE_PER_LEVEL: f32 = 1.5;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

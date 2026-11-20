@@ -1,13 +1,30 @@
 use super::*;
-use crate::core::combat::resolution::resolve_combat_with_rng;
-use crate::core::combat::systems::CombatCmp;
-use crate::core::map::icon::Icon;
-use crate::core::map::planet::Planet;
-use crate::core::missions::{BombingRaid, Mission};
-use crate::core::random::DeterministicRngState;
-use crate::core::units::{ships::Ship, Army, Unit};
 use bevy::ecs::system::RunSystemOnce;
 use std::time::Duration;
+
+use crate::core::audio::{
+    draw_audio_controls, update_audio, ChangeAudioMsg, MuteAudioMsg, PauseAudioMsg, StopAudioMsg,
+    VolumeFeedbackMsg,
+};
+use crate::core::combat::cinematic_timeline::{CinematicRepair, CinematicShot};
+use crate::core::combat::report::{CombatReport, RoundReport};
+use crate::core::combat::resolution::{resolve_combat_with_rng, ShotReport};
+use crate::core::combat::systems::CombatCmp;
+use crate::core::identity::{GameCode, GameId, UserId};
+use crate::core::map::icon::Icon;
+use crate::core::map::planet::Planet;
+use crate::core::missions::{BombingRaid, JointAttackMission, Mission};
+use crate::core::player::PlayerColor;
+use crate::core::random::DeterministicRngState;
+use crate::core::resources::Resources;
+use crate::core::simulation::{GameModel, GameRules, PersistedGame};
+use crate::core::states::{AppState, AudioState, CombatState};
+use crate::core::systems::check_keys_combat;
+use crate::core::ui::systems::viewport_ui_scale;
+use crate::core::units::buildings::Building;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Army, Unit};
+use crate::multiplayer::model::{GameMembership, GameRecord};
 
 fn app() -> App {
     let mut rng = DeterministicRngState::from_u64(423).next_rng();
@@ -60,8 +77,6 @@ fn advance(app: &mut App, seconds: f32) {
 }
 
 fn planet_strike_app(destroyed: bool) -> App {
-    use crate::core::combat::report::{CombatReport, RoundReport};
-
     let mut app = app();
     {
         let mut player = app.world_mut().resource_mut::<Player>();
@@ -102,7 +117,7 @@ fn cinematic_raid_chime_plays_once_when_the_loot_is_revealed() {
     {
         let mut player = app.world_mut().resource_mut::<Player>();
         player.reports[0].mission.objective = Icon::Raid;
-        player.reports[0].raid_loot = crate::core::resources::Resources::new(12, 0, 34);
+        player.reports[0].raid_loot = Resources::new(12, 0, 34);
     }
     app.world_mut().run_system_once(setup_cinematic).unwrap();
     let playback = app.world().resource::<CinematicPlayback>();
@@ -246,8 +261,6 @@ fn restart_shortcut_replays_from_zero_even_when_paused_or_finished() {
 
 #[test]
 fn restart_requires_both_modifiers_and_does_not_change_speed_on_release() {
-    use crate::core::states::CombatState;
-    use crate::core::systems::check_keys_combat;
     let mut app = app();
     app.world_mut().run_system_once(setup_cinematic).unwrap();
     app.insert_resource(State::new(CombatState::Fire))
@@ -311,11 +324,6 @@ fn missing_selected_report_creates_no_movie_and_emits_no_audio() {
 
 /// Exercise the production overlay and shared HUD together, without a GPU or backend.
 fn controls_app() -> (App, egui::Context) {
-    use crate::core::audio::{
-        draw_audio_controls, update_audio, ChangeAudioMsg, MuteAudioMsg, PauseAudioMsg,
-        StopAudioMsg, VolumeFeedbackMsg,
-    };
-    use crate::core::states::{AppState, AudioState};
     use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
     let mut app = app();
@@ -387,7 +395,6 @@ fn click_control(app: &mut App, context: &egui::Context, pos: egui::Pos2) {
 
 #[test]
 fn cinematic_shared_hud_controls_volume_mute_and_speed_without_schematic_options() {
-    use crate::core::states::AudioState;
     let (mut app, context) = controls_app();
     app.world_mut().resource_mut::<Settings>().volume = 0.4;
     for _ in 0..4 {
@@ -397,7 +404,7 @@ fn cinematic_shared_hud_controls_volume_mute_and_speed_without_schematic_options
     for label in ["Play", "Pause", "Close", "Replay", "1×"] {
         assert!(label_rect(&shapes, label).is_none(), "bottom playback bar must be absent");
     }
-    let scale = crate::core::ui::systems::viewport_ui_scale(egui::vec2(640.0, 480.0));
+    let scale = viewport_ui_scale(egui::vec2(640.0, 480.0));
     let mut buttons: Vec<_> = shapes
         .iter()
         .filter_map(|shape| match &shape.shape {
@@ -714,11 +721,6 @@ fn cinematic_shared_effect_textures_survive_replays_without_reallocation() {
 
 #[test]
 fn cinematic_identity_banners_keep_commander_colors_without_painting_hulls() {
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::missions::JointAttackMission;
-    use crate::core::simulation::{GameModel, GameRules, PersistedGame};
-    use crate::multiplayer::model::{GameMembership, GameRecord};
-
     let (mut app, context) = controls_app();
     // Area fade-in multiplies every painted color during its first 150 ms. This assertion
     // compares canonical player colors, so remove that unrelated transition from the fixture.
@@ -731,7 +733,7 @@ fn cinematic_identity_banners_keep_commander_colors_without_painting_hulls() {
         },
     )
     .unwrap();
-    model.player_mut(1).unwrap().color = crate::core::player::PlayerColor::new(4).unwrap();
+    model.player_mut(1).unwrap().color = PlayerColor::new(4).unwrap();
     let mut session = MultiplayerSession::default();
     session.active_game = Some(GameRecord {
         id: GameId::new("identity-test"),
@@ -955,10 +957,6 @@ fn restarting_during_planet_destruction_stops_its_sounds_and_rearms_the_strike()
 
 #[test]
 fn soundtrack_uses_recorded_bombs_penetrating_hull_gain_and_miss_pitch() {
-    use crate::core::combat::cinematic_timeline::CinematicShot;
-    use crate::core::combat::resolution::ShotReport;
-    use crate::core::units::buildings::Building;
-
     let app = app();
     let mut movie = CinematicPlayback::new(&app.world().resource::<Player>().reports[0]);
     movie.timeline.actors[0].unit = Unit::Ship(Ship::Bomber);
@@ -1022,10 +1020,6 @@ fn soundtrack_uses_recorded_bombs_penetrating_hull_gain_and_miss_pitch() {
 
 #[test]
 fn soundtrack_omits_hidden_orbitals_and_unselected_buildings_without_mutating_events() {
-    use crate::core::combat::cinematic_timeline::{CinematicRepair, CinematicShot};
-    use crate::core::combat::resolution::ShotReport;
-    use crate::core::units::buildings::Building;
-
     let app = app();
     let mut report = app.world().resource::<Player>().reports[0].clone();
     let orbital_unit = Unit::Building(Building::SolarSatellite);

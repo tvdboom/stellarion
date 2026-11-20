@@ -1,11 +1,14 @@
 use super::*;
+
 use crate::core::combat::report::{CombatReport, MissionReport};
 use crate::core::map::icon::Icon;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::random::DeterministicRngState;
+use crate::core::resources::ResourceName;
 use crate::core::simulation::{GameModel, GameRules};
 use crate::core::units::ships::Ship;
 use crate::core::units::Army;
+use crate::test_support::empty_report;
 
 #[test]
 fn selective_recycling_uses_the_same_roll_and_does_not_shift_the_random_stream() {
@@ -17,11 +20,7 @@ fn selective_recycling_uses_the_same_roll_and_does_not_shift_the_random_stream()
     let mut bulk_rng = DeterministicRngState::from_u64(891).next_rng();
     let bulk = recycler_production(&model.map, &model.players, 1, 7, &mut bulk_rng);
     assert!(bulk.metal > 0 && bulk.crystal > 0 && bulk.deuterium > 0);
-    for resource in [
-        crate::core::resources::ResourceName::Metal,
-        crate::core::resources::ResourceName::Crystal,
-        crate::core::resources::ResourceName::Deuterium,
-    ] {
+    for resource in [ResourceName::Metal, ResourceName::Crystal, ResourceName::Deuterium] {
         model.map.get_mut(home).operations.recycler_focus = Some(resource);
         let mut selective_rng = DeterministicRngState::from_u64(891).next_rng();
         let selected = recycler_production(&model.map, &model.players, 1, 7, &mut selective_rng);
@@ -39,7 +38,7 @@ fn report(id: u64, turn: usize, planet: &Planet, losses: usize) -> MissionReport
         destination_owned: planet.owned,
         destination_controlled: planet.controlled,
         combat_report: Some(CombatReport::default()),
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission::new_with_id(
                 id,
                 turn.saturating_sub(1),

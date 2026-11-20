@@ -15,6 +15,7 @@ use crate::core::missions::Mission;
 use crate::core::resources::Resources;
 use crate::core::settings::Settings;
 use crate::core::units::buildings::Building;
+use crate::core::units::operations::SenateSupport;
 use crate::core::units::{Amount, Army, Unit};
 
 #[cfg(test)]
@@ -248,8 +249,7 @@ impl Player {
     }
 
     /// Derives production support from the completed, still-owned home-world Senate.
-    pub fn senate_support(&self, map: &Map) -> crate::core::units::operations::SenateSupport {
-        use crate::core::units::operations::SenateSupport;
+    pub fn senate_support(&self, map: &Map) -> SenateSupport {
         let home = map
             .try_get(self.home_planet)
             .filter(|planet| planet.owned == Some(self.id) && !planet.is_destroyed);

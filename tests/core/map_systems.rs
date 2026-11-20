@@ -1,17 +1,32 @@
 use super::*;
-use crate::core::combat::report::MissionReport;
-use crate::core::constants::MIN_ZOOM;
-use crate::core::identity::{GameCode, GameId};
-use crate::core::player::{PlayerColor, PLAYER_COLOR_PALETTE};
-use crate::core::simulation::{GameModel, GameRules, PersistedGame};
-use crate::multiplayer::model::GameRecord;
 use bevy::color::ColorToComponents;
 use bevy_kira_audio::AudioSource;
+
+use crate::core::basis_texture::{BasisTexturePlugin, BasisTextureSettings};
+use crate::core::camera::update_parallax;
+use crate::core::combat::report::{CombatReport, MissionReport};
+use crate::core::constants::{MAX_ZOOM, MIN_ZOOM, WIDTH};
+use crate::core::identity::{GameCode, GameId};
+use crate::core::map::asteroids::{
+    asteroid_position_at_elapsed, recycler_asteroid_target_groups,
+    RECYCLER_ASTEROID_MINIMUM_TRAVEL_AU,
+};
+use crate::core::map::model::SolarCorner;
+use crate::core::map::planet::ShieldOverloadState;
+use crate::core::messages::MessageLevel;
+use crate::core::patrols::valid_patrol_target;
+use crate::core::player::{PlayerColor, PLAYER_COLOR_PALETTE};
+use crate::core::random::DeterministicRngState;
+use crate::core::simulation::{GameModel, GameRules, PersistedGame};
+use crate::core::units::buildings::Building;
+use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands, SubmissionState};
+use crate::multiplayer::model::GameRecord;
+use crate::test_support::empty_report;
 
 const ASTEROID_BELT_MINIMUM_VISIBLE_COUNT: usize = 16;
 
 #[test]
-fn empty_space_pointer_clicks_open_and_retarget_the_normal_patrol_draft() {
+fn map_pointer_clicks_place_patrols_and_expeditions_in_their_valid_areas() {
     use bevy::camera::RenderTarget;
     use bevy::picking::{
         backend::HitData,
@@ -27,7 +42,7 @@ fn empty_space_pointer_clicks_open_and_retarget_the_normal_patrol_draft() {
         .map(|(x, y)| {
             model.map.rect.min + model.map.rect.size() * Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
         })
-        .find(|point| crate::core::patrols::valid_patrol_target(&model.map, home, *point, None))
+        .find(|point| valid_patrol_target(&model.map, home, *point, None))
         .unwrap();
     let mut app = App::new();
     app.add_plugins((TaskPoolPlugin::default(), AssetPlugin::default()))
@@ -93,11 +108,15 @@ fn empty_space_pointer_clicks_open_and_retarget_the_normal_patrol_draft() {
         .find(|(_, planet)| planet.id == home)
         .unwrap()
         .0;
-    let outside = app.world().resource::<Map>().rect.max + Vec2::ONE;
-    let home_position = app.world().resource::<Map>().get(home).position;
-    for (entity, target) in
-        [(background, outside), (background, home_position), (planet, home_position)]
-    {
+    let map = app.world().resource::<Map>();
+    let outside = map.rect.max + Vec2::ONE;
+    let home_position = map.get(home).position;
+    for (entity, target) in [
+        (background, map.solar_star_position()),
+        (background, outside),
+        (background, home_position),
+        (planet, home_position),
+    ] {
         for button in [PointerButton::Primary, PointerButton::Secondary] {
             app.world_mut().resource_mut::<UiState>().begin_patrol_selection();
             app.world_mut().trigger(Pointer::new(
@@ -117,7 +136,7 @@ fn empty_space_pointer_clicks_open_and_retarget_the_normal_patrol_draft() {
             let messages =
                 app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect::<Vec<_>>();
             assert_eq!(messages.len(), 1);
-            assert_eq!(messages[0].level, crate::core::messages::MessageLevel::Error);
+            assert_eq!(messages[0].level, MessageLevel::Error);
             assert!(!messages[0].silent, "invalid placement must still play the error sound");
         }
     }
@@ -218,7 +237,7 @@ fn empty_space_pointer_clicks_open_and_retarget_the_normal_patrol_draft() {
     ));
     app.world_mut().trigger(Pointer::new(
         PointerId::Mouse,
-        location,
+        location.clone(),
         Click {
             button: PointerButton::Primary,
             hit,
@@ -231,6 +250,28 @@ fn empty_space_pointer_clicks_open_and_retarget_the_normal_patrol_draft() {
     assert!(!state.selecting_patrol_zone);
     assert!(state.mission);
     assert_eq!(state.mission_info.patrol.as_ref().unwrap().center, center);
+
+    let map = app.world().resource::<Map>();
+    let sun = map.solar_star_position();
+    let inside_sun = sun - map.solar_corner().x * Vec2::X * (SOLAR_STAR_SIZE * 0.5 - 20.0);
+    let near_home = home_position + Vec2::X;
+    for (entity, target) in [(background, inside_sun), (planet, near_home)] {
+        app.world_mut().resource_mut::<UiState>().begin_space_selection(Icon::Expedition);
+        app.world_mut().trigger(Pointer::new(
+            PointerId::Mouse,
+            location.clone(),
+            Click {
+                button: PointerButton::Secondary,
+                hit: HitData::new(camera, 0.0, Some(target.extend(0.0)), None),
+                duration: Duration::from_millis(50),
+                count: 1,
+            },
+            entity,
+        ));
+        let state = app.world().resource::<UiState>();
+        assert!(state.mission && !state.selecting_patrol_zone);
+        assert_eq!(state.mission_info.expedition.as_ref().unwrap().center, target);
+    }
 }
 
 #[test]
@@ -293,7 +334,7 @@ fn railgun_strike_icon_appears_for_planets_and_moons_before_a_shot_is_committed(
 }
 
 #[test]
-fn map_eye_shows_hostile_actions_with_their_planet_and_moon_restrictions() {
+fn planet_shortcuts_wrap_and_respect_planet_and_moon_restrictions() {
     let mut model = GameModel::new(
         [63; 32],
         GameRules {
@@ -307,13 +348,20 @@ fn map_eye_shows_hostile_actions_with_their_planet_and_moon_restrictions() {
     let origin = player.home_planet;
     let target = model.players[1].home_planet;
     let moon = model.map.moons()[0].id;
-    model.map.get_mut(origin).army.insert(Unit::Building(Building::OrbitalRailgun), 1);
-    model.map.get_mut(origin).army.insert(Unit::war_sun(), 1);
+    let railgun = Unit::Building(Building::OrbitalRailgun);
+    let army = &mut model.map.get_mut(origin).army;
+    army.insert(railgun, 1);
+    army.insert(Unit::war_sun(), 1);
+    army.insert(Unit::probe(), 5);
     let origin_position = model.map.get(origin).position;
-    model.map.get_mut(target).position = origin_position + Vec2::X * Planet::SIZE;
+    let target_world = model.map.get_mut(target);
+    target_world.position = origin_position + Vec2::X * Planet::SIZE;
+    target_world.army.insert(Unit::Building(Building::SensorPhalanx), 1);
+    let mut intel_report = Some(range_intelligence_report(target_world, &player, 11));
     let moon_world = model.map.get_mut(moon);
     moon_world.owned = None;
-    moon_world.controlled = None;
+    moon_world.controlled = Some(model.players[1].id);
+    moon_world.protection_permissions.insert(player.id);
     moon_world.position = origin_position + Vec2::Y * Planet::SIZE;
 
     let mut app = App::new();
@@ -336,13 +384,16 @@ fn map_eye_shows_hostile_actions_with_their_planet_and_moon_restrictions() {
         .add_systems(Update, update_planet_info);
     app.world_mut().spawn((Camera2d, MainCamera));
 
-    let map_icon = |world: &mut World, id, icon_kind| {
-        let planet = world
+    let planet_entity = |world: &mut World, id| {
+        world
             .query::<(Entity, &PlanetCmp)>()
             .iter(world)
             .find(|(_, planet)| planet.id == id)
             .unwrap()
-            .0;
+            .0
+    };
+    let map_icon = |world: &mut World, id, icon_kind| {
+        let planet = planet_entity(world, id);
         world
             .get::<Children>(planet)
             .unwrap()
@@ -352,32 +403,72 @@ fn map_eye_shows_hostile_actions_with_their_planet_and_moon_restrictions() {
     };
     app.update();
     let target_icon = map_icon(app.world_mut(), target, Icon::RailgunStrike);
-    assert!(app.world_mut().query::<&Icon>().iter(app.world()).all(|icon| *icon != Icon::Patrol));
+    assert!(app
+        .world_mut()
+        .query::<&Icon>()
+        .iter(app.world())
+        .all(|icon| !matches!(icon, Icon::Patrol | Icon::Expedition | Icon::Intercept)));
     let moon_icon = map_icon(app.world_mut(), moon, Icon::RailgunStrike);
     let destroy_icon = map_icon(app.world_mut(), target, Icon::Destroy);
     let raid_icon = map_icon(app.world_mut(), target, Icon::Raid);
+    let sabotage_icon = map_icon(app.world_mut(), target, Icon::Sabotage);
     let moon_raid_icon = map_icon(app.world_mut(), moon, Icon::Raid);
-    for (hovered, always, target_visible, moon_visible) in [
-        (None, false, false, false),
-        (None, true, true, true),
-        (Some(target), false, true, false),
-        (Some(moon), false, false, true),
+    let moon_sabotage_icon = map_icon(app.world_mut(), moon, Icon::Sabotage);
+    for (hovered, always, has_intel, has_railgun, target_count, moon_count) in [
+        (None, false, false, true, 0, 0),
+        (Some(target), false, false, true, 5, 0),
+        (None, true, false, true, 5, 5),
+        (Some(target), false, true, true, 6, 0),
+        (Some(moon), false, true, true, 0, 5),
+        (None, true, true, false, 5, 4),
     ] {
+        if let Some(report) = intel_report.take_if(|_| has_intel) {
+            app.world_mut().resource_mut::<Player>().push_report(report);
+        }
+        if !has_railgun {
+            app.world_mut().resource_mut::<Map>().get_mut(origin).army.remove(&railgun);
+        }
         app.world_mut().resource_mut::<UiState>().planet_hover = hovered;
         app.world_mut().resource_mut::<Settings>().show_info = always;
         app.update();
         for (icon, expected) in [
-            (target_icon, target_visible),
-            (moon_icon, moon_visible),
-            (destroy_icon, target_visible),
-            (raid_icon, target_visible),
+            (target_icon, has_railgun && target_count > 0),
+            (moon_icon, has_railgun && moon_count > 0),
+            (destroy_icon, target_count > 0),
+            (raid_icon, target_count > 0),
+            (sabotage_icon, has_intel && target_count > 0),
             (moon_raid_icon, false),
+            (moon_sabotage_icon, false),
         ] {
             assert_eq!(
                 app.world().get::<Visibility>(icon) == Some(&Visibility::Inherited),
                 expected,
                 "hovered={hovered:?}, always={always}, icon={icon:?}"
             );
+        }
+
+        for (id, count, rows_per_column) in [(target, target_count, 5), (moon, moon_count, 4)] {
+            let entity = planet_entity(app.world_mut(), id);
+            let world = app.world();
+            let positions = world
+                .get::<Children>(entity)
+                .unwrap()
+                .iter()
+                .filter(|&child| {
+                    world.get::<Icon>(child).is_some()
+                        && world.get::<Visibility>(child) == Some(&Visibility::Inherited)
+                })
+                .map(|child| world.get::<Transform>(child).unwrap().translation.truncate())
+                .collect::<Vec<_>>();
+            assert_eq!(positions.len(), count);
+            if let Some(first) = positions.first() {
+                assert_eq!(first.y, -positions[rows_per_column - 1].y);
+                for (index, column) in positions.chunks(rows_per_column).enumerate() {
+                    let x = first.x + index as f32 * Icon::SIZE;
+                    assert!(column.iter().all(|position| (position.x - x).abs() < 0.001));
+                    assert_eq!(column[0].y, first.y);
+                }
+            }
         }
     }
 }
@@ -537,7 +628,7 @@ fn pulsars_flare_briefly_and_relocate_while_dark() {
 fn scenery_keeps_the_sun_at_the_arc_origin_and_the_landmark_inside_the_opposite_edge() {
     let map = Map {
         rect: Rect::new(-1_600.0, -900.0, 1_600.0, 900.0),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: Vec::new(),
     };
     let corner = map_scenery_corner(&map);
@@ -760,8 +851,7 @@ fn asteroid_belt_forms_one_complete_circle_with_photographic_cutouts_and_visible
                     && placement.radius.to_bits() == asteroid.placement.radius.to_bits()
             })
             .unwrap();
-        let expected =
-            crate::core::map::asteroids::asteroid_position_at_elapsed(map, placement, elapsed);
+        let expected = asteroid_position_at_elapsed(map, placement, elapsed);
         app.world().get::<Transform>(*entity).unwrap().translation.truncate().distance(expected)
             < 0.001
     }));
@@ -809,11 +899,7 @@ fn orbiting_asteroid_remains_visible_when_a_planet_is_moved_into_its_orbit() {
     };
     assert_eq!(app.world().get::<Visibility>(entity), Some(&Visibility::Inherited));
 
-    let position = crate::core::map::asteroids::asteroid_position_at_elapsed(
-        app.world().resource::<Map>(),
-        &placement,
-        1.0,
-    );
+    let position = asteroid_position_at_elapsed(app.world().resource::<Map>(), &placement, 1.0);
     app.world_mut().resource_mut::<Map>().get_mut(planet_id).position = position;
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
     app.update();
@@ -868,7 +954,6 @@ fn local_practice_map_draw_spawns_one_visible_asteroid_belt_immediately() {
 #[ignore = "renders a complete asteroid belt with a local GPU"]
 #[cfg(target_os = "windows")]
 fn render_asteroid_belt_preview() {
-    use crate::core::basis_texture::{BasisTexturePlugin, BasisTextureSettings};
     use bevy::camera::RenderTarget;
     use bevy::render::{
         render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
@@ -933,10 +1018,10 @@ fn render_asteroid_belt_preview() {
         practice_mode: true,
         ..default()
     };
-    let seed = crate::core::random::DeterministicRngState::from_u64(1841).seed;
+    let seed = DeterministicRngState::from_u64(1841).seed;
     let model = GameModel::new(seed, rules).unwrap();
     let mut projection = OrthographicProjection::default_2d();
-    projection.scale = crate::core::constants::MAX_ZOOM;
+    projection.scale = MAX_ZOOM;
     app.world_mut().spawn((
         Camera2d,
         RenderTarget::Image(target.clone().into()),
@@ -1018,7 +1103,7 @@ fn recycler_craft_and_scans_require_ownership_or_a_stationed_fleet() {
         surviving_defender: planet.army.clone(),
         destination_owned: planet.owned,
         destination_controlled: planet.controlled,
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission {
                 owner: local,
                 origin: player.home_planet,
@@ -1276,8 +1361,8 @@ fn recycler_shrinks_on_landing_and_grows_on_launch_for_asteroids_and_debris() {
     let radius = planet.size() * 0.5;
     let battle = MissionReport {
         turn: model.turn as usize,
-        combat_report: Some(crate::core::combat::report::CombatReport::default()),
-        ..crate::test_support::empty_report(
+        combat_report: Some(CombatReport::default()),
+        ..empty_report(
             Mission {
                 owner: player.id,
                 origin: player.home_planet,
@@ -1385,8 +1470,7 @@ fn recycler_shrinks_on_landing_and_grows_on_launch_for_asteroids_and_debris() {
 fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
     let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
     model.start().unwrap();
-    let static_target_groups =
-        crate::core::map::asteroids::recycler_asteroid_target_groups(&model.map);
+    let static_target_groups = recycler_asteroid_target_groups(&model.map);
     let layout = asteroid_belt_layout(&model.map).unwrap();
     let placements = asteroid_belt_placements(&model.map, layout);
     let target_groups = recycler_asteroid_target_groups_at_elapsed(&model.map, &placements, 0.0);
@@ -1541,8 +1625,7 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
     let planet = app.world().resource::<Map>().get(planet_id);
     assert!(
         planet.position.distance(first_asteroid)
-            > planet.size() * 0.5
-                + Planet::SIZE * crate::core::map::asteroids::RECYCLER_ASTEROID_MINIMUM_TRAVEL_AU
+            > planet.size() * 0.5 + Planet::SIZE * RECYCLER_ASTEROID_MINIMUM_TRAVEL_AU
     );
     let rotating_targets = {
         let marker = app.world().get::<RecyclerCmp>(recycler).unwrap();
@@ -1637,13 +1720,11 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
             .iter()
             .enumerate()
             .min_by(|(_, left), (_, right)| {
-                crate::core::map::asteroids::asteroid_position_at_elapsed(map, left, elapsed)
+                asteroid_position_at_elapsed(map, left, elapsed)
                     .distance_squared(scan_target)
                     .total_cmp(
-                        &crate::core::map::asteroids::asteroid_position_at_elapsed(
-                            map, right, elapsed,
-                        )
-                        .distance_squared(scan_target),
+                        &asteroid_position_at_elapsed(map, right, elapsed)
+                            .distance_squared(scan_target),
                     )
             })
             .unwrap()
@@ -1665,11 +1746,8 @@ fn recycler_levels_add_staggered_workers_that_split_between_nearby_asteroids() {
         let layout = shared_asteroid_belt_layout(map).unwrap();
         let placements = shared_asteroid_belt_placements(map, layout);
         let elapsed = app.world().resource::<Time>().elapsed_secs();
-        let current_target = crate::core::map::asteroids::asteroid_position_at_elapsed(
-            map,
-            &placements[next_asteroid_index],
-            elapsed,
-        );
+        let current_target =
+            asteroid_position_at_elapsed(map, &placements[next_asteroid_index], elapsed);
         ((current_target - map.get(planet_id).position) * recycler_progress(0.0), current_target)
     };
     assert!(returned.truncate().distance(expected_position) < Planet::SIZE * 0.001);
@@ -1891,7 +1969,7 @@ fn every_game_map_has_one_visible_belt_between_adjacent_solar_areas() {
                     ..default()
                 };
                 for sample in 0..256_u64 {
-                    let seed = crate::core::random::DeterministicRngState::from_u64(
+                    let seed = DeterministicRngState::from_u64(
                         sample
                             + player_count as u64 * 17
                             + planets_per_player as u64 * 101
@@ -1940,10 +2018,10 @@ fn three_player_five_world_practice_keeps_the_belt_in_every_home_view() {
         practice_mode: true,
         ..default()
     };
-    let viewport_size = Vec2::new(1536.0, 888.0) * crate::core::constants::MAX_ZOOM;
+    let viewport_size = Vec2::new(1536.0, 888.0) * MAX_ZOOM;
     let mut minimum_visible = usize::MAX;
     for sample in 0..2048_u64 {
-        let seed = crate::core::random::DeterministicRngState::from_u64(sample).seed;
+        let seed = DeterministicRngState::from_u64(sample).seed;
         let model = GameModel::new(seed, rules.clone()).unwrap();
         let layout = asteroid_belt_layout(&model.map).unwrap();
         let placements = asteroid_belt_placements(&model.map, layout);
@@ -2001,7 +2079,7 @@ fn celestial_landmarks_keep_their_opacity_and_leave_the_view_through_parallax() 
                     spawn_background_landmarks(&mut commands, &assets, &map);
                 },
             )
-            .add_systems(Update, (animate_space_scenery, crate::core::camera::update_parallax));
+            .add_systems(Update, (animate_space_scenery, update_parallax));
         let camera = app
             .world_mut()
             .spawn((
@@ -2089,8 +2167,7 @@ fn celestial_landmarks_keep_their_opacity_and_leave_the_view_through_parallax() 
         assert!((pan_alpha - expected_kind.opacity()).abs() < 1e-5);
         assert!(
             (pan_position.x - camera_position.x).abs()
-                > crate::core::constants::WIDTH * 0.5
-                    + CELESTIAL_SIZE.x * expected_kind.size_scale() * 0.5
+                > WIDTH * 0.5 + CELESTIAL_SIZE.x * expected_kind.size_scale() * 0.5
         );
 
         app.world_mut().get_mut::<Transform>(camera).unwrap().translation =
@@ -2190,7 +2267,7 @@ fn celestial_landmarks_stay_on_the_outer_edge_of_normal_small_and_offset_maps() 
     ]
     .map(|rect| Map {
         rect,
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: Vec::new(),
     });
     for map in generated.chain(unusual) {
@@ -2771,7 +2848,7 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
         surviving_defender: army.into(),
         destination_owned: Some(2),
         destination_controlled: Some(2),
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission {
                 id: 1,
                 owner: player.id,
@@ -2939,9 +3016,9 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
     assert_eq!(app.world().get::<Transform>(own.0).unwrap().rotation, Quat::IDENTITY);
     let alpha_before_overload = app.world().get::<Sprite>(own.0).unwrap().color.alpha();
     app.world_mut().resource_mut::<Map>().get_mut(own_home).shield_overload =
-        crate::core::map::planet::ShieldOverloadState::Overloaded;
+        ShieldOverloadState::Overloaded;
     app.world_mut().resource_mut::<Map>().get_mut(enemy_home).shield_overload =
-        crate::core::map::planet::ShieldOverloadState::Overloaded;
+        ShieldOverloadState::Overloaded;
     app.world_mut().resource_mut::<Time>().advance_by(Duration::ZERO);
     app.update();
     assert!(app.world().get::<PlanetaryShieldCmp>(own.0).unwrap().overloaded);
@@ -2983,9 +3060,9 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
 
     let rotation_before_stop = app.world().get::<Transform>(own.0).unwrap().rotation;
     app.world_mut().resource_mut::<Map>().get_mut(own_home).shield_overload =
-        crate::core::map::planet::ShieldOverloadState::Ready;
+        ShieldOverloadState::Ready;
     app.world_mut().resource_mut::<Map>().get_mut(enemy_home).shield_overload =
-        crate::core::map::planet::ShieldOverloadState::Ready;
+        ShieldOverloadState::Ready;
     app.world_mut().resource_mut::<Time>().advance_by(Duration::ZERO);
     app.update();
     assert!(!app.world().get::<PlanetaryShieldCmp>(own.0).unwrap().overloaded);
@@ -3277,7 +3354,7 @@ fn infrastructure_uses_known_controllers_but_strategic_orbitals_are_public() {
     else {
         panic!("map camera should use an orthographic projection");
     };
-    projection.scale = crate::core::constants::MAX_ZOOM;
+    projection.scale = MAX_ZOOM;
     // Let the exponential zoom fade settle before checking the hidden endpoint.
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
     app.update();
@@ -3430,6 +3507,7 @@ fn stationed_protection_world_can_become_a_new_mission_origin() {
         Icon::Colonize,
         Icon::Attack,
         Icon::Spy,
+        Icon::Sabotage,
         Icon::MissileStrike,
         Icon::Destroy,
         Icon::RailgunStrike,
@@ -4098,7 +4176,7 @@ fn range_intelligence_report(planet: &Planet, player: &Player, probes: usize) ->
         surviving_defender: planet.army.clone(),
         destination_owned: planet.owned,
         destination_controlled: planet.controlled,
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission {
                 owner: player.id,
                 origin: player.home_planet,
@@ -4566,7 +4644,7 @@ fn empty_orbitals_shortcut_only_appears_while_inspecting_an_owned_planet() {
         .resource_mut::<Map>()
         .get_mut(home)
         .army
-        .insert(Unit::Building(crate::core::units::buildings::Building::SolarSatellite), 1);
+        .insert(Unit::Building(Building::SolarSatellite), 1);
     app.update();
     assert_eq!(app.world().get::<Visibility>(orbital_icon), Some(&Visibility::Inherited));
 }
@@ -4623,7 +4701,7 @@ fn end_turn_keeps_its_label_and_disables_only_blocking_shared_choices() {
     app.insert_resource(State::new(GameState::Playing))
         .insert_resource(Player::new(1, 0))
         .init_resource::<UiState>()
-        .init_resource::<crate::multiplayer::client::PendingTurnCommands>()
+        .init_resource::<PendingTurnCommands>()
         .add_systems(Update, update_end_turn);
     let button = app
         .world_mut()
@@ -4676,7 +4754,7 @@ fn end_turn_button_tracks_window_size_without_moving_from_the_corner() {
     app.insert_resource(State::new(GameState::Playing))
         .insert_resource(Player::new(1, 0))
         .init_resource::<UiState>()
-        .init_resource::<crate::multiplayer::client::PendingTurnCommands>()
+        .init_resource::<PendingTurnCommands>()
         .add_systems(Update, update_end_turn);
     let window = app.world_mut().spawn(Window::default()).id();
     let button = app
@@ -4711,7 +4789,6 @@ fn end_turn_button_tracks_window_size_without_moving_from_the_corner() {
 
 #[test]
 fn local_practice_end_turn_stays_enabled_without_waiting_for_other_players() {
-    use crate::multiplayer::client::{MultiplayerSession, PendingTurnCommands, SubmissionState};
     let mut session = MultiplayerSession::default();
     session.local_practice = true;
     let mut app = App::new();
@@ -4754,8 +4831,8 @@ fn modal_game_menus_hide_turn_controls() {
             end_turn: true,
             ..default()
         })
-        .insert_resource(crate::multiplayer::client::PendingTurnCommands {
-            submission: crate::multiplayer::client::SubmissionState::Accepted,
+        .insert_resource(PendingTurnCommands {
+            submission: SubmissionState::Accepted,
             ..default()
         })
         .add_systems(Update, update_end_turn);

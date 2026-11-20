@@ -5,14 +5,17 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
+use crate::core::combat::plan::BattlePlan;
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::{Garrison, Planet, PlanetId};
-use crate::core::missions::Mission;
+use crate::core::missions::{BattleFleet, Mission};
 use crate::core::player::Player;
 use crate::core::resources::Resources;
+use crate::core::units::fauna::encounter_name;
 use crate::core::units::{Amount, Army, Combat, Price, Unit};
+use crate::serialization::required_option;
 
 /// Match the production-weighted ship strength used by fleet withdrawal and mission UI.
 pub(crate) fn combat_fleet_strength(army: &Army) -> u128 {
@@ -95,15 +98,15 @@ pub struct MissionReport {
     pub raid_loot: Resources,
 
     /// Owner of the planet after mission resolution
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub destination_owned: Option<PlayerId>,
 
     /// Controller of the planet after mission resolution
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub destination_controlled: Option<PlayerId>,
 
     /// Combat report (if combat took place)
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub combat_report: Option<CombatReport>,
 
     /// Whether to show this report in the report mission tab
@@ -138,7 +141,7 @@ impl MissionReport {
     pub fn battle_plan_fleets(
         &self,
         side: &Side,
-    ) -> Vec<(Option<PlayerId>, u64, crate::core::combat::plan::BattlePlan, Army)> {
+    ) -> Vec<(Option<PlayerId>, u64, BattlePlan, Army)> {
         match side {
             Side::Attacker => {
                 if let Some(joint) =
@@ -184,10 +187,7 @@ impl MissionReport {
     }
 
     /// Partitions survivors by source identity, carrying the combined commander's orders.
-    pub(crate) fn retained_battle_fleets(
-        &self,
-        returning: &Army,
-    ) -> Vec<crate::core::missions::BattleFleet> {
+    pub(crate) fn retained_battle_fleets(&self, returning: &Army) -> Vec<BattleFleet> {
         if self.mission.battle_fleets.is_empty() {
             return Vec::new();
         }
@@ -225,7 +225,7 @@ impl MissionReport {
                 }
             }
             if !army.is_empty() {
-                fleets.push(crate::core::missions::BattleFleet {
+                fleets.push(BattleFleet {
                     army,
                     battle_plan: self.mission.battle_plan_for(Some(self.mission.owner)),
                     ..source
@@ -246,9 +246,9 @@ impl MissionReport {
             || matches!(self.mission.objective, Icon::Patrol | Icon::Intercept)
     }
 
-    /// Returns the encounter formation's generated title.
+    /// Returns the compact creature or group title for a space-fauna encounter.
     pub fn space_fauna_name(&self) -> Option<&str> {
-        self.is_space_fauna_encounter().then_some(self.planet.name.as_str())
+        encounter_name(&self.planet.army.combined())
     }
 
     /// Returns whether this battle began against an unclaimed planet's fixed inhabitants.
@@ -456,7 +456,7 @@ impl MissionReport {
             return (attacker_survives && !fauna_survives).then_some(self.mission.owner);
         }
         match self.mission.objective {
-            Icon::Spy if self.scout_probes > 0 => None,
+            Icon::Spy | Icon::Sabotage if self.scout_probes > 0 => None,
             Icon::MissileStrike => {
                 let round = self.combat_report.as_ref()?.rounds.first()?;
                 if round.missiles_shot() >= round.n_missiles() {
@@ -551,7 +551,7 @@ impl MissionReport {
         }
         match self.mission.objective {
             Icon::MissileStrike => "missile",
-            Icon::Spy if self.scout_probes > 0 => "eye",
+            Icon::Spy | Icon::Sabotage if self.scout_probes > 0 => "eye",
             _ if self.won_by(player.id) => "won",
             _ => "lost",
         }
@@ -572,7 +572,10 @@ impl MissionReport {
                 self.is_attacker(player_id)
                     || self.is_defender(player_id)
                     || self.won_by(player_id)
-                    || matches!(self.mission.objective, Icon::Spy | Icon::MissileStrike)
+                    || matches!(
+                        self.mission.objective,
+                        Icon::Spy | Icon::Sabotage | Icon::MissileStrike
+                    )
             },
             Side::Defender => {
                 if self.is_space_fauna_encounter() {
@@ -616,7 +619,7 @@ pub struct CombatReport {
     /// Combat rounds in deterministic playback order.
     pub rounds: Vec<RoundReport>,
     /// Ships that left this battle, separate from the defenders still holding the world.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub defender_retreat: Option<DefenderRetreat>,
 }
 
@@ -625,7 +628,7 @@ pub struct CombatReport {
 /// A recorded withdrawal used both to launch a Deploy mission and to replay ships flying away.
 pub struct DefenderRetreat {
     /// Zero-based round after which ships leave, or `None` for a level-five immediate retreat.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub after_round: Option<usize>,
     /// The defender's homeworld at the time of departure.
     pub home_planet: PlanetId,

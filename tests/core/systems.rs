@@ -1,7 +1,23 @@
 use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
+
+use crate::core::camera::move_camera;
+use crate::core::identity::{GameCode, GameId};
+use crate::core::map::icon::Icon;
+use crate::core::map::model::SolarCorner;
+use crate::core::map::systems::{select_planet, PlanetCmp};
+use crate::core::messages::MessageMsg;
+use crate::core::missions::BombingRaid;
+use crate::core::resources::Resources;
+use crate::core::simulation::{
+    GameModel, GameRules, JointAttackContribution, MatchStatus, PersistedGame,
+};
 use crate::core::ui::systems::MapRangePreview;
+use crate::core::units::buildings::Building;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Amount, Army, Unit};
+use crate::multiplayer::model::GameRecord;
 
 #[test]
 fn zero_height_resize_keeps_bevy_font_sizes_positive() {
@@ -68,7 +84,7 @@ fn spectator_cannot_open_missions_with_keyboard_shortcut() {
         .init_resource::<ButtonInput<MouseButton>>()
         .insert_resource(Map {
             rect: Rect::default(),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets: Vec::new(),
         })
         .insert_resource(player)
@@ -88,10 +104,6 @@ fn spectator_cannot_open_missions_with_keyboard_shortcut() {
 
 #[test]
 fn ctrl_tab_recenters_after_manual_selection_with_the_shop_open() {
-    use crate::core::camera::move_camera;
-    use crate::core::map::systems::{select_planet, PlanetCmp};
-    use crate::core::simulation::{GameModel, GameRules};
-
     for reverse in [false, true] {
         let mut model = GameModel::new([9; 32], GameRules::default()).unwrap();
         let player = model.players[0].clone();
@@ -221,7 +233,7 @@ fn escape_closes_trade_without_discarding_an_unpublished_offer() {
         .insert_resource(UiState {
             trade_open: Some(11),
             trade_draft_id: Some(11),
-            trade_resources: crate::core::resources::Resources::new(123, 0, 0),
+            trade_resources: Resources::new(123, 0, 0),
             ..default()
         })
         .add_message::<StartTurnMsg>()
@@ -310,7 +322,7 @@ fn battle_plan_modal_keeps_mission_and_world_navigation_shortcuts_inactive() {
         .init_resource::<ButtonInput<MouseButton>>()
         .insert_resource(Map {
             rect: Rect::default(),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets: Vec::new(),
         })
         .insert_resource(Player::new(1, 0))
@@ -402,12 +414,6 @@ fn opening_a_modal_menu_preserves_the_cursor_over_an_egui_button() {
 
 #[test]
 fn ctrl_up_is_inert_and_ctrl_shift_up_boosts_all_owned_online_planets() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::messages::MessageMsg;
-    use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
-    use crate::core::units::{buildings::Building, Amount, Unit};
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = GameModel::new([9; 32], GameRules::default()).unwrap();
     model.start().unwrap();
     let home = model.players[0].home_planet;
@@ -481,16 +487,6 @@ fn ctrl_up_is_inert_and_ctrl_shift_up_boosts_all_owned_online_planets() {
 
 #[test]
 fn local_practice_shortcut_is_immediately_available_to_allied_preview() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::map::icon::Icon;
-    use crate::core::messages::MessageMsg;
-    use crate::core::missions::BombingRaid;
-    use crate::core::simulation::{
-        GameModel, GameRules, JointAttackContribution, MatchStatus, PersistedGame,
-    };
-    use crate::core::units::{ships::Ship, Amount, Army, Unit};
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = GameModel::new(
         [10; 32],
         GameRules {

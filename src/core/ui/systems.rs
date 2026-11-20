@@ -17,6 +17,8 @@ use strum_macros::EnumIter;
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{set_ui_sound, SoundEffect};
+use crate::core::combat::cinematic_ui::CombatView;
+use crate::core::combat::plan::BattlePlan;
 #[cfg(test)]
 use crate::core::combat::report::RoundReport;
 use crate::core::combat::report::{
@@ -30,8 +32,8 @@ use crate::core::constants::{
     SHIELD_COLOR, TERRAFORMER_FOCUS_BONUS_PERCENT_PER_LEVEL,
     TERRAFORMER_OTHER_PENALTY_PERCENT_PER_LEVEL, WIDTH,
 };
-use crate::core::energy::EnergyGrid;
-use crate::core::identity::PlayerId;
+use crate::core::energy::{jump_gate_energy_demand, EnergyGrid};
+use crate::core::identity::{GameId, PlayerId};
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId, PlanetKind, SolarBand};
@@ -44,6 +46,7 @@ use crate::core::missions::{
 use crate::core::orders::purchase_limit;
 #[cfg(test)]
 use crate::core::orders::validate_mission;
+use crate::core::patrols::PatrolPhase;
 use crate::core::player::{PlanetInfo, Player};
 use crate::core::recycling::{debris_sites, recycler_sources};
 use crate::core::resources::{ResourceName, Resources};
@@ -55,6 +58,7 @@ use crate::core::simulation::{
 };
 use crate::core::states::GameState;
 use crate::core::trading::{visible_trading_post_owner, ResourceLoanTerm};
+use crate::core::turns::EndGamePresentation;
 use crate::core::ui::aesthetics::Aesthetics;
 use crate::core::ui::dark::NordDark;
 use crate::core::ui::location_marker::LocationMarker;
@@ -62,10 +66,12 @@ use crate::core::ui::utils::{toggle, CustomResponse, CustomUi, ImageIds};
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
 use crate::core::units::fauna::SpaceFauna;
+use crate::core::units::operations::{SenatePolicy, SenateSupport, SpaceDockMode};
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Description, Price, Unit};
 use crate::multiplayer::client::{
-    MultiplayerRequest, MultiplayerSession, PendingTurnCommands, COMMAND_LIMIT_REACHED_MESSAGE,
+    MultiplayerRequest, MultiplayerSession, PendingTurnCommands, SubmissionState,
+    COMMAND_LIMIT_REACHED_MESSAGE,
 };
 use crate::multiplayer::model::{
     GameMembership, JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
@@ -173,9 +179,9 @@ pub struct UiState {
     /// Origin whose standing orders have initialized the current allied contribution draft.
     pub(crate) joint_battle_plan_origin: Option<PlanetId>,
     /// Active fleet edits collected by the UI before queuing authoritative turn commands.
-    pub(crate) mission_battle_plan_changes: Vec<(u64, crate::core::combat::plan::BattlePlan)>,
+    pub(crate) mission_battle_plan_changes: Vec<(u64, BattlePlan)>,
     /// Stationed-fleet edits collected by the overview header's hover editor.
-    pub(crate) garrison_battle_plan_changes: Vec<(PlanetId, crate::core::combat::plan::BattlePlan)>,
+    pub(crate) garrison_battle_plan_changes: Vec<(PlanetId, BattlePlan)>,
     /// World whose hover editor keeps its parent overview visible.
     pub(crate) garrison_battle_plan_hover: Option<PlanetId>,
     /// Players hidden from each world's combined garrison overview. Missing entries mean all
@@ -214,7 +220,7 @@ pub struct UiState {
     pub mission_info: Mission,
     /// Contact selected for a targeted interception draft.
     pub(crate) intercept_target: Option<MissionId>,
-    /// The next empty-space map click selects a patrol center instead of closing its draft.
+    /// The next empty-space map click selects a patrol or expedition destination.
     pub(crate) selecting_patrol_zone: bool,
     /// Selected patrol center, retained while the launch panel is temporarily hidden.
     pub(crate) patrol_center: Option<Vec2>,
@@ -266,7 +272,7 @@ enum NegotiationNotice {
 
 #[derive(Clone, Default)]
 struct NegotiationNoticeHistory {
-    game: Option<crate::core::identity::GameId>,
+    game: Option<GameId>,
     seen: HashSet<(PlayerId, NegotiationNotice)>,
 }
 
@@ -307,11 +313,7 @@ impl UiState {
         if session.is_some_and(|session| session.local_practice) {
             return false;
         }
-        if !matches!(
-            pending.submission,
-            crate::multiplayer::client::SubmissionState::Draft
-                | crate::multiplayer::client::SubmissionState::Retry
-        ) {
+        if !matches!(pending.submission, SubmissionState::Draft | SubmissionState::Retry) {
             return false;
         }
         self.joint_attack_open.is_some()
@@ -2241,7 +2243,33 @@ fn draw_disconnected_icon(ui: &mut Ui, scale: f32) {
     );
 }
 
-/// Draws the army grid interface and emits any resulting local actions.
+/// Keeps remaining strength and losses in separate, consistent corners of report icons.
+fn draw_report_unit_counts(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    remaining: String,
+    lost: usize,
+    text_style: TextStyle,
+) -> Option<egui::Rect> {
+    ui.add_text_on_image(
+        remaining,
+        Color32::WHITE,
+        text_style.clone(),
+        rect.left_bottom(),
+        Align2::LEFT_BOTTOM,
+    );
+    (lost > 0).then(|| {
+        ui.add_text_on_image(
+            format!("-{lost}"),
+            Color32::RED,
+            text_style,
+            rect.right_top(),
+            Align2::RIGHT_TOP,
+        )
+    })
+}
+
+/// Draws one unit's known remaining strength and losses in a mission report.
 fn draw_mission_report_unit(
     ui: &mut Ui,
     unit: &Unit,
@@ -2254,7 +2282,14 @@ fn draw_mission_report_unit(
     let (image_size, text_style) = visual;
     let can_see = report.can_see(&side, player.id);
     let (survived, total) = if side == Side::Attacker {
-        (report.surviving_attacker.amount(unit), report.mission.army.amount(unit))
+        let survived = report.surviving_attacker.amount(unit);
+        // Docked expeditions can bring home ships absent from the dispatch roster.
+        let total = if mission_report_is_return_arrival(report) {
+            survived
+        } else {
+            report.mission.army.amount(unit)
+        };
+        (survived, total)
     } else {
         (
             report
@@ -2265,13 +2300,15 @@ fn draw_mission_report_unit(
         )
     };
     let lost = total.saturating_sub(survived);
+    let recovered = report
+        .mission
+        .expedition
+        .as_ref()
+        .filter(|_| can_see && side == Side::Attacker && mission_report_is_return_arrival(report))
+        .map_or(0, |expedition| expedition.ships.amount(unit));
 
     let text = if can_see {
-        if lost > 0 {
-            format!("{lost}/{total}")
-        } else {
-            total.to_string()
-        }
+        survived.to_string()
     } else if mission_report_unit_is_revealed_by_probes(report, player.id, &side, unit) {
         // Even if attacker lost combat, he can see enemy starting units with scouts.
         total.to_string()
@@ -2279,7 +2316,7 @@ fn draw_mission_report_unit(
         "?".to_string()
     };
 
-    ui.add_enabled_ui(text != "0", |ui| {
+    ui.add_enabled_ui(text != "0" || (can_see && lost > 0), |ui| {
         let response = ui
             .add_image(images.get(unit.to_lowername()), [image_size; 2])
             .on_hover_small_ext(unit.to_name())
@@ -2296,17 +2333,26 @@ fn draw_mission_report_unit(
             response
         };
 
-        ui.add_text_on_image(
+        draw_report_unit_counts(
+            ui,
+            response.rect,
             text,
-            if can_see && lost > 0 {
-                Color32::RED
+            if can_see {
+                lost
             } else {
-                Color32::WHITE
+                0
             },
             text_style,
-            response.rect.left_bottom(),
-            Align2::LEFT_BOTTOM,
         );
+        if recovered > 0 {
+            ui.add_text_on_image(
+                format!("+{recovered}"),
+                Color32::from_rgb(163, 190, 140),
+                TextStyle::Small,
+                response.rect.right_top(),
+                Align2::RIGHT_TOP,
+            );
+        }
     });
 }
 
@@ -2378,15 +2424,15 @@ fn combat_report_shows_salvage(total: bool, round: usize, round_count: usize) ->
     total || round == round_count
 }
 
-/// Draws defender salvage or raid cargo with the same resource icons and amounts.
-fn draw_combat_resource_gains(
+/// Draws the defending Crawlers' recovered resources in combat details.
+fn draw_combat_defender_salvage(
     ui: &mut Ui,
     report: &MissionReport,
     player: &Player,
     images: &ImageIds,
 ) -> Option<Response> {
     let (side, salvage) = report.conclusion_resources()?;
-    if !report.can_see(&side, player.id) {
+    if side != Side::Defender || !report.can_see(&side, player.id) {
         return None;
     }
 
@@ -2394,12 +2440,7 @@ fn draw_combat_resource_gains(
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = CRAWLER_SALVAGE_RESOURCE_GAP;
             let label = ui.painter().layout_no_wrap(
-                if side == Side::Attacker {
-                    "Raided:"
-                } else {
-                    "Recovered:"
-                }
-                .to_string(),
+                "Recovered:".to_string(),
                 TextStyle::Body.resolve(ui.style()),
                 ui.visuals().text_color(),
             );
@@ -2422,11 +2463,9 @@ fn draw_combat_resource_gains(
             }
         })
         .response
-        .on_hover_small_ext(if side == Side::Attacker {
-            "Resources seized by the raiders. Credited only when their returning fleet docks."
-        } else {
-            "Resources recovered from destroyed ground defenses by the surviving Crawlers."
-        }),
+        .on_hover_small_ext(
+            "Resources recovered from destroyed ground defenses by the surviving Crawlers.",
+        ),
     )
 }
 
@@ -2439,7 +2478,7 @@ fn draw_combat_army_grid(
     units: Vec<Unit>,
     side: Side,
     planetary_shield_overloaded: bool,
-    dock_mode: crate::core::units::operations::SpaceDockMode,
+    dock_mode: SpaceDockMode,
     images: &ImageIds,
 ) -> bool {
     let own = round.units(&side);
@@ -2481,15 +2520,27 @@ fn draw_combat_army_grid(
                 .clone()
                 .filter_map(|cu| (cu.unit == unit).then_some(cu.repairs.len()))
                 .sum::<usize>();
-            let (n_shots, kills) = enemy
+            let n_shots = enemy
                 .clone()
                 .flat_map(|unit| &unit.shots)
                 .filter(|shot| shot.unit == Some(unit))
-                .fold((0, 0), |(shots, kills), shot| (shots + 1, kills + usize::from(shot.killed)));
+                .count();
+            // Hover filters explain damage sources without changing the actual casualties.
+            let kills = round
+                .units(&side.opposite())
+                .flat_map(|unit| &unit.shots)
+                .filter(|shot| shot.unit == Some(unit) && shot.killed)
+                .count();
             let lost = match unit {
                 Unit::Defense(Defense::InterplanetaryMissile) => count,
                 Unit::Defense(Defense::AntiballisticMissile) => round.antiballistic_fired,
                 _ => kills,
+            };
+            // Building snapshots already contain the levels left after this round's bombing.
+            let remaining = if unit.is_building() {
+                count
+            } else {
+                count.saturating_sub(lost)
             };
 
             let hovering_repair_truck =
@@ -2522,31 +2573,39 @@ fn draw_combat_army_grid(
                         None
                     };
 
+                    let loss_rect = draw_report_unit_counts(
+                        ui,
+                        response.rect,
+                        remaining.to_string(),
+                        lost,
+                        TextStyle::Body,
+                    );
                     if let Some(text) = text {
-                        ui.add_text_on_image(
+                        let position = response.rect.left_top() + egui::vec2(2.0, 3.0);
+                        let right =
+                            loss_rect.map_or(response.rect.right() - 2.0, |rect| rect.left() - 2.0);
+                        let available_width = (right - position.x - 3.0).max(1.0);
+                        let mut font = TextStyle::Small.resolve(ui.style());
+                        let text_width = ui
+                            .painter()
+                            .layout_no_wrap(text.clone(), font.clone(), Color32::WHITE)
+                            .size()
+                            .x;
+                        let mut indicator_ui =
+                            ui.new_child(UiBuilder::new().max_rect(response.rect));
+                        // Keep both top corners readable when a total contains many shots.
+                        if text_width > available_width {
+                            font.size *= available_width / text_width;
+                            indicator_ui.style_mut().text_styles.insert(TextStyle::Small, font);
+                        }
+                        indicator_ui.add_text_on_image(
                             text,
                             Color32::WHITE,
                             TextStyle::Small,
-                            response.rect.right_top() - egui::Vec2::new(2., -3.),
-                            Align2::RIGHT_TOP,
+                            position,
+                            Align2::LEFT_TOP,
                         );
                     }
-
-                    ui.add_text_on_image(
-                        if lost > 0 {
-                            format!("{lost}/{count}")
-                        } else {
-                            count.to_string()
-                        },
-                        if lost > 0 {
-                            Color32::RED
-                        } else {
-                            Color32::WHITE
-                        },
-                        TextStyle::Body,
-                        response.rect.left_bottom(),
-                        Align2::LEFT_BOTTOM,
-                    );
 
                     let all_cu = own.clone().filter(|cu| cu.unit == unit);
                     let (hull, shield) = if hovering_repair_truck && side == Side::Defender {
@@ -2867,7 +2926,7 @@ fn projected_energy(map: &Map, player: &Player, action_demand: usize) -> EnergyG
 
 fn pending_railgun_energy_demand(
     map: &Map,
-    player_id: crate::core::identity::PlayerId,
+    player_id: PlayerId,
     pending: &PendingTurnCommands,
 ) -> usize {
     pending
@@ -4418,7 +4477,7 @@ fn draw_mission_fleet_hover(
 ) {
     let army = match mission.objective {
         Icon::MissileStrike => vec![Unit::interplanetary_missile()],
-        Icon::Spy => vec![Unit::probe()],
+        Icon::Spy | Icon::Sabotage => vec![Unit::probe()],
         _ => Unit::ships(),
     };
 
@@ -4519,8 +4578,34 @@ fn encounter_image_corner_radius(report: &MissionReport, size: f32) -> egui::Cor
     }
 }
 
-fn mission_report_destination_name<'a>(report: &MissionReport, destination: &'a Planet) -> &'a str {
+/// Space missions keep their launch world in persisted origin data, even on the return leg.
+fn mission_report_space_origin(report: &MissionReport) -> Option<Vec2> {
+    if !report.mission.is_returning() {
+        return None;
+    }
+    report
+        .mission
+        .patrol
+        .as_ref()
+        .map(|patrol| patrol.center)
+        .or_else(|| report.mission.expedition.as_ref().map(|expedition| expedition.center))
+}
+
+fn mission_report_space_destination(report: &MissionReport) -> Option<Vec2> {
     if report.is_space_encounter() {
+        Some(report.planet.position)
+    } else {
+        report
+            .mission
+            .expedition
+            .as_ref()
+            .filter(|_| report.mission.objective == Icon::Expedition)
+            .map(|expedition| expedition.center)
+    }
+}
+
+fn mission_report_destination_name<'a>(report: &MissionReport, destination: &'a Planet) -> &'a str {
+    if mission_report_space_destination(report).is_some() {
         "Deep space"
     } else {
         &destination.name
@@ -4530,6 +4615,41 @@ fn mission_report_destination_name<'a>(report: &MissionReport, destination: &'a 
 /// Hidden Spy and Missile Strike reports do not disclose the sender or departure world.
 fn mission_report_sender_is_known(report: &MissionReport, viewer: PlayerId) -> bool {
     report.mission.owner == viewer || !report.mission.conceals_origin()
+}
+
+fn mission_report_is_return_arrival(report: &MissionReport) -> bool {
+    report.mission.is_returning()
+        && matches!(report.mission.objective, Icon::Deploy | Icon::Protect)
+        && report.combat_report.is_none()
+        && !report.is_space_encounter()
+        && report.surviving_attacker.has_army()
+}
+
+/// Keeps the original objective readable and marks the homeward leg in every report header.
+fn draw_mission_report_objective(ui: &mut Ui, report: &MissionReport, images: &ImageIds) {
+    let objective = report.mission.return_objective.unwrap_or(report.mission.objective);
+    let icon = ui.add_image(images.get(objective.asset_key()), [25.0; 2]);
+    let icon = if report.mission.is_returning() {
+        draw_mission_return_badge(ui, icon, images)
+    } else {
+        icon
+    };
+    icon.on_hover_small(mission_objective_label(objective));
+}
+
+fn draw_mission_return_badge(ui: &Ui, icon: Response, images: &ImageIds) -> Response {
+    let badge = egui::Rect::from_center_size(
+        icon.rect.right_bottom() - egui::vec2(5.0, 5.0),
+        egui::Vec2::splat(17.0),
+    );
+    ui.painter().image(
+        images.get("recall"),
+        badge,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    let badge_response = ui.interact(badge, icon.id.with("return"), Sense::hover());
+    icon | badge_response
 }
 
 fn add_combat_report_destination_image(
@@ -4544,15 +4664,15 @@ fn add_combat_report_destination_image(
             images.get(combat_selection_planet_image(report)),
             egui::Vec2::splat(size),
         ))
-        .sense(if report.is_space_encounter() {
+        .sense(if mission_report_space_destination(report).is_some() {
             egui::Sense::click()
         } else {
             egui::Sense::hover()
         })
         .corner_radius(encounter_image_corner_radius(report, size)),
     );
-    if report.is_space_encounter() {
-        handle_space_location_link(response, report.planet.position, state)
+    if let Some(position) = mission_report_space_destination(report) {
+        handle_space_location_link(response, position, state)
     } else {
         response
     }
@@ -4584,12 +4704,14 @@ fn combat_side_participants(
     side: &Side,
     session: &MultiplayerSession,
 ) -> Vec<CombatParticipant> {
-    if *side == Side::Defender && report.is_space_fauna_encounter() {
-        return vec![CombatParticipant {
-            name: report.planet.name.clone(),
-            color: NEUTRAL_COMBAT_COLOR,
-            strength: combat_fleet_strength(&report.planet.army.combined()),
-        }];
+    if *side == Side::Defender {
+        if let Some(name) = report.space_fauna_name() {
+            return vec![CombatParticipant {
+                name: name.to_owned(),
+                color: NEUTRAL_COMBAT_COLOR,
+                strength: combat_fleet_strength(&report.planet.army.combined()),
+            }];
+        }
     }
     if *side == Side::Defender && report.is_independent_population_encounter() {
         return vec![CombatParticipant {
@@ -4719,7 +4841,8 @@ fn draw_mission_report_strength_bars(
         }
     }
     let mut defenders = combat_side_participants(report, &Side::Defender, session);
-    if defenders.iter().all(|defender| defender.strength == 0) {
+    // Worlds keep their owner's color even when no ships are stationed there.
+    if defenders.is_empty() {
         defenders = vec![CombatParticipant {
             name: "Empty".to_owned(),
             color: NEUTRAL_COMBAT_COLOR,
@@ -4767,19 +4890,32 @@ fn draw_combat_report(
         // Match the right inset so the route stays clear of the panel's decorative frame.
         ui.add_space(70.);
 
-        ui.add_image(images.get(origin.image()), [35., 35.]);
-        ui.add_space(5.);
-        ui.small(&origin.name);
+        if let Some(position) = mission_report_space_origin(report) {
+            let image = ui.add(
+                egui::Image::new(SizedTexture::new(images.get("deep space"), [35., 35.]))
+                    .sense(Sense::click()),
+            );
+            ui.add_space(5.);
+            let name =
+                ui.add(egui::Label::new(RichText::new("Deep space").small()).sense(Sense::click()));
+            handle_space_location_link(image | name, position, state);
+        } else {
+            ui.add_image(images.get(origin.image()), [35., 35.]);
+            ui.add_space(5.);
+            ui.small(&origin.name);
+        }
 
         ui.add_space(25.);
 
-        ui.add_image(images.get(report.mission.objective.asset_key()), [25.; 2]);
+        draw_mission_report_objective(ui, report, images);
         ui.add_image(images.get(report.mission.image(player)), [50.; 2]);
         ui.small(report.turn.to_string());
 
         ui.add_space(25.);
 
-        let destination_name = if report.is_space_encounter() {
+        let destination_name = if let Some(name) = report.space_fauna_name() {
+            name
+        } else if report.is_space_encounter() {
             &report.planet.name
         } else {
             &destination.name
@@ -5162,17 +5298,13 @@ fn draw_combat_report(
             Layout::left_to_right(Align::Center),
             |ui| {
                 // Match the defender grid's first unit rather than the divider itself.
-                ui.add_space(if report.raid_loot.is_empty() {
-                    60. + attacker_w
-                } else {
-                    40.
-                });
+                ui.add_space(60. + attacker_w);
                 if combat_report_shows_salvage(
                     state.combat_report_total,
                     state.combat_report_round,
                     combat.rounds.len(),
                 ) {
-                    draw_combat_resource_gains(ui, report, player, images);
+                    draw_combat_defender_salvage(ui, report, player, images);
                 }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -5225,10 +5357,22 @@ fn draw_mission_info_hover(
             ui.small("Destination:");
             ui.add_image(images.get("deep space"), [25.; 2]);
             ui.small("Deep space");
-        } else if let Some(patrol) = mission
-            .patrol
-            .as_ref()
-            .filter(|patrol| patrol.phase != crate::core::patrols::PatrolPhase::Returning)
+        } else if let Some(expedition) =
+            mission.expedition.as_ref().filter(|_| mission.objective == Icon::Expedition)
+        {
+            ui.small("Destination:");
+            ui.add_image(images.get("deep space"), [25.; 2]);
+            if mission.owner == player.id {
+                ui.small(format!(
+                    "({:.1}, {:.1})",
+                    expedition.center.x / Planet::SIZE,
+                    expedition.center.y / Planet::SIZE
+                ));
+            } else {
+                ui.small("Deep space");
+            }
+        } else if let Some(patrol) =
+            mission.patrol.as_ref().filter(|patrol| patrol.phase != PatrolPhase::Returning)
         {
             ui.small(if mission.owner == player.id {
                 "Zone:"
@@ -5481,7 +5625,7 @@ fn mission_objective_label(objective: Icon) -> String {
 
 /// Uses deep space for space encounters and pre-mission world artwork for planetary battles.
 fn combat_selection_planet_image(report: &MissionReport) -> String {
-    if report.is_space_encounter() {
+    if mission_report_space_destination(report).is_some() {
         "deep space".to_owned()
     } else {
         report.planet.image()
@@ -5778,10 +5922,7 @@ pub fn draw_ui(
     mut state: ResMut<UiState>,
     mut settings: ResMut<Settings>,
     mut pending: ResMut<PendingTurnCommands>,
-    (session, end_game_presentation): (
-        Res<MultiplayerSession>,
-        Res<crate::core::turns::EndGamePresentation>,
-    ),
+    (session, end_game_presentation): (Res<MultiplayerSession>, Res<EndGamePresentation>),
     game_state: Res<State<GameState>>,
     mut next_game_state: ResMut<NextState<GameState>>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -5811,9 +5952,7 @@ pub fn draw_ui(
         return;
     }
 
-    if *game_state.get() == GameState::Combat
-        && settings.combat_view == crate::core::combat::cinematic_ui::CombatView::Cinematic
-    {
+    if *game_state.get() == GameState::Combat && settings.combat_view == CombatView::Cinematic {
         planet_panel_slide.hide();
         planet_panel_hover_hold.clear();
         mission_hover_panel_slide.hide();
@@ -5822,10 +5961,8 @@ pub fn draw_ui(
 
     let (width, height) = (window.width(), window.height());
     let panel_scale = game_panel_scale(egui::vec2(width, height));
-    let action_energy_demand =
-        pending_railgun_energy_demand(&map, player.id, &pending).saturating_add(
-            crate::core::energy::jump_gate_energy_demand(&missions.0, player.id, settings.turn),
-        );
+    let action_energy_demand = pending_railgun_energy_demand(&map, player.id, &pending)
+        .saturating_add(jump_gate_energy_demand(&missions.0, player.id, settings.turn));
 
     if *game_state.get() == GameState::Playing {
         if let Ok(context) = contexts.ctx_mut() {
@@ -6221,14 +6358,13 @@ pub fn draw_ui(
                 let next_turn_energy = projected_energy(&map, &player, action_energy_demand);
                 let senate_level_limit = Player::senate_level_limit(&map, settings.p_colonizable);
                 let senate = player.senate_support(&map);
-                let senate_queues_fit =
-                    crate::core::units::operations::SenatePolicy::ALL.map(|policy| {
-                        crate::core::units::operations::SenateSupport {
-                            policy,
-                            ..senate
-                        }
-                        .supports_queues(&map)
-                    });
+                let senate_queues_fit = SenatePolicy::ALL.map(|policy| {
+                    SenateSupport {
+                        policy,
+                        ..senate
+                    }
+                    .supports_queues(&map)
+                });
                 let planet = map.get_mut(id);
 
                 if player.owns(planet) || (planet.is_moon() && player.controls(planet)) {
@@ -6531,3 +6667,7 @@ pub fn draw_ui(
 #[cfg(test)]
 #[path = "../../../tests/core/ui_systems.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/core/ui_report_counts.rs"]
+mod report_count_tests;

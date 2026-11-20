@@ -16,16 +16,24 @@ use strum_macros::EnumIter;
 
 use crate::core::combat::plan::BattlePlan;
 use crate::core::combat::report::combat_fleet_strength;
-use crate::core::constants::{PHALANX_DISTANCE, RADAR_DISTANCE, REACTOR_FUEL_REDUCTION_FACTOR};
+use crate::core::constants::{
+    DEEP_COVER_DEUTERIUM_PER_PROBE, PHALANX_DISTANCE, RADAR_DISTANCE, REACTOR_FUEL_REDUCTION_FACTOR,
+};
+use crate::core::expeditions::Expedition;
 use crate::core::identity::PlayerId;
+use crate::core::interception::Intercept;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::patrols::{Patrol, PatrolPhase};
 use crate::core::player::Player;
+use crate::core::raids::cargo_capacity;
 use crate::core::resources::Resources;
+use crate::core::sabotage::Sabotage;
+use crate::core::simulation::JointAttackContribution;
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Army, Combat, Description, Unit};
+use crate::serialization::required_option;
 use crate::utils::NameFromEnum;
 
 /// Stable identifier of a persisted fleet mission.
@@ -111,7 +119,7 @@ pub struct JointMissionLaunch {
     /// Stable invitation identifier.
     pub attack_id: u64,
     /// Accepted contributions with the inviter first.
-    pub contributions: Vec<crate::core::simulation::JointAttackContribution>,
+    pub contributions: Vec<JointAttackContribution>,
 }
 
 impl SendMissionMsg {
@@ -204,21 +212,27 @@ pub struct Mission {
     /// Stable planet from which the fleet was dispatched.
     pub origin: PlanetId,
     /// Owner of the origin when the mission was dispatched.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub origin_owned: Option<PlayerId>,
     /// Controller of the origin when the mission was dispatched.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub origin_controlled: Option<PlayerId>,
     /// Origin army snapshot used by later intelligence reports.
     pub origin_army: Army,
     /// Destination world, or the return world while a patrol targets its space coordinate.
     pub destination: PlanetId,
     /// Space destination and lifecycle for a patrol; ordinary missions have no patrol state.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub patrol: Option<Patrol>,
     /// Fixed rendezvous and return lifecycle of a targeted space interception.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
-    pub intercept: Option<crate::core::interception::Intercept>,
+    #[serde(deserialize_with = "required_option")]
+    pub intercept: Option<Intercept>,
+    /// Fixed exploration coordinate, travel phase, and uncredited discovery cargo.
+    #[serde(deserialize_with = "required_option")]
+    pub expedition: Option<Expedition>,
+    /// Chosen orbital target and eventual sabotage result; other objectives carry no target.
+    #[serde(deserialize_with = "required_option")]
+    pub sabotage: Option<Sabotage>,
     /// Turn on which the mission was dispatched.
     pub send: usize,
     /// Completed movement turns on this leg; acceleration resets on a new leg.
@@ -228,10 +242,10 @@ pub struct Mission {
     /// Strategic objective applied on arrival.
     pub objective: Icon,
     /// Controller whose permission this Protect mission relies on.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub protected_player: Option<PlayerId>,
     /// Original objective whose silhouette is retained while a mission returns home.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub return_objective: Option<Icon>,
     /// Units stationed on this world or travelling with this mission.
     pub army: Army,
@@ -245,7 +259,7 @@ pub struct Mission {
     pub battle_plan: BattlePlan,
     /// Source identities and departure orders used to choose the strongest arriving fleet.
     pub battle_fleets: Vec<BattleFleet>,
-    /// Whether this Spy mission attempts to bypass combat using the origin's Command Relay.
+    /// Whether this Spy or Sabotage mission attempts to bypass combat using the origin's Command Relay.
     pub deep_cover: bool,
     /// Jump-gate capacity consumed during the current turn.
     pub jump_gate: bool,
@@ -486,6 +500,8 @@ impl Mission {
             destination: destination.id,
             patrol: None,
             intercept: None,
+            expedition: None,
+            sabotage: None,
             send: turn,
             travel_turns: 0,
             position: {
@@ -519,6 +535,19 @@ impl Mission {
         destination: &Planet,
         mission: &Mission,
     ) -> Self {
+        if mission.objective == Icon::Expedition {
+            if let Some(expedition) = &mission.expedition {
+                return Self::new_expedition(
+                    mission.id.max(1),
+                    turn,
+                    owner,
+                    origin,
+                    expedition.center,
+                    mission.army.clone(),
+                )
+                .with_battle_plan(mission.battle_plan);
+            }
+        }
         if mission.objective == Icon::Intercept {
             let mut rebuilt = mission.clone();
             rebuilt.owner = owner;
@@ -572,10 +601,11 @@ impl Mission {
             None,
         )
         .with_deep_cover(mission.deep_cover)
+        .with_sabotage_target(mission.sabotage.map(|sabotage| sabotage.target))
         .with_battle_plan(mission.battle_plan)
     }
 
-    /// Selects Deep Cover; launch validation requires a Spy mission and an origin Command Relay.
+    /// Selects Deep Cover; launch validation requires a probe mission and an origin Command Relay.
     pub fn with_deep_cover(mut self, enabled: bool) -> Self {
         self.deep_cover = enabled;
         self
@@ -593,7 +623,7 @@ impl Mission {
             .as_ref()
             .and_then(|attack| attack.attackers.get(&player.id))
             .unwrap_or(&self.army);
-        if image_objective == Icon::Colonize {
+        if matches!(image_objective, Icon::Colonize | Icon::Expedition) {
             "mission colonize"
         } else if visible_army.amount(&Unit::war_sun()) > 0
             || self.return_objective == Some(Icon::Destroy)
@@ -601,7 +631,7 @@ impl Mission {
             "mission destroy"
         } else if image_objective == Icon::MissileStrike {
             "mission missile"
-        } else if image_objective == Icon::Spy {
+        } else if image_objective.is_probe_mission() {
             "mission spy"
         } else {
             "mission"
@@ -613,7 +643,7 @@ impl Mission {
     /// Hostile objectives stay concealed behind the generic enemy-fleet marker. Joint-attack
     /// participants know the shared objective once another contingent becomes visible to them,
     /// and a protection target sees Protect. A visible patrol's deep-space destination exposes
-    /// Patrol even while outbound. Returning travel legs keep their objective concealed.
+    /// Patrol even while outbound. Returning fleets display their original objective to their owner.
     #[cfg(feature = "app")]
     pub(crate) fn displayed_objective(&self, player_id: PlayerId) -> Icon {
         if self.owner == player_id
@@ -621,7 +651,7 @@ impl Mission {
             || self.is_incoming_protection_for(player_id)
             || self.objective == Icon::Patrol
         {
-            self.objective
+            self.return_objective.unwrap_or(self.objective)
         } else {
             Icon::EnemyFleet
         }
@@ -679,7 +709,7 @@ impl Mission {
         map: &Map,
         player_id: PlayerId,
     ) -> bool {
-        if self.patrol.is_some() || self.intercept.is_some() {
+        if self.patrol.is_some() || self.intercept.is_some() || self.expedition.is_some() {
             return false;
         }
         self.origin_owned != Some(player_id)
@@ -692,6 +722,10 @@ impl Mission {
     /// Starts a free return leg from the fleet's exact current position to its original world.
     pub(crate) fn recall(&mut self, map: &Map, turn: usize) {
         debug_assert!(!self.is_returning());
+        if self.expedition.is_some() {
+            self.return_expedition(map, turn);
+            return;
+        }
         if self.intercept.is_some() {
             self.return_intercept(map, turn);
             return;
@@ -737,7 +771,7 @@ impl Mission {
         protection_is_valid
             && (self.raid_cargo.is_empty()
                 || (self.return_objective == Some(Icon::Raid)
-                    && self.raid_cargo.total() <= crate::core::raids::cargo_capacity(&self.army)))
+                    && self.raid_cargo.total() <= cargo_capacity(&self.army)))
             && self.return_objective.is_none_or(|objective| {
                 objective.is_mission()
                     && matches!(self.objective, Icon::Deploy | Icon::Attack | Icon::Protect)
@@ -762,6 +796,7 @@ impl Mission {
     /// Returns remaining world-space distance from the mission to its destination.
     pub fn distance(&self, map: &Map) -> f32 {
         if self.objective == Icon::Intercept
+            || self.objective == Icon::Expedition
             || self.patrol.as_ref().is_some_and(|patrol| patrol.phase != PatrolPhase::Returning)
         {
             return self.position.distance(self.target_position(map)) / Planet::SIZE;
@@ -792,10 +827,8 @@ impl Mission {
 
     /// Returns the Deep Cover surcharge paid at launch, including on unsuccessful attempts.
     pub fn deep_cover_cost(&self) -> usize {
-        if self.deep_cover && self.objective == Icon::Spy {
-            self.army
-                .amount(&Unit::probe())
-                .saturating_mul(crate::core::constants::DEEP_COVER_DEUTERIUM_PER_PROBE)
+        if self.deep_cover && self.objective.is_probe_mission() {
+            self.army.amount(&Unit::probe()).saturating_mul(DEEP_COVER_DEUTERIUM_PER_PROBE)
         } else {
             0
         }
@@ -1016,7 +1049,7 @@ impl Mission {
             .flatten()
             .filter_map(|id| {
                 let planet = map.get(id);
-                let phalanx = planet.army.amount(&Unit::Building(Building::SensorPhalanx));
+                let phalanx = planet.operational_level(Building::SensorPhalanx);
                 (player.owns(planet)
                     && phalanx > 0
                     && PHALANX_DISTANCE * phalanx as f32 * Planet::SIZE + planet.size() * 0.5

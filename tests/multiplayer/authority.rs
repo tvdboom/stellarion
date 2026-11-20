@@ -1,11 +1,15 @@
+use futures_lite::future::block_on;
+
+use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
 use crate::core::identity::GameCode;
 use crate::core::simulation::{GameModel, GameRules, PersistedGame, TurnCommand, TurnSubmission};
 use crate::core::units::{Amount, Unit};
 use crate::multiplayer::authority::resolved_snapshot;
 use crate::multiplayer::backend::{BackendError, MultiplayerBackend, TurnSubmissionScope};
 use crate::multiplayer::memory::InMemoryBackend;
-use crate::multiplayer::model::{AuthSession, CreateGameRequest, GameRecord, JoinGameRequest};
-use futures_lite::future::block_on;
+use crate::multiplayer::model::{
+    AuthSession, CreateGameRequest, GameRecord, JoinGameRequest, SubmissionDisposition,
+};
 
 fn started() -> (InMemoryBackend, AuthSession, AuthSession, GameRecord) {
     let backend = InMemoryBackend::new();
@@ -107,8 +111,6 @@ fn online_game_accepts_and_replays_the_testing_boost() {
 
 #[test]
 fn battle_orders_require_ownership_and_survive_authoritative_resolution() {
-    use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
-
     let (backend, host, guest, active) = started();
     let home = active.persisted.state.players[0].home_planet;
     let enemy_home = active.persisted.state.players[1].home_planet;
@@ -263,7 +265,7 @@ fn continuing_preserves_orders_and_requires_every_player_to_finish_again() {
     block_on(backend.submit_turn(&host, &active.id, draft.clone())).unwrap();
     assert_eq!(
         block_on(backend.submit_turn(&host, &active.id, draft.clone())).unwrap(),
-        crate::multiplayer::model::SubmissionDisposition::Duplicate
+        SubmissionDisposition::Duplicate
     );
     assert!(matches!(
         block_on(backend.withdraw_turn(&host, &active.id, 1, 1)),

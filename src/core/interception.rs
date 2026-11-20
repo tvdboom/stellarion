@@ -6,13 +6,16 @@ use bevy::prelude::Vec2;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+use crate::core::combat::report::MissionReport;
+use crate::core::combat::resolution::resolve_combat_with_rng;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission, MissionId};
-use crate::core::patrols::{encounter_site, install_survivors, return_port};
+use crate::core::patrols::{encounter_site, install_survivors, return_port, PatrolPhase};
 use crate::core::player::Player;
+use crate::core::raids::surviving_cargo;
 use crate::core::simulation::GameModel;
 use crate::core::units::{Amount, Army, Unit};
 
@@ -97,10 +100,12 @@ impl Mission {
         for step in 1..=horizon {
             let start = projected.position;
             let end = projected.next_turn_position(map);
-            let space_destination = projected.objective == Icon::Intercept
-                || projected.patrol.as_ref().is_some_and(|patrol| {
-                    patrol.phase != crate::core::patrols::PatrolPhase::Returning
-                });
+            let space_destination =
+                matches!(projected.objective, Icon::Intercept | Icon::Expedition)
+                    || projected
+                        .patrol
+                        .as_ref()
+                        .is_some_and(|patrol| patrol.phase != PatrolPhase::Returning);
             let max_fraction = if space_destination {
                 1.0
             } else {
@@ -166,6 +171,7 @@ impl Mission {
             && intercept.point.is_finite()
             && map.rect.contains(intercept.point)
             && self.patrol.is_none()
+            && self.expedition.is_none()
             && !self.jump_gate
             && !self.deep_cover
             && self.joint_attack.is_none()
@@ -326,9 +332,7 @@ pub(crate) fn resolve_interceptions<R: Rng + ?Sized>(
             completed.advance(&model.map);
             let site =
                 encounter_site(model, &target, &[target.id], intercept.point, attacker.destination);
-            let mut report = crate::core::combat::resolution::resolve_combat_with_rng(
-                turn, &attacker, &site, rng,
-            );
+            let mut report = resolve_combat_with_rng(turn, &attacker, &site, rng);
             report.planet_colonized = false;
             report.planet_destroyed = false;
             report.destination_owned = None;
@@ -341,8 +345,7 @@ pub(crate) fn resolve_interceptions<R: Rng + ?Sized>(
             if let Some(survivor) =
                 model.missions.iter_mut().find(|mission| mission.id == target.id)
             {
-                survivor.raid_cargo =
-                    crate::core::raids::surviving_cargo(survivor.raid_cargo, &survivor.army, rng);
+                survivor.raid_cargo = surviving_cargo(survivor.raid_cargo, &survivor.army, rng);
                 // Keep this turn's original movement even when combat destroys the slowest
                 // ship. Normal arrival handling still runs for a final-approach survivor.
                 survivor.position = completed.position;
@@ -370,7 +373,7 @@ pub(crate) fn resolve_interceptions<R: Rng + ?Sized>(
                 encounter_site(model, &attacker, &[], attacker.position, attacker.destination);
             site.controlled = None;
             site.name = "No contact at rendezvous".to_owned();
-            let report = crate::core::combat::report::MissionReport {
+            let report = MissionReport {
                 id: rand::RngExt::random(rng),
                 turn,
                 mission: attacker.clone(),

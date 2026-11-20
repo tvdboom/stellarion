@@ -9,6 +9,7 @@ use crate::core::map::planet::Planet;
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::units::buildings::Building;
 use crate::core::units::Unit;
+use crate::serialization::required_option;
 
 /// Player-selectable operating mode for one mine or synthesizer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -213,7 +214,7 @@ pub struct BuildingOperations {
     /// Metal, Crystal, and Deuterium extraction, in that order.
     pub mines: [MineOperation; 3],
     /// `None` recovers the complete bulk haul; a selection recovers only that resource.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub recycler_focus: Option<ResourceName>,
     /// Current Space Dock specialization; Industrial is the initial setting.
     pub space_dock: SpaceDockMode,

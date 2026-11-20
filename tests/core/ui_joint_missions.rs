@@ -1,5 +1,9 @@
 use super::*;
-use crate::core::simulation::{GameModel, GameRules};
+
+use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
+use crate::core::identity::{GameCode, GameId, UserId};
+use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+use crate::multiplayer::model::{GameMembership, GameRecord};
 
 #[path = "ui_notifications.rs"]
 mod notifications;
@@ -124,7 +128,6 @@ fn fixture() -> (GameModel, Player, UiState, JointAttackInvitation) {
 
 #[test]
 fn restoring_joint_owner_draft_preserves_its_independent_battle_plan() {
-    use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture};
     let (_, _, mut state, mut invitation) = fixture();
     let contribution = invitation.participants[0].contribution.as_mut().unwrap();
     contribution.battle_plan = BattlePlan {
@@ -148,9 +151,6 @@ fn restoring_joint_owner_draft_preserves_its_independent_battle_plan() {
 }
 
 fn session_for_model(model: &GameModel) -> MultiplayerSession {
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::{GameMembership, GameRecord};
     let members = model
         .players
         .iter()
@@ -2984,9 +2984,6 @@ fn invited_player_cannot_change_the_shared_target_or_objective() {
 #[test]
 #[ignore = "requires a GPU; renders the allied mission panels into target/ui-joint"]
 fn render_joint_mission_panels() {
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::{GameMembership, GameRecord};
     use bevy::app::AppExit;
     use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
     use bevy::winit::{WinitPlugin, WinitSettings};
@@ -3026,7 +3023,7 @@ fn render_joint_mission_panels() {
         revision: 0,
         saved_at: 0,
         max_players: 3,
-        status: crate::core::simulation::MatchStatus::Active,
+        status: MatchStatus::Active,
         persisted: PersistedGame::new(model.clone()),
         members,
         submitted_players: vec![],
@@ -3107,17 +3104,13 @@ fn render_joint_mission_panels() {
                     ["panel", "button", "button hover", "battle plan", "fleet"].map(str::to_owned),
                 );
                 keys.extend(
-                    crate::core::combat::plan::CombatTactic::ALL
-                        .into_iter()
-                        .map(|tactic| tactic.image_key().to_owned()),
+                    CombatTactic::ALL.into_iter().map(|tactic| tactic.image_key().to_owned()),
                 );
                 keys.extend(
-                    crate::core::combat::plan::TargetPriority::ALL
-                        .into_iter()
-                        .map(|priority| priority.image_key().to_owned()),
+                    TargetPriority::ALL.into_iter().map(|priority| priority.image_key().to_owned()),
                 );
                 keys.extend(
-                    crate::core::combat::plan::ProtectionPosture::ALL
+                    ProtectionPosture::ALL
                         .into_iter()
                         .map(|posture| posture.image_key().to_owned()),
                 );

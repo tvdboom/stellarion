@@ -1,5 +1,7 @@
 use super::*;
+
 use crate::core::combat::plan::CombatTactic;
+use crate::core::map::planet::Garrison;
 
 #[test]
 fn mission_source_changes_inherit_standing_orders_without_resetting_draft_edits() {
@@ -28,10 +30,8 @@ fn standing_plan_editing_only_exposes_the_viewers_own_force() {
     planet.controlled = Some(1);
     let controller = Army::from([(Unit::Ship(Ship::Dreadnought), 3)]);
     let protector = Army::from([(Unit::Ship(Ship::LightFighter), 12)]);
-    planet.army = crate::core::map::planet::Garrison::from_parts(
-        controller.clone(),
-        BTreeMap::from([(2, protector.clone())]),
-    );
+    planet.army =
+        Garrison::from_parts(controller.clone(), BTreeMap::from([(2, protector.clone())]));
     assert_eq!(commandable_garrison(&planet, &Player::new(1, 0)), Some(&controller));
     assert_eq!(commandable_garrison(&planet, &Player::new(2, 1)), Some(&protector));
     assert!(commandable_garrison(&planet, &Player::new(3, 2)).is_none());
@@ -85,7 +85,7 @@ fn planet_header_edits_our_own_force_on_our_world_or_a_friendly_world() {
         if host == 1 {
             planet.army = ours.into();
         } else {
-            planet.army = crate::core::map::planet::Garrison::from_parts(
+            planet.army = Garrison::from_parts(
                 Army::from([(Unit::Ship(Ship::Battleship), 10)]),
                 BTreeMap::from([(1, ours)]),
             );

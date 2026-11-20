@@ -20,6 +20,7 @@ pub use crate::core::combat::effects::{
 };
 use crate::core::combat::effects::{Cinematic, PendingImpact, Wreck, DEATH_RAY_DURATION};
 use crate::core::combat::identity_ui::{show_identity_tooltip, CombatIdentityPlan};
+use crate::core::combat::plan::{BattlePlan, CombatTactic};
 use crate::core::combat::playback::{CombatCardHome, CombatLayoutSnapshot, CombatRoundJump};
 use crate::core::combat::report::{
     combat_fleet_strength, combat_strength_ranges, CombatReport, DefenderRetreat, MissionReport,
@@ -39,6 +40,7 @@ use crate::core::menu::systems::MenuBackground;
 use crate::core::menu::utils::{add_root_node, add_text};
 use crate::core::missions::BombingRaid;
 use crate::core::player::Player;
+use crate::core::raids::ship_cargo_capacity;
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::settings::Settings;
 use crate::core::states::{CombatState, GameState};
@@ -1111,12 +1113,14 @@ pub(super) fn combat_identity_participants(
     side: &Side,
     session: &MultiplayerSession,
 ) -> Vec<(String, Color, u128)> {
-    if *side == Side::Defender && report.is_space_fauna_encounter() {
-        return vec![(
-            report.planet.name.clone(),
-            Color::srgb_u8(190, 198, 210),
-            combat_fleet_strength(&report.planet.army.combined()),
-        )];
+    if *side == Side::Defender {
+        if let Some(name) = report.space_fauna_name() {
+            return vec![(
+                name.to_owned(),
+                Color::srgb_u8(190, 198, 210),
+                combat_fleet_strength(&report.planet.army.combined()),
+            )];
+        }
     }
     let players = match side {
         Side::Attacker => report.attacker_players(),
@@ -1158,7 +1162,7 @@ pub(super) fn combat_identity_plans(
         .filter_map(|(owner, plan, _)| {
             owner?;
             let affinity = opening_affinities.get(&owner).copied().unwrap_or(0);
-            let damage_bonuses = crate::core::combat::plan::CombatTactic::ALL
+            let damage_bonuses = CombatTactic::ALL
                 .into_iter()
                 .filter(|tactic| {
                     opponents
@@ -1180,7 +1184,7 @@ fn combat_identity_forces(
     report: &MissionReport,
     side: &Side,
     round_index: usize,
-) -> Vec<(Option<PlayerId>, crate::core::combat::plan::BattlePlan, Army)> {
+) -> Vec<(Option<PlayerId>, BattlePlan, Army)> {
     let Some(round) =
         report.combat_report.as_ref().and_then(|combat| combat.rounds.get(round_index))
     else {
@@ -3898,9 +3902,7 @@ pub fn animate_combat(
             }
             let weights = sources
                 .iter()
-                .map(|(_, _, unit, count, _)| {
-                    crate::core::raids::ship_cargo_capacity(*unit).saturating_mul(*count)
-                })
+                .map(|(_, _, unit, count, _)| ship_cargo_capacity(*unit).saturating_mul(*count))
                 .collect::<Vec<_>>();
             let gains = if raiding {
                 super::rewards::resource_shares(salvage, &weights)

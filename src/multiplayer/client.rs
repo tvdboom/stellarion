@@ -14,34 +14,41 @@ use bevy::tasks::{IoTaskPool, Task};
 use futures_lite::future::{block_on, poll_once};
 use rand::RngExt;
 
-use crate::core::identity::{GameCode, GameId};
-use crate::core::messages::{MessageAction, MessageMsg};
+pub(crate) use submission::COMMAND_LIMIT_REACHED_MESSAGE;
+pub use submission::{PendingTurnCommands, SubmissionState};
+
+use crate::core::identity::{GameCode, GameId, PlayerId};
+use crate::core::map::icon::Icon;
+use crate::core::messages::{MessageAction, MessageLevel, MessageMsg};
 use crate::core::player::PlayerColor;
+use crate::core::resources::Resources;
+use crate::core::settings::Settings;
 use crate::core::simulation::{
-    resolved_turn, set_protection_permission_immediately, GameModel, GameRules, MatchStatus,
-    PersistedGame, TurnCommand, TurnSubmission,
+    preview_commands_with_allied_launches, resolved_turn, set_protection_permission_immediately,
+    GameError, GameModel, GameRules, JointAttackContribution, MatchStatus, PersistedGame,
+    TurnCommand, TurnSubmission,
 };
 use crate::core::states::AppState;
 use crate::core::units::Amount;
+use crate::core::ChangeAudioMsg;
 use crate::multiplayer::authority::started_snapshot_for_members;
 use crate::multiplayer::backend::{BackendError, MultiplayerBackend, TurnSubmissionScope};
 use crate::multiplayer::memory::InMemoryBackend;
-use crate::multiplayer::model::GamePreferences;
 use crate::multiplayer::model::{
-    AuthSession, BackendEventKind, CreateGameRequest, EventBatch, GameMembership, GameRecord,
-    GameSummary, JoinDisposition, JoinGameRequest, MembershipResult, ProtectionPermissionUpdate,
-    RecoverPlayerRequest, SaveAcknowledgement, TradeInvitation, TradeResponse,
+    AuthSession, BackendEventKind, CreateGameRequest, EventBatch, GameMembership, GamePreferences,
+    GameRecord, GameSummary, GameSync, JoinDisposition, JoinGameRequest, JointAttackInvitation,
+    JointAttackResponse, MembershipResult, ProtectionPermissionUpdate, RecoverPlayerRequest,
+    SaveAcknowledgement, StoredTurnSubmission, TradeInvitation, TradeResponse,
 };
 use crate::multiplayer::realtime::{RealtimeSignal, SupabaseRealtimeClient};
 use crate::multiplayer::recovery::{generate_game_code, RecoveryCode};
 use crate::multiplayer::supabase::SupabaseBackend;
 use crate::platform::config::{ConfigError, SupabaseConfig};
-use crate::platform::storage::{load_profile, ClientProfile, ClientStorage, MemoryStorage};
-
 #[cfg(target_arch = "wasm32")]
 use crate::platform::storage::BrowserStorage;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::storage::NativeStorage;
+use crate::platform::storage::{load_profile, ClientProfile, ClientStorage, MemoryStorage};
 
 /// Current user-facing transport condition.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -169,7 +176,7 @@ pub struct MultiplayerSession {
     /// Latest persisted record for the selected game.
     pub active_game: Option<GameRecord>,
     /// Private current-turn coordinated attacks involving the selected player.
-    pub joint_attacks: Vec<crate::multiplayer::model::JointAttackInvitation>,
+    pub joint_attacks: Vec<JointAttackInvitation>,
     /// Private current-turn Trading Post negotiations involving the selected player.
     pub trades: Vec<TradeInvitation>,
     /// Stable slot for the current identity in the selected game.
@@ -192,7 +199,7 @@ pub struct MultiplayerSession {
     practice_turn_requested: bool,
     /// Saved per-empire shortcut counts needed to project cross-player practice launches.
     #[cfg(debug_assertions)]
-    practice_boosts: BTreeMap<crate::core::identity::PlayerId, usize>,
+    practice_boosts: BTreeMap<PlayerId, usize>,
     /// Whether a foreground menu operation is still running.
     pub busy: bool,
     /// Whether one compact protection patch is still in flight.
@@ -223,7 +230,7 @@ impl MultiplayerSession {
     /// Keeps debug Local Practice projections aligned with the selected empire's live draft.
     pub(crate) fn sync_local_practice_boosts(
         &mut self,
-        player_id: crate::core::identity::PlayerId,
+        player_id: PlayerId,
         pending: &PendingTurnCommands,
     ) {
         #[cfg(debug_assertions)]
@@ -259,10 +266,10 @@ impl MultiplayerSession {
     /// Includes frozen allied launches in every participant's current-turn projection.
     pub(crate) fn preview_commands(
         &self,
-        state: &crate::core::simulation::GameModel,
-        player_id: crate::core::identity::PlayerId,
+        state: &GameModel,
+        player_id: PlayerId,
         commands: &[TurnCommand],
-    ) -> Result<crate::core::simulation::GameModel, crate::core::simulation::GameError> {
+    ) -> Result<GameModel, GameError> {
         let launches = self
             .joint_attacks
             .iter()
@@ -286,8 +293,7 @@ impl MultiplayerSession {
                             .participants
                             .iter()
                             .filter(|participant| {
-                                participant.response
-                                    == crate::multiplayer::model::JointAttackResponse::Accepted
+                                participant.response == JointAttackResponse::Accepted
                             })
                             .filter_map(|participant| participant.contribution.clone())
                             .collect(),
@@ -299,7 +305,7 @@ impl MultiplayerSession {
         let practice_boosts = self.local_practice.then_some(&self.practice_boosts);
         #[cfg(not(debug_assertions))]
         let practice_boosts = None;
-        crate::core::simulation::preview_commands_with_allied_launches(
+        preview_commands_with_allied_launches(
             state,
             player_id,
             commands,
@@ -319,8 +325,7 @@ impl MultiplayerSession {
                             && invitation.inviter != member.player_id
                             && invitation.participants.iter().any(|participant| {
                                 participant.player_id == member.player_id
-                                    && participant.response
-                                        != crate::multiplayer::model::JointAttackResponse::Rejected
+                                    && participant.response != JointAttackResponse::Rejected
                             })
                     }) || self.joint_attack_update_pending))
                     || self.trades.iter().any(|trade| {
@@ -436,8 +441,6 @@ impl MultiplayerSession {
 
 mod profile;
 mod submission;
-pub(crate) use submission::COMMAND_LIMIT_REACHED_MESSAGE;
-pub use submission::{PendingTurnCommands, SubmissionState};
 
 /// Foreground operations requested by menu buttons or gameplay UI.
 #[derive(Message)]
@@ -450,7 +453,7 @@ pub enum MultiplayerRequest {
     },
     /// Changes which local-practice empire is projected and accepts commands.
     #[cfg(debug_assertions)]
-    SwitchLocalPracticePlayer(crate::core::identity::PlayerId),
+    SwitchLocalPracticePlayer(PlayerId),
     /// Submits every local-practice draft and resolves the simultaneous turn.
     #[cfg(debug_assertions)]
     AdvanceLocalPracticeTurn,
@@ -490,12 +493,12 @@ pub enum MultiplayerRequest {
         /// World controlled by the current player.
         planet_id: usize,
         /// Foreign player receiving or losing access.
-        protector: crate::core::identity::PlayerId,
+        protector: PlayerId,
         /// Whether access is enabled.
         allowed: bool,
     },
     /// Creates or revises a private allied mission in the open mission editor.
-    CreateJointAttack(crate::multiplayer::model::JointAttackInvitation),
+    CreateJointAttack(JointAttackInvitation),
     /// Publishes a pending fleet, accepts it, or rejects an invitation.
     RespondJointAttack {
         /// Owner's proposal version currently displayed to the responding player.
@@ -503,9 +506,9 @@ pub enum MultiplayerRequest {
         /// Stable invitation identifier.
         attack_id: u64,
         /// New response state.
-        response: crate::multiplayer::model::JointAttackResponse,
+        response: JointAttackResponse,
         /// Fleet and independent combat orders supplied for drafts and acceptance.
-        contribution: Option<crate::core::simulation::JointAttackContribution>,
+        contribution: Option<JointAttackContribution>,
     },
     /// Cancels an invitation before its inviter launches the allied mission.
     CancelJointAttack {
@@ -530,7 +533,7 @@ pub enum MultiplayerRequest {
         /// Offer version shown when the local player made this choice.
         expected_revision: u64,
         /// Resources offered by the current player.
-        resources: crate::core::resources::Resources,
+        resources: Resources,
         /// Pending resource edit, acceptance, or rejection of the latest draft.
         response: TradeResponse,
     },
@@ -669,20 +672,17 @@ enum BackendOutput {
     Record(Operation, GameRecord),
     Saved(SaveAcknowledgement),
     ProtectionChanged(ProtectionPermissionUpdate),
-    JointAttackChanged(crate::multiplayer::model::JointAttackInvitation),
-    JointAttacksLoaded(Vec<crate::multiplayer::model::JointAttackInvitation>),
-    JointMissionPublished(
-        SaveAcknowledgement,
-        Vec<crate::multiplayer::model::JointAttackInvitation>,
-    ),
+    JointAttackChanged(JointAttackInvitation),
+    JointAttacksLoaded(Vec<JointAttackInvitation>),
+    JointMissionPublished(SaveAcknowledgement, Vec<JointAttackInvitation>),
     TradeChanged(TradeInvitation),
     TradesLoaded(Vec<TradeInvitation>),
     Resumed,
     Submitted(u64),
     Withdrawn(TurnSubmission),
-    DraftLoaded(u64, Option<crate::multiplayer::model::StoredTurnSubmission>),
+    DraftLoaded(u64, Option<StoredTurnSubmission>),
     Events(EventBatch),
-    Synced(crate::multiplayer::model::GameSync),
+    Synced(GameSync),
     ResolutionWaiting,
     SessionRefreshed(AuthSession),
     Reauthenticated(AuthSession),
@@ -979,7 +979,7 @@ fn local_practice_submissions(
 pub(crate) async fn close_local_practice_negotiations(
     backend: &dyn MultiplayerBackend,
     game_id: &GameId,
-    players: &[(AuthSession, crate::core::identity::PlayerId)],
+    players: &[(AuthSession, PlayerId)],
     submissions: &[(AuthSession, TurnSubmission)],
 ) -> Result<(), BackendError> {
     for (auth, player_id) in players {
@@ -1083,7 +1083,7 @@ fn process_requests(
     mut pending: ResMut<PendingTurnCommands>,
     mut form: ResMut<MultiplayerForm>,
     mut tasks: ResMut<BackendTasks>,
-    settings: Option<Res<crate::core::settings::Settings>>,
+    settings: Option<Res<Settings>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     #[cfg(not(debug_assertions))]
@@ -1919,7 +1919,7 @@ fn operation_notification(
         ) => Some(MessageMsg::error(format!("Could not end turn: {error}"))),
         _ => None,
     }?;
-    if notification.level == crate::core::messages::MessageLevel::Error {
+    if notification.level == MessageLevel::Error {
         notification.message = session.error_with_player_names(&notification.message);
     }
     Some(notification)
@@ -2038,7 +2038,7 @@ fn player_presence_notifications(
     let (game_id, status, members) = match output {
         BackendOutput::Record(_, next) => (&next.id, next.status, next.members.as_slice()),
         BackendOutput::Presence(members)
-        | BackendOutput::Synced(crate::multiplayer::model::GameSync {
+        | BackendOutput::Synced(GameSync {
             members: Some(members),
             ..
         }) => {
@@ -2093,8 +2093,8 @@ fn poll_backend_tasks(
     app_state: Res<State<AppState>>,
     mut refresh_gameplay: MessageWriter<RefreshGameplayProjection>,
     mut refresh_draft: MessageWriter<RefreshTurnDraft>,
-    mut settings: Option<ResMut<crate::core::settings::Settings>>,
-    mut change_audio: Option<ResMut<Messages<crate::core::ChangeAudioMsg>>>,
+    mut settings: Option<ResMut<Settings>>,
+    mut change_audio: Option<ResMut<Messages<ChangeAudioMsg>>>,
     mut messages: MessageWriter<MessageMsg>,
 ) {
     let mut remaining = Vec::with_capacity(tasks.0.len());
@@ -2113,7 +2113,7 @@ fn poll_backend_tasks(
                 settings.apply_game_preferences(preferences.clone());
                 if previous_audio != settings.audio {
                     if let Some(messages) = change_audio.as_deref_mut() {
-                        messages.write(crate::core::ChangeAudioMsg(Some(settings.audio)));
+                        messages.write(ChangeAudioMsg(Some(settings.audio)));
                     }
                 }
             }
@@ -2153,12 +2153,12 @@ fn poll_backend_tasks(
                 gameplay_visible,
             );
             if !revoked_targets.is_empty() {
-                let revoked = |command: &crate::core::simulation::TurnCommand| {
+                let revoked = |command: &TurnCommand| {
                     matches!(
                         command,
-                        crate::core::simulation::TurnCommand::SendMission {
+                        TurnCommand::SendMission {
                             destination,
-                            objective: crate::core::map::icon::Icon::Protect,
+                            objective: Icon::Protect,
                             ..
                         } if revoked_targets.contains(destination)
                     )
@@ -3397,7 +3397,7 @@ fn drive_resolution(
     else {
         return;
     };
-    if record.status != crate::core::simulation::MatchStatus::Active {
+    if record.status != MatchStatus::Active {
         session.resolve_needed = false;
         return;
     }

@@ -1,7 +1,9 @@
 use super::*;
+
 use crate::core::combat::report::{CombatReport, RoundReport};
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::missions::Mission;
+use crate::test_support::empty_report;
 
 #[test]
 fn atmosphere_mesh_has_uniform_opacity_at_each_radius() {
@@ -82,7 +84,7 @@ fn surface_damage_requires_recorded_hits_and_is_fixed_seekable_and_absent_on_gas
 #[test]
 fn mixed_defense_footprints_fit_the_surface_without_overlapping_their_neighbors() {
     for count in [1, 7, 34, 150, 600] {
-        let mut report = crate::test_support::empty_report(
+        let mut report = empty_report(
             Mission::default(),
             Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
         );
@@ -136,7 +138,7 @@ fn mixed_defense_footprints_fit_the_surface_without_overlapping_their_neighbors(
 fn support_vehicles_have_separate_homes_and_crawler_patrol_lanes() {
     // The three-unit case previously left the truck directly underneath the relocated gun.
     for count in [3, 11, 34, 150] {
-        let mut report = crate::test_support::empty_report(
+        let mut report = empty_report(
             Mission::default(),
             Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
         );

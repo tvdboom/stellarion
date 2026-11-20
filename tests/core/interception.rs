@@ -1,12 +1,16 @@
 use super::*;
+use rand::SeedableRng;
+
 use crate::core::combat::report::Side;
-use crate::core::map::planet::PlanetId;
+use crate::core::map::planet::{Planet, PlanetId};
+use crate::core::missions::{FleetCombatOrders, JointAttackMission};
 use crate::core::resources::Resources;
 use crate::core::simulation::{
     preview_commands, resolve_turn, GameRules, PersistedGame, TurnCommand, TurnSubmission,
 };
-use crate::core::units::{buildings::Building, ships::Ship};
-use rand::SeedableRng;
+use crate::core::units::buildings::Building;
+use crate::core::units::ships::Ship;
+use crate::test_support::empty_report;
 
 fn game(defender: PlayerId) -> (GameModel, PlanetId) {
     game_with_players(defender, 2)
@@ -134,10 +138,9 @@ fn spies_are_destroyed_before_arrival_without_planet_intel_and_the_interceptor_r
 
 #[test]
 fn interceptions_without_survivors_reveal_no_attackers_even_after_mutual_destruction() {
-    let mut site =
-        crate::core::map::planet::Planet::new(0, "Deep space".into(), Vec2::ZERO, false, 1.0);
+    let mut site = Planet::new(0, "Deep space".into(), Vec2::ZERO, false, 1.0);
     site.controlled = Some(2);
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission {
             owner: 1,
             ..Default::default()
@@ -523,7 +526,6 @@ fn final_approach_recalls_miss_and_changed_timing_never_retargets_the_ambush() {
 
 #[test]
 fn intercepted_allied_contingents_arrive_together_on_the_original_turn() {
-    use crate::core::missions::{FleetCombatOrders, JointAttackMission};
     use std::collections::BTreeMap;
 
     for remaining in [1, 2] {

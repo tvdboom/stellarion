@@ -1,13 +1,14 @@
 use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
+
 use crate::core::combat::plan::{BattlePlan, CombatTactic};
 use crate::core::identity::{GameCode, GameId};
 use crate::core::map::icon::Icon;
 use crate::core::messages::MessageLevel;
 use crate::core::simulation::{GameModel, GameRules, PersistedGame};
 use crate::core::systems::testing_boost_keys;
-use crate::multiplayer::client::SubmissionState;
+use crate::multiplayer::client::{MultiplayerRequest, SubmissionState};
 use crate::multiplayer::model::GameRecord;
 
 fn launched_mission_app(submission: SubmissionState) -> App {
@@ -65,7 +66,7 @@ fn launched_mission_app(submission: SubmissionState) -> App {
         .add_message::<MissionRecallAnimationMsg>()
         .add_message::<MessageMsg>()
         .add_message::<PlayAudioMsg>()
-        .add_message::<crate::multiplayer::client::MultiplayerRequest>();
+        .add_message::<MultiplayerRequest>();
     app.world_mut().write_message(SendMissionMsg::new(mission));
     app.world_mut().run_system_once(send_mission).unwrap();
     assert_eq!(app.world().resource::<Missions>().0.len(), 1);

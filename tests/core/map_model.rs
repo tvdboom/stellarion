@@ -2,7 +2,12 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use super::*;
+
+use crate::core::energy::EnergyGrid;
 use crate::core::map::planet::PlanetKind;
+use crate::core::units::buildings::Building;
+use crate::core::units::{Army, Unit};
+use Building::*;
 
 #[test]
 fn death_ray_size_modifier_is_shared_with_the_initial_war_sun_chance() {
@@ -22,9 +27,6 @@ fn death_ray_size_modifier_is_shared_with_the_initial_war_sun_chance() {
 
 #[test]
 fn empty_planet_colonization_starts_with_a_balanced_resource_grid() {
-    use crate::core::energy::EnergyGrid;
-    use crate::core::units::{buildings::Building, Army, Unit};
-
     let mut planet = Planet::new(1, "Colony".into(), Vec2::ZERO, false, 1.0);
     planet.colonize(7);
 
@@ -48,7 +50,6 @@ fn empty_planet_colonization_starts_with_a_balanced_resource_grid() {
 
 #[test]
 fn lunar_first_completions_survive_saves_and_upgrades() {
-    use crate::core::units::{buildings::Building, Unit};
     let mut moon = Planet::new(1, "Moon".into(), Vec2::ZERO, true, 1.0);
     moon.buy = vec![Unit::Building(Building::LunarBase), Unit::Building(Building::Shipyard)];
     assert_eq!(moon.surface_build_order, [None; 4]);
@@ -74,9 +75,6 @@ fn lunar_first_completions_survive_saves_and_upgrades() {
 
 #[test]
 fn planetary_surface_slots_follow_first_completion_and_never_repack() {
-    use crate::core::units::{buildings::Building, Unit};
-    use Building::*;
-
     let mut planet = Planet::new(1, "Planet".into(), Vec2::ZERO, false, 1.0);
     planet.buy = vec![Unit::Building(Terraformer)];
     planet.produce();

@@ -1,11 +1,13 @@
 use super::*;
+use bevy::math::Vec2;
+use proptest::prelude::*;
+use rand::{rngs::StdRng, SeedableRng};
+
 use crate::core::map::icon::Icon;
 use crate::core::missions::Mission;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
-use bevy::math::Vec2;
-use proptest::prelude::*;
-use rand::{rngs::StdRng, SeedableRng};
+use crate::test_support::empty_report;
 
 proptest! {
     #[test]
@@ -23,7 +25,8 @@ proptest! {
 
 #[test]
 fn raid_cargo_uses_ship_production_and_saturates() {
-    for unit in Unit::ships() {
+    assert_eq!(ship_cargo_capacity(Unit::colony_ship()), 200);
+    for unit in Unit::ships().into_iter().filter(|unit| *unit != Unit::colony_ship()) {
         assert_eq!(
             ship_cargo_capacity(unit),
             [0, 0, 10, 30, 70, 150][unit.production()],
@@ -39,7 +42,7 @@ fn raid_cargo_uses_ship_production_and_saturates() {
             (Unit::probe(), 1),
             (Unit::Defense(Defense::RocketLauncher), 500),
         ])),
-        310
+        500
     );
     assert_eq!(
         cargo_capacity(&Army::from([
@@ -78,19 +81,24 @@ fn raid_plunder_excludes_scouts_and_withholds_credit_until_delivery() {
         objective: Icon::Raid,
         ..Default::default()
     };
-    let mut report = crate::test_support::empty_report(mission, planet.clone());
-    report.surviving_attacker = Army::from([(Unit::Ship(Ship::Destroyer), 1), (Unit::probe(), 10)]);
+    let mut report = empty_report(mission, planet.clone());
+    report.surviving_attacker = Army::from([
+        (Unit::Ship(Ship::Destroyer), 1),
+        (Unit::colony_ship(), 1),
+        (Unit::probe(), 10),
+    ]);
     report.scout_probes = 10;
     let mut players = vec![Player::new(1, 0), Player::new(2, 1)];
     players[0].resources = Resources::new(usize::MAX - 3, usize::MAX, usize::MAX);
     players[1].resources = Resources::new(100, 100, 100);
     let loot = plunder(&report, &mut planet, &mut players, &mut StdRng::seed_from_u64(1));
-    assert_eq!(loot.total(), 10);
+    assert_eq!(loot.total(), 210);
     assert_eq!(players[0].resources.metal, usize::MAX - 3);
     assert_eq!(players[1].resources, Resources::new(100, 100, 100) - loot);
     players[0].resources = Resources::default();
+    players[1].resources = Resources::new(100, 100, 100);
     let loot = plunder(&report, &mut planet, &mut players, &mut StdRng::seed_from_u64(1));
-    assert_eq!(loot.total(), 10, "departed scouts cannot carry extra loot");
+    assert_eq!(loot.total(), 210, "departed scouts cannot carry extra loot");
     assert_eq!(players[0].resources, Resources::default());
 }
 

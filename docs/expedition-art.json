@@ -1,0 +1,19 @@
+{
+  "tool": "image_gen",
+  "use_case": "stylized-concept",
+  "assets": [
+    {
+      "path": "assets/images/mission/expedition.png",
+      "size": [53, 53],
+      "transparent": true,
+      "references": ["assets/images/mission/colonize.png", "assets/images/mission/patrol.png"],
+      "description": "Ivory colony exploration vessel and discovery star on a turquoise glass tile with the existing beveled gold frame. Generated at full resolution, then downsampled."
+    },
+    {
+      "path": "assets/images/mission/expedition cover.png",
+      "size": [200, 200],
+      "references": ["assets/images/mission/colonize cover.png", "assets/images/ships/colony ship.png"],
+      "description": "The established Colony Ship and an escort discover a derelict among asteroids beside a neutron star, in the existing painted sci-fi style. Generated at full resolution, then downsampled."
+    }
+  ]
+}

@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::core::map::model::SolarCorner;
+use crate::core::map::planet::Planet;
+
 #[test]
 fn camera_hull_excludes_empty_bounding_box_corners() {
     let hull = planet_hull([Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(0.0, 100.0)]);
@@ -22,22 +25,10 @@ fn empty_and_small_galaxies_produce_stable_camera_hulls() {
 fn map_drag_reaches_twenty_percent_of_the_full_screen_beyond_the_hull() {
     let map = Map {
         rect: Rect::from_corners(Vec2::splat(-800.0), Vec2::splat(800.0)),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![
-            crate::core::map::planet::Planet::new(
-                0,
-                "Lower bound".to_string(),
-                Vec2::new(-400.0, 0.0),
-                false,
-                1.0,
-            ),
-            crate::core::map::planet::Planet::new(
-                1,
-                "Upper bound".to_string(),
-                Vec2::new(400.0, 0.0),
-                false,
-                1.0,
-            ),
+            Planet::new(0, "Lower bound".to_string(), Vec2::new(-400.0, 0.0), false, 1.0),
+            Planet::new(1, "Upper bound".to_string(), Vec2::new(400.0, 0.0), false, 1.0),
         ],
     };
 
@@ -95,10 +86,10 @@ fn space_focus_reaches_and_holds_an_empty_location_beyond_the_worlds_until_manua
 
     let map = Map {
         rect: Rect::from_corners(Vec2::splat(-2_000.0), Vec2::splat(2_000.0)),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![
-            crate::core::map::planet::Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0),
-            crate::core::map::planet::Planet::new(1, "Target".into(), Vec2::X * 100.0, false, 1.0),
+            Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0),
+            Planet::new(1, "Target".into(), Vec2::X * 100.0, false, 1.0),
         ],
     };
     let destination = Vec2::new(900.0, -700.0);

@@ -12,15 +12,17 @@ use super::icon::Icon;
 use super::model::{Map, MapCmp};
 use super::planet::{Planet, PlanetId};
 use super::systems::draw_map;
+
 use crate::core::assets::WorldAssets;
 use crate::core::audio::PlayAudioMsg;
 use crate::core::combat::effects::EffectTextures;
 use crate::core::combat::report::{MissionReport, ReportId};
-use crate::core::constants::EXPLOSION_Z;
+use crate::core::constants::{EXPLOSION_Z, SPY_MISSION_SIZE};
+use crate::core::identity::PlayerId;
 use crate::core::loading::{refresh_gameplay_projection, refresh_turn_draft};
 use crate::core::mission_systems::{
     mission_map_direction, mission_map_flip_x, mission_map_flip_y, mission_size,
-    mission_world_rotation, SPY_MISSION_SIZE,
+    mission_world_rotation,
 };
 use crate::core::missions::{MissionId, Missions, SuppressedMapMissions};
 use crate::core::player::Player;
@@ -266,7 +268,7 @@ enum SpyOutcome {
 impl SpyOutcome {
     fn from_report(report: &MissionReport, player: &Player) -> Option<Self> {
         if report.hidden
-            || report.mission.objective != Icon::Spy
+            || !report.mission.objective.is_probe_mission()
             || !(report.mission.owner == player.id
                 || report.planet.owned == Some(player.id)
                 || report.planet.controlled == Some(player.id))
@@ -791,7 +793,7 @@ fn show_battles(
 
 fn returning_spies_for(
     missions: &Missions,
-    player: crate::core::identity::PlayerId,
+    player: PlayerId,
     turn: usize,
     origin: PlanetId,
 ) -> Vec<ReturningSpy> {
@@ -801,7 +803,7 @@ fn returning_spies_for(
             mission.owner == player
                 && mission.send == turn
                 && mission.origin == origin
-                && mission.return_objective == Some(Icon::Spy)
+                && mission.return_objective.is_some_and(Icon::is_probe_mission)
         })
         .map(|mission| ReturningSpy {
             id: mission.id,

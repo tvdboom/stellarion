@@ -13,6 +13,7 @@ mod camera;
 pub mod combat;
 pub mod constants;
 pub mod energy;
+pub mod expeditions;
 pub mod identity;
 pub mod interception;
 #[cfg(feature = "app")]
@@ -36,6 +37,7 @@ pub mod raids;
 pub mod random;
 pub mod recycling;
 pub mod resources;
+pub mod sabotage;
 pub(crate) mod settings;
 pub mod simulation;
 pub mod states;

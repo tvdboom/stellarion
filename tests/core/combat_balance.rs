@@ -23,18 +23,23 @@ use serde::Serialize;
 use super::{
     resolve_combat_with_rng, BOMBING_HIT_CHANCE, MAX_BOMBING_LEVELS_PER_BUILDING, MAX_COMBAT_ROUNDS,
 };
+
 use crate::core::combat::report::MissionReport;
+use crate::core::constants::PS_SHIELD_PER_LEVEL;
 use crate::core::map::icon::Icon;
+use crate::core::map::model::{Map, SolarCorner};
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::orders::validate_mission;
 use crate::core::player::Player;
 use crate::core::random::DeterministicRngState;
 use crate::core::resources::Resources;
-use crate::core::simulation::{resolve_turn, GameModel, GameRules, TurnCommand, TurnSubmission};
-use crate::core::units::buildings::Building;
-use crate::core::units::defense::Defense;
-use crate::core::units::ships::Ship;
+use crate::core::simulation::{
+    resolve_turn, GameModel, GameRules, MatchStatus, TurnCommand, TurnSubmission,
+};
+use crate::core::units::buildings::{Building, Building as B};
+use crate::core::units::defense::{Defense, Defense as D};
+use crate::core::units::ships::{Ship, Ship as S};
 use crate::core::units::{Amount, Army, Combat, Price, Unit};
 
 const COMBAT_SHIPS: [Ship; 8] = [
@@ -142,9 +147,9 @@ impl Scenario {
             false,
             None,
         );
-        let mut map = crate::core::map::model::Map {
+        let mut map = Map {
             rect: bevy::math::Rect::default(),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets: vec![origin, destination],
         };
         map.planets[0].army.insert(Unit::Building(Building::CommandRelay), Building::MAX_LEVEL);
@@ -210,9 +215,6 @@ fn weighted_composition(budget: usize, shares: &[(Unit, usize)], valuation: Budg
 }
 
 fn scenarios() -> Vec<Scenario> {
-    use Building as B;
-    use Defense as D;
-    use Ship as S;
     let mut all = Vec::new();
     // All ordered pairs include side reversal and same-type controls at three scales.
     for (valuation, budgets) in [
@@ -666,8 +668,7 @@ fn check_report(s: &Scenario, r: &MissionReport) {
         return;
     };
     assert!(c.rounds.len() <= MAX_COMBAT_ROUNDS, "{}", s.id);
-    let mut shield =
-        s.defender.amount(&Unit::planetary_shield()) * crate::core::constants::PS_SHIELD_PER_LEVEL;
+    let mut shield = s.defender.amount(&Unit::planetary_shield()) * PS_SHIELD_PER_LEVEL;
     let mut raid_rounds = 0;
     let mut bombing_losses = Army::new();
     for round in &c.rounds {
@@ -1258,7 +1259,7 @@ fn taking_home_world_wins_match_without_a_colony_ship() {
             false,
         )],
     );
-    assert_eq!(game.status, crate::core::simulation::MatchStatus::Finished);
+    assert_eq!(game.status, MatchStatus::Finished);
     assert_eq!(game.map.get(target).owned, None);
     assert_eq!(game.map.get(target).controlled, Some(1));
     assert!(game.players[1].spectator);
@@ -1420,7 +1421,7 @@ fn balance_survey() {
     })).collect::<Vec<_>>();
     let report = serde_json::json!({"trials": n * seeds, "seeds_per_scenario": seeds,
         "seed_formula": "0x57e11a + index * 104729; DeterministicRngState -> ChaCha8",
-        "planetary_shield_per_level": crate::core::constants::PS_SHIELD_PER_LEVEL,
+        "planetary_shield_per_level": PS_SHIELD_PER_LEVEL,
         "bombing": {"phases_per_battle": 1, "hit_chance": BOMBING_HIT_CHANCE,
             "max_levels_per_building": MAX_BOMBING_LEVELS_PER_BUILDING},
         "unit_stats": fingerprint, "results": rows, "combined_operations": operations});

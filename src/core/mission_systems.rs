@@ -3,42 +3,52 @@
 use std::f32::consts::PI;
 use std::time::Duration;
 
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
-use bevy::window::SystemCursorIcon;
+use bevy::window::{CursorIcon, SystemCursorIcon};
 use bevy_tweening::{RepeatCount, Tween, TweenAnim};
 
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{PlayAudioMsg, SoundEffect};
-use crate::core::constants::MISSION_Z;
+use crate::core::constants::{MAX_ACTIVE_MISSIONS, MISSION_Z, SPY_MISSION_SIZE};
+use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
+use crate::core::map::planet::PlanetId;
 use crate::core::map::systems::{
     jump_gate_link_particles, JumpGateHelixStyle, JumpGateLinkParticle, MissionCmp,
 };
 use crate::core::map::utils::{cursor, SpriteFrameLens};
 use crate::core::messages::MessageMsg;
 use crate::core::missions::{
-    BombingRaid, Mission, MissionRouteStyle, Missions, RecallMissionMsg, RecallProtectionMsg,
-    SendMissionMsg, SuppressedMapMissions,
+    BombingRaid, Mission, MissionId, MissionRouteStyle, Missions, RecallMissionMsg,
+    RecallProtectionMsg, SendMissionMsg, SuppressedMapMissions,
 };
+use crate::core::orders::validate_mission_with_patrols;
 use crate::core::patrol_visuals::{spawn_patrol_wake, PatrolFlight};
+use crate::core::patrols::PatrolPhase;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
-use crate::core::simulation::{TurnCommand, MAX_ACTIVE_MISSIONS};
+use crate::core::simulation::TurnCommand;
+use crate::core::turns::filter_missions;
 use crate::core::ui::systems::{MissionTab, UiState};
 use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::{
-    MultiplayerSession, PendingTurnCommands, COMMAND_LIMIT_REACHED_MESSAGE,
+    MultiplayerRequest, MultiplayerSession, PendingTurnCommands, RefreshTurnDraft,
+    COMMAND_LIMIT_REACHED_MESSAGE,
 };
+use crate::multiplayer::model::JointAttackResponse;
 
 const MISSION_ROUTE_SPACING: f32 = 52.0;
+const MISSION_FLAG_SEGMENTS: u32 = 10;
+const MISSION_FLAG_POLE_HEIGHT: f32 = 34.0;
 const MISSION_SIZE: f32 = 50.0;
 const MISSION_HOVER_SIZE: f32 = 60.0;
 const WAR_SUN_MISSION_SIZE: f32 = 50.0;
 const WAR_SUN_MISSION_HOVER_SIZE: f32 = 60.0;
 const COLONY_SHIP_MISSION_SIZE: f32 = 44.0;
 const COLONY_SHIP_MISSION_HOVER_SIZE: f32 = 53.0;
-pub(crate) const SPY_MISSION_SIZE: f32 = 36.0;
 const SPY_MISSION_HOVER_SIZE: f32 = 43.0;
 const JUMP_GATE_LOOP_HALF_LENGTH: f32 = 48.0;
 const JUMP_GATE_LOOP_PARTICLES: usize = 24;
@@ -54,7 +64,7 @@ const SPY_MISSION_MAP_ROTATION: f32 = -PI / 4.0;
 
 pub(crate) fn mission_size(mission: &Mission, hovered: bool) -> f32 {
     let image_objective = mission.return_objective.unwrap_or(mission.objective);
-    if image_objective == Icon::Colonize {
+    if matches!(image_objective, Icon::Colonize | Icon::Expedition) {
         return if hovered {
             COLONY_SHIP_MISSION_HOVER_SIZE
         } else {
@@ -65,8 +75,8 @@ pub(crate) fn mission_size(mission: &Mission, hovered: bool) -> f32 {
     match (image_objective, mission.uses_war_sun_image(), hovered) {
         (_, true, true) => WAR_SUN_MISSION_HOVER_SIZE,
         (_, true, false) => WAR_SUN_MISSION_SIZE,
-        (Icon::Spy, false, true) => SPY_MISSION_HOVER_SIZE,
-        (Icon::Spy, false, false) => SPY_MISSION_SIZE,
+        (Icon::Spy | Icon::Sabotage, false, true) => SPY_MISSION_HOVER_SIZE,
+        (Icon::Spy | Icon::Sabotage, false, false) => SPY_MISSION_SIZE,
         (_, false, true) => MISSION_HOVER_SIZE,
         (_, false, false) => MISSION_SIZE,
     }
@@ -88,7 +98,7 @@ pub(crate) fn mission_map_direction(mission: &Mission, map: &Map) -> Vec2 {
 }
 
 fn mission_map_rotation(mission: &Mission) -> f32 {
-    if mission.return_objective.unwrap_or(mission.objective) == Icon::Spy {
+    if mission.return_objective.unwrap_or(mission.objective).is_probe_mission() {
         SPY_MISSION_MAP_ROTATION
     } else {
         0.0
@@ -96,7 +106,7 @@ fn mission_map_rotation(mission: &Mission) -> f32 {
 }
 
 pub(crate) fn mission_world_rotation(mission: &Mission, route_angle: f32) -> f32 {
-    if mission.return_objective == Some(Icon::Spy) {
+    if mission.return_objective.is_some_and(Icon::is_probe_mission) {
         0.0
     } else {
         route_angle + mission_map_rotation(mission)
@@ -104,7 +114,7 @@ pub(crate) fn mission_world_rotation(mission: &Mission, route_angle: f32) -> f32
 }
 
 pub(crate) fn mission_map_flip_x(mission: &Mission) -> bool {
-    mission.return_objective == Some(Icon::Spy)
+    mission.return_objective.is_some_and(Icon::is_probe_mission)
 }
 
 fn mission_flame_transform(size: f32, route_angle: f32, image_rotation: f32) -> Transform {
@@ -127,7 +137,7 @@ fn mission_flame_transform(size: f32, route_angle: f32, image_rotation: f32) -> 
 fn mission_has_group_hover(
     mission: &Mission,
     hovered: Option<&Mission>,
-    player_id: crate::core::identity::PlayerId,
+    player_id: PlayerId,
 ) -> bool {
     hovered.is_some_and(|hovered| {
         mission.id == hovered.id
@@ -151,6 +161,27 @@ pub struct MissionRouteArrowCmp {
 /// One narrow strand particle in the hovered Jump Gate mission's route.
 pub struct MissionRouteHelixCmp {
     index: usize,
+}
+
+/// One hovered patrol or expedition's destination flag.
+#[derive(Component)]
+pub(crate) struct MissionSiteFlag(MissionId);
+
+fn wave_mission_flag(mesh: &mut Mesh, time: f32) {
+    let Some(VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+    else {
+        return;
+    };
+    // The cloth stays attached to the pole. Only its free edge can reach full amplitude.
+    for (column, pair) in positions.chunks_exact_mut(2).enumerate() {
+        let fraction = column as f32 / MISSION_FLAG_SEGMENTS as f32;
+        let phase = time * 6.0 - fraction * 7.0;
+        let x = fraction * (30.0 + 2.5 * phase.cos());
+        let top = MISSION_FLAG_POLE_HEIGHT - 2.0 + fraction * 5.0 * phase.sin();
+        pair[0] = [x, top, 0.0];
+        pair[1] = [x, top - 17.0 + 3.0 * fraction, 0.0];
+    }
 }
 
 #[derive(Component)]
@@ -320,20 +351,32 @@ pub fn update_missions(
                 }
             });
             mission_commands
-                .observe(cursor::<Over>(SystemCursorIcon::Pointer))
                 .observe(cursor::<Out>(SystemCursorIcon::Default))
-                .observe(move |_: On<Pointer<Over>>, mut state: ResMut<UiState>| {
-                    state.planet_hover = None;
-                    state.mission_planet_hover = None;
-                    state.mission_hover = Some(id);
-                    state.mission_hover_from_ui = false;
-                })
+                .observe(
+                    move |_: On<Pointer<Over>>,
+                          mut commands: Commands,
+                          window: Single<Entity, With<Window>>,
+                          mut state: ResMut<UiState>,
+                          missions: Res<Missions>| {
+                        let blocked = state.choosing_expedition_destination()
+                            && missions.get(id).is_some_and(Mission::is_patrolling);
+                        commands.entity(*window).insert(CursorIcon::from(if blocked {
+                            SystemCursorIcon::NotAllowed
+                        } else {
+                            SystemCursorIcon::Pointer
+                        }));
+                        state.planet_hover = None;
+                        state.mission_planet_hover = None;
+                        state.mission_hover = Some(id);
+                        state.mission_hover_from_ui = false;
+                    },
+                )
                 .observe(|_: On<Pointer<Out>>, mut state: ResMut<UiState>| {
                     state.mission_hover = None;
                     state.mission_hover_from_ui = false;
                 })
                 .observe(
-                    move |event: On<Pointer<Click>>,
+                    move |mut event: On<Pointer<Click>>,
                           mut state: ResMut<UiState>,
                           missions: Res<Missions>,
                           map: Res<Map>,
@@ -342,6 +385,23 @@ pub fn update_missions(
                         let Some(mission) = missions.get(id) else {
                             return;
                         };
+                        if state.choosing_expedition_destination() {
+                            if mission.is_patrolling() {
+                                event.propagate(false);
+                                return;
+                            }
+                            if matches!(
+                                event.button,
+                                PointerButton::Primary | PointerButton::Secondary
+                            ) {
+                                let center = event
+                                    .hit
+                                    .position
+                                    .map_or(mission.position, |position| position.truncate());
+                                state.choose_patrol_zone(&map, &player, settings.turn, center);
+                            }
+                            return;
+                        }
                         if event.button == PointerButton::Secondary && mission.owner != player.id {
                             state.choose_intercept_target(&map, &player, settings.turn, mission);
                         } else if event.button == PointerButton::Secondary {
@@ -559,20 +619,27 @@ pub fn update_mission_route_arrow(
         let animation_speed = mission.route_animation_speed(&map);
         match mission.route_style(&player) {
             MissionRouteStyle::Standard => {
-                arrows.extend(mission_route_markers(
-                    origin.position,
-                    mission.position,
-                    origin.size() * 0.7,
-                    48.0,
-                    Color::srgba(0.72, 0.77, 0.84, 0.55),
-                    offset(animation_speed * 0.625),
-                ));
+                let returning = mission.is_returning();
+                // Expeditions keep their launch world as the origin after turning around.
+                // Drawing from that world would put outbound arrows on the homebound leg.
+                if !returning || mission.expedition.is_none() {
+                    arrows.extend(mission_route_markers(
+                        origin.position,
+                        mission.position,
+                        origin.size() * 0.7,
+                        48.0,
+                        Color::srgba(0.72, 0.77, 0.84, 0.55),
+                        offset(animation_speed * 0.625),
+                    ));
+                }
                 arrows.extend(mission_route_markers(
                     mission.position,
                     mission.target_position(&map),
                     38.0,
-                    if (mission.patrol.is_some() || mission.intercept.is_some())
-                        && !mission.is_returning()
+                    if (mission.patrol.is_some()
+                        || mission.intercept.is_some()
+                        || mission.expedition.is_some())
+                        && !returning
                     {
                         0.0
                     } else {
@@ -659,17 +726,93 @@ pub fn update_mission_route_arrow(
     }
 }
 
+/// Plants a destination flag for the viewer's hovered outbound patrol or expedition.
+pub(crate) fn update_mission_hover_flag(
+    mut commands: Commands,
+    mut flags: Query<(Entity, &mut Transform, &Mesh2d, &MissionSiteFlag)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    state: Res<UiState>,
+    player: Res<Player>,
+    missions: Res<Missions>,
+    session: Res<MultiplayerSession>,
+    time: Res<Time>,
+) {
+    let site = state
+        .mission_hover
+        .and_then(|id| missions.get(id))
+        .filter(|mission| mission.owner == player.id)
+        .and_then(|mission| {
+            let center = match mission.objective {
+                Icon::Expedition => mission.expedition.as_ref().map(|site| site.center),
+                Icon::Patrol => mission
+                    .patrol
+                    .as_ref()
+                    .filter(|patrol| patrol.phase == PatrolPhase::Outbound)
+                    .map(|patrol| patrol.center),
+                _ => None,
+            };
+            center.map(|center| (mission.id, center))
+        });
+    let now = time.elapsed_secs();
+    let mut present = false;
+    for (entity, mut transform, mesh, flag) in &mut flags {
+        if let Some((_, center)) = site.filter(|(mission, _)| *mission == flag.0) {
+            transform.translation = center.extend(MISSION_Z - 0.1);
+            if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
+                wave_mission_flag(&mut mesh, now);
+            }
+            present = true;
+        } else {
+            commands.entity(entity).despawn();
+        }
+    }
+    if let Some((mission, center)) = site.filter(|_| !present) {
+        let indices = (0..MISSION_FLAG_SEGMENTS)
+            .flat_map(|segment| {
+                let top = segment * 2;
+                [top, top + 1, top + 2, top + 1, top + 3, top + 2]
+            })
+            .collect();
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+            .with_inserted_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                vec![[0.0; 3]; ((MISSION_FLAG_SEGMENTS + 1) * 2) as usize],
+            )
+            .with_inserted_indices(Indices::U32(indices));
+        wave_mission_flag(&mut mesh, now);
+        let color = session.player_color(player.id).color();
+        commands
+            .spawn((
+                Mesh2d(meshes.add(mesh)),
+                MeshMaterial2d(materials.add(color)),
+                Transform::from_translation(center.extend(MISSION_Z - 0.1)),
+                Pickable::IGNORE,
+                MissionSiteFlag(mission),
+                MapCmp,
+            ))
+            .with_child((
+                Sprite::from_color(
+                    Color::srgb_u8(207, 218, 233),
+                    Vec2::new(2.5, MISSION_FLAG_POLE_HEIGHT),
+                ),
+                Transform::from_xyz(0.0, MISSION_FLAG_POLE_HEIGHT * 0.5, 0.01),
+                Pickable::IGNORE,
+            ));
+    }
+}
+
 /// Validates the selected mission UI, removes committed units/resources, and emits its command.
 pub fn send_mission(
     mut send_mission: MessageReader<SendMissionMsg>,
     mut message: MessageWriter<MessageMsg>,
     mut play_audio: MessageWriter<PlayAudioMsg>,
-    mut requests: MessageWriter<crate::multiplayer::client::MultiplayerRequest>,
+    mut requests: MessageWriter<MultiplayerRequest>,
     mut map: ResMut<Map>,
     mut player: ResMut<Player>,
     mut missions: ResMut<Missions>,
     mut pending: ResMut<PendingTurnCommands>,
-    session: Option<Res<crate::multiplayer::client::MultiplayerSession>>,
+    session: Option<Res<MultiplayerSession>>,
 ) {
     for SendMissionMsg {
         mission,
@@ -698,8 +841,7 @@ pub fn send_mission(
                 .flat_map(|invitation| &invitation.participants)
                 .filter(|participant| {
                     participant.player_id == player.id
-                        && participant.response
-                            == crate::multiplayer::model::JointAttackResponse::Accepted
+                        && participant.response == JointAttackResponse::Accepted
                 })
                 .filter_map(|participant| participant.contribution.as_ref())
                 .filter(|contribution| contribution.origin == mission.origin)
@@ -716,7 +858,7 @@ pub fn send_mission(
         });
         let valid = !reserved_conflict
             && worlds.is_some_and(|(origin, destination)| {
-                crate::core::orders::validate_mission_with_patrols(
+                validate_mission_with_patrols(
                     &player,
                     &map,
                     origin,
@@ -752,11 +894,33 @@ pub fn send_mission(
                 combat_probes: mission.combat_probes,
                 contributions: joint_attack.contributions.clone(),
             }
+        } else if mission.objective == Icon::Sabotage {
+            let Some(sabotage) = mission.sabotage else {
+                message.write(MessageMsg::error("Select a known structure to sabotage."));
+                continue;
+            };
+            TurnCommand::SendSabotage {
+                mission_id: mission.id,
+                origin: mission.origin,
+                destination: mission.destination,
+                target: sabotage.target,
+                army,
+                deep_cover: mission.deep_cover,
+                battle_plan: mission.battle_plan,
+            }
         } else if let Some(intercept) = &mission.intercept {
             TurnCommand::SendIntercept {
                 mission_id: mission.id,
                 origin: mission.origin,
                 target: intercept.target,
+                army,
+                battle_plan: mission.battle_plan,
+            }
+        } else if let Some(expedition) = &mission.expedition {
+            TurnCommand::SendExpedition {
+                mission_id: mission.id,
+                origin: mission.origin,
+                center: expedition.center,
                 army,
                 battle_plan: mission.battle_plan,
             }
@@ -826,16 +990,15 @@ pub fn send_mission(
             continue;
         }
         if let Some(attack_id) = cancel_joint_attack {
-            requests.write(crate::multiplayer::client::MultiplayerRequest::CancelJointAttack {
+            requests.write(MultiplayerRequest::CancelJointAttack {
                 attack_id: *attack_id,
             });
         }
         if let Some((projected_player, model)) = joint_projection {
-            missions.0 =
-                crate::core::turns::filter_missions(&model.missions, &model.map, &projected_player);
+            missions.0 = filter_missions(&model.missions, &model.map, &projected_player);
             *map = model.map;
             *player = projected_player;
-            requests.write(crate::multiplayer::client::MultiplayerRequest::PublishJointMission);
+            requests.write(MultiplayerRequest::PublishJointMission);
             play_audio.write(SoundEffect::MissionLaunched.request());
             message.write(MessageMsg::info("Mission sent.").silent());
             continue;
@@ -870,12 +1033,7 @@ pub fn send_mission(
     }
 }
 
-fn origin_available(
-    map: &Map,
-    origin: crate::core::map::planet::PlanetId,
-    player_id: crate::core::identity::PlayerId,
-    unit: &Unit,
-) -> usize {
+fn origin_available(map: &Map, origin: PlanetId, player_id: PlayerId, unit: &Unit) -> usize {
     map.try_get(origin)
         .and_then(|planet| planet.mission_origin_army(player_id))
         .map_or(0, |army| army.amount(unit))
@@ -892,7 +1050,7 @@ pub fn recall_mission(
     session: Option<Res<MultiplayerSession>>,
     mut missions: ResMut<Missions>,
     mut pending: ResMut<PendingTurnCommands>,
-    mut refresh: Option<ResMut<Messages<crate::multiplayer::client::RefreshTurnDraft>>>,
+    mut refresh: Option<ResMut<Messages<RefreshTurnDraft>>>,
 ) {
     for RecallMissionMsg {
         mission_id,
@@ -934,7 +1092,8 @@ pub fn recall_mission(
                 } | TurnCommand::SendIntercept { mission_id: sent_id, .. } | TurnCommand::SendPatrol {
                     mission_id: sent_id,
                     ..
-                } if sent_id == mission_id
+                } | TurnCommand::SendExpedition { mission_id: sent_id, .. }
+                  | TurnCommand::SendSabotage { mission_id: sent_id, .. } if sent_id == mission_id
             )
         };
         let draft_launch = pending.commands.iter().position(command_matches);
@@ -953,6 +1112,8 @@ pub fn recall_mission(
                     TurnCommand::SendMission { mission_id: id, .. }
                         | TurnCommand::SendPatrol { mission_id: id, .. }
                         | TurnCommand::SendIntercept { mission_id: id, .. }
+                        | TurnCommand::SendExpedition { mission_id: id, .. }
+                        | TurnCommand::SendSabotage { mission_id: id, .. }
                         | TurnCommand::SetMissionBattlePlan { mission_id: id, .. }
                         | TurnCommand::SetPatrolFriendly { mission_id: id, .. }
                         if id == mission_id
@@ -1023,9 +1184,9 @@ pub fn recall_mission(
         let radius = mission_size(mission, false) * 1.25;
 
         mission.recall(&map, settings.turn);
-        if mission.patrol.is_some() || mission.intercept.is_some() {
+        if mission.patrol.is_some() || mission.intercept.is_some() || mission.expedition.is_some() {
             if let Some(refresh) = &mut refresh {
-                refresh.write(crate::multiplayer::client::RefreshTurnDraft);
+                refresh.write(RefreshTurnDraft);
             }
         }
         let to_direction = mission_map_direction(mission, &map);

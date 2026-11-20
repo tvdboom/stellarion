@@ -1,9 +1,15 @@
 use super::*;
+use rand::SeedableRng;
+
+use crate::core::combat::plan::{BattlePlan, CombatTactic};
+use crate::core::combat::report::Side;
+use crate::core::constants::SOLAR_STAR_SIZE;
+use crate::core::random::DeterministicRngState;
+use crate::core::recycling::debris_sites;
 use crate::core::simulation::{
     preview_commands, resolve_turn, GameRules, PersistedGame, TurnSubmission,
 };
 use crate::core::units::ships::Ship;
-use rand::SeedableRng;
 
 fn game() -> GameModel {
     let mut model = GameModel::new(
@@ -69,8 +75,6 @@ fn empty_turn(model: &mut GameModel) {
 
 #[test]
 fn reinforcements_travel_merge_and_replay_with_the_existing_patrol_orders_and_upkeep() {
-    use crate::core::combat::plan::{BattlePlan, CombatTactic};
-
     let mut model = game();
     let home = model.players[0].home_planet;
     let port = model.map.planets.iter().find(|planet| planet.owned.is_none()).unwrap().id;
@@ -514,6 +518,80 @@ fn launch_arrival_operating_fuel_and_auto_return_survive_serialized_turns() {
 }
 
 #[test]
+fn patrol_returns_keep_one_visible_docking_report_after_recall_expiry_or_fuel_shortage() {
+    for reason in ["recall", "duration", "fuel"] {
+        let mut model = game();
+        let home = model.players[0].home_planet;
+        let cruiser = Unit::Ship(Ship::Cruiser);
+        let army = Army::from([(cruiser, 3)]);
+        let before = model.map.get(home).army.amount(&cruiser);
+        model.missions.push(stationed(
+            &model,
+            700,
+            1,
+            center(&model),
+            army.clone(),
+            (reason == "duration").then_some(0),
+        ));
+        if reason == "fuel" {
+            model.players[0].resources.deuterium = 0;
+        }
+        let commands = if reason == "recall" {
+            vec![TurnCommand::RecallMission {
+                mission_id: 700,
+            }]
+        } else {
+            vec![]
+        };
+        let preview = preview_commands(&model, 1, &commands).unwrap();
+        assert!(preview.missions[0].is_returning());
+        assert!(preview.players[0].reports.is_empty(), "{reason}: preview must not report docking");
+        let turn = model.turn;
+        resolve_turn(
+            &mut model,
+            &[TurnSubmission::new(1, turn, commands), TurnSubmission::new(2, turn, vec![])],
+        )
+        .unwrap();
+        for _ in 0..100 {
+            if model.missions.is_empty() {
+                break;
+            }
+            assert!(model.players[0].reports.is_empty(), "{reason}: fleet has not docked yet");
+            let mut restored =
+                PersistedGame::from_json(PersistedGame::new(model.clone()).to_json().unwrap())
+                    .unwrap()
+                    .state;
+            empty_turn(&mut model);
+            empty_turn(&mut restored);
+            assert_eq!(
+                serde_json::to_value(&model).unwrap(),
+                serde_json::to_value(restored).unwrap()
+            );
+        }
+        assert!(model.missions.is_empty(), "{reason}: patrol never docked");
+        assert_eq!(model.map.get(home).army.amount(&cruiser), before + 3);
+        assert_eq!(model.players[0].reports.len(), 1, "{reason}");
+        let report = &model.players[0].reports[0];
+        assert!(!report.hidden, "{reason}: patrol return must appear in Mission Reports");
+        assert_eq!(report.turn, model.turn as usize);
+        assert_eq!(report.mission.id, 700);
+        assert_eq!(report.mission.objective, Icon::Deploy);
+        assert_eq!(report.mission.return_objective, Some(Icon::Patrol));
+        assert_eq!(report.mission.patrol.as_ref().unwrap().phase, PatrolPhase::Returning);
+        assert_eq!(report.planet.id, home);
+        assert_eq!(report.surviving_attacker, army);
+        assert!(report.combat_report.is_none());
+        assert!(!report.is_space_encounter());
+        assert!(model.players[1].reports.is_empty());
+        let restored =
+            PersistedGame::from_json(PersistedGame::new(model.clone()).to_json().unwrap()).unwrap();
+        assert!(!restored.state.players[0].reports[0].hidden);
+        empty_turn(&mut model);
+        assert_eq!(model.players[0].reports.len(), 1, "{reason}: docking must only report once");
+    }
+}
+
+#[test]
 fn upkeep_is_reserved_before_spending_recall_releases_it_and_shortage_returns() {
     let mut model = game();
     let point = center(&model);
@@ -548,6 +626,23 @@ fn upkeep_is_reserved_before_spending_recall_releases_it_and_shortage_returns() 
 }
 
 #[test]
+fn patrol_targets_exclude_the_sun_up_to_its_visible_edge() {
+    let model = game();
+    let map = &model.map;
+    let home = model.players[0].home_planet;
+    let sun = map.solar_star_position();
+    let inward = -map.solar_corner().x * Vec2::X;
+    let radius = SOLAR_STAR_SIZE * 0.5;
+
+    for offset in [0.0, radius - 1.0, radius] {
+        let target = sun + inward * offset;
+        assert!(map.valid_space_coordinates(home, target));
+        assert!(!valid_patrol_target(map, home, target, None));
+    }
+    assert!(valid_patrol_target(map, home, sun + inward * (radius + 1.0), None));
+}
+
+#[test]
 fn same_turn_launch_cancellation_refunds_fuel_and_ships_and_invalid_orders_are_atomic() {
     let mut model = game();
     let home = model.players[0].home_planet;
@@ -576,6 +671,7 @@ fn same_turn_launch_cancellation_refunds_fuel_and_ships_and_invalid_orders_are_a
     assert_eq!(serde_json::to_value(canceled).unwrap(), before);
     for invalid in [
         launch(Vec2::NAN, None, army.clone()),
+        launch(model.map.solar_star_position(), None, army.clone()),
         launch(model.map.rect.max + Vec2::ONE, None, army.clone()),
         launch(model.map.get(home).position, None, army.clone()),
         launch(point, Some(0), army.clone()),
@@ -619,8 +715,6 @@ fn patrol_casualties_ignore_empty_ship_classes_and_preserve_proportional_survivo
 
 #[test]
 fn patrol_interception_combines_fleets_preserves_planets_and_replays_deterministically() {
-    use crate::core::combat::report::Side;
-
     let mut model = game();
     let point = center(&model);
     let army = Army::from([(Unit::Ship(Ship::Cruiser), 10), (Unit::colony_ship(), 0)]);
@@ -681,11 +775,7 @@ fn patrol_interception_combines_fleets_preserves_planets_and_replays_determinist
         assert!(report.can_see(&Side::Attacker, 1));
         assert!(report.can_see(&Side::Defender, 1));
     }
-    assert!(crate::core::recycling::debris_sites(
-        resolved.players.iter().flat_map(|player| &player.reports),
-        1
-    )
-    .is_empty());
+    assert!(debris_sites(resolved.players.iter().flat_map(|player| &player.reports), 1).is_empty());
     resolved.validate().unwrap();
 }
 
@@ -803,7 +893,6 @@ fn patrol_friendship_orders_validate_authority_and_survive_saved_drafts() {
 
 #[test]
 fn friendly_contact_reports_fleet_and_location_without_combat_or_movement_loss() {
-    use crate::core::combat::report::Side;
     let model = friendly_detection_game();
     let mut contacts = 0;
     for seed in 0..16 {
@@ -1114,7 +1203,7 @@ fn full_operating_turns_roll_the_existing_fauna_hazard_without_travel_distance()
     let mut encountered = false;
     for seed in 0..64 {
         let mut attempt = model.clone();
-        attempt.rng = crate::core::random::DeterministicRngState::from_u64(seed);
+        attempt.rng = DeterministicRngState::from_u64(seed);
         empty_turn(&mut attempt);
         if attempt.players[0].reports.iter().any(|report| report.is_space_fauna_encounter()) {
             let snapshot = PersistedGame::new(attempt).to_json().unwrap();

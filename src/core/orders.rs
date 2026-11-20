@@ -7,9 +7,12 @@ use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
+use crate::core::patrols::{valid_patrol_target, PatrolPhase};
 use crate::core::player::Player;
+use crate::core::sabotage::known_targets;
 use crate::core::units::buildings::Building;
 use crate::core::units::operations::SenateSupport;
+use crate::core::units::ships::Ship;
 use crate::core::units::{orbitals, Amount, Price, Unit};
 
 /// A player-facing reason why an order cannot currently be accepted.
@@ -66,14 +69,20 @@ pub enum OrderError {
     /// Colonial Administration needs a colony rather than the player's homeworld.
     #[error("Colonial Administration can only be built on a non-home planet.")]
     ColonialAdministration,
-    /// The fleet does not satisfy its mission objective.
-    #[error("The selected fleet does not meet the mission objective's requirements.")]
-    Objective,
+    /// The dispatched fleet is missing a required unit or includes a disallowed unit.
+    #[error("{0}")]
+    MissionFleet(&'static str),
+    /// The selected objective requires a different destination or route.
+    #[error("{0}")]
+    MissionDestination(&'static str),
     /// Dedicated espionage requires a meaningful probe group.
-    #[error("A Spy mission requires at least 5 Probes.")]
+    #[error("Spy and Sabotage missions require at least 5 Probes.")]
     SpyProbes,
-    /// Deep Cover needs a dedicated Spy mission and a completed relay at its origin.
-    #[error("Deep Cover requires a Spy mission and a Command Relay at the origin.")]
+    /// Sabotage requires an orbital structure disclosed to the attacking player.
+    #[error("Select a known Sensor Phalanx, Orbital Railgun or Jump Gate on an enemy planet.")]
+    SabotageTarget,
+    /// Deep Cover needs a dedicated probe mission and a completed relay at its origin.
+    #[error("Deep Cover requires a Spy or Sabotage mission and a Command Relay at the origin.")]
     DeepCover,
     /// The fleet contains units not available at the origin.
     #[error("The selected units are not available at the origin.")]
@@ -232,7 +241,8 @@ pub fn validate_mission_with_patrols(
     mission: &Mission,
     missions: &[Mission],
 ) -> Result<(), OrderError> {
-    if matches!(mission.objective, Icon::Patrol | Icon::Intercept) {
+    let objective = mission.objective;
+    if matches!(objective, Icon::Patrol | Icon::Intercept | Icon::Expedition) {
         let available = origin.mission_origin_army(player.id).ok_or(OrderError::Ownership)?;
         if player.spectator
             || mission.owner != player.id
@@ -242,28 +252,40 @@ pub fn validate_mission_with_patrols(
         {
             return Err(OrderError::Ownership);
         }
-        if mission.objective == Icon::Intercept {
-            if !mission.valid_intercept(map) || !Icon::Intercept.accepts_army(&mission.army) {
-                return Err(OrderError::Objective);
-            }
-            if mission.army.iter().any(|(unit, count)| *count > available.amount(unit)) {
-                return Err(OrderError::Fleet);
-            }
-            return Ok(());
-        }
-        if !mission.valid_patrol(map)
-            || !mission.accepts_patrol_army(missions)
-            || !mission.patrol.as_ref().is_some_and(|patrol| {
-                patrol.phase == crate::core::patrols::PatrolPhase::Outbound
-                    && crate::core::patrols::valid_patrol_target(
-                        map,
-                        origin.id,
-                        patrol.center,
-                        patrol.remaining_turns,
-                    )
-            })
+        if let Some(reason) = objective
+            .fleet_unavailable_reason(&mission.army)
+            .filter(|_| objective != Icon::Patrol || !mission.accepts_patrol_army(missions))
         {
-            return Err(OrderError::Objective);
+            return Err(OrderError::MissionFleet(reason));
+        }
+        match objective {
+            Icon::Expedition if !mission.valid_expedition(map) => {
+                return Err(OrderError::MissionDestination(
+                    "Choose a point inside the map away from the launch world.",
+                ));
+            },
+            Icon::Intercept if !mission.valid_intercept(map) => {
+                return Err(OrderError::MissionDestination(
+                    "Choose a visible enemy fleet you can reach before it arrives.",
+                ));
+            },
+            Icon::Patrol
+                if !mission.valid_patrol(map)
+                    || !mission.patrol.as_ref().is_some_and(|patrol| {
+                        patrol.phase == PatrolPhase::Outbound
+                            && valid_patrol_target(
+                                map,
+                                origin.id,
+                                patrol.center,
+                                patrol.remaining_turns,
+                            )
+                    }) =>
+            {
+                return Err(OrderError::MissionDestination(
+                    "Choose a patrol zone in empty space and set a valid patrol duration.",
+                ));
+            },
+            _ => {},
         }
         if mission.army.iter().any(|(unit, count)| *count > available.amount(unit)) {
             return Err(OrderError::Fleet);
@@ -272,6 +294,15 @@ pub fn validate_mission_with_patrols(
     }
     if origin.id == destination.id {
         return Err(OrderError::SameWorld);
+    }
+    if !mission.valid_sabotage()
+        || (mission.objective == Icon::Sabotage
+            && !mission.sabotage.is_some_and(|sabotage| {
+                !sabotage.succeeded
+                    && known_targets(player, destination, missions).contains(&sabotage.target)
+            }))
+    {
+        return Err(OrderError::SabotageTarget);
     }
     if player.spectator
         || mission.owner != player.id
@@ -282,32 +313,56 @@ pub fn validate_mission_with_patrols(
     {
         return Err(OrderError::Ownership);
     }
-    if mission.objective == Icon::Spy && mission.army.amount(&Unit::probe()) < MIN_SPY_PROBES {
+    if objective.is_probe_mission() && mission.army.amount(&Unit::probe()) < MIN_SPY_PROBES {
         return Err(OrderError::SpyProbes);
     }
     if mission.deep_cover
-        && (mission.objective != Icon::Spy || !origin.has(&Unit::Building(Building::CommandRelay)))
+        && (!mission.objective.is_probe_mission()
+            || !origin.has(&Unit::Building(Building::CommandRelay)))
     {
         return Err(OrderError::DeepCover);
     }
-    if (mission.objective == Icon::Protect
-        && (mission.protected_player != destination.controlled
-            || !destination.allows_protection(player.id)))
-        || (mission.objective != Icon::Protect && mission.protected_player.is_some())
+    let protection_allowed = destination.allows_protection(player.id);
+    if objective == Icon::Protect
+        && (mission.protected_player != destination.controlled || !protection_allowed)
     {
-        return Err(OrderError::Objective);
+        return Err(OrderError::MissionDestination(
+            "Protect requires an invitation from the destination's current controller.",
+        ));
     }
-    if !mission.objective.accepts_army(&mission.army)
-        || (destination.is_moon() && mission.objective.on_planet_only())
-        || !Icon::objectives(
-            player.owns(destination),
-            player.controls(destination),
-            destination.allows_protection(player.id),
-            destination.blocks_hostile_action_by(player.id),
-        )
-        .contains(&mission.objective)
+    if objective != Icon::Protect && mission.protected_player.is_some() {
+        return Err(OrderError::MissionDestination(
+            "Select Protect to send a fleet under a protection invitation.",
+        ));
+    }
+    if let Some(reason) = objective.fleet_unavailable_reason(&mission.army) {
+        return Err(OrderError::MissionFleet(reason));
+    }
+    if destination.is_moon() && objective.on_planet_only() {
+        return Err(OrderError::MissionDestination(
+            "This objective requires a planet as its destination.",
+        ));
+    }
+    let owns_destination = player.owns(destination);
+    let controls_destination = player.controls(destination);
+    let already_protecting = destination.blocks_hostile_action_by(player.id);
+    if !Icon::objectives(
+        owns_destination,
+        controls_destination,
+        protection_allowed,
+        already_protecting,
+    )
+    .contains(&objective)
     {
-        return Err(OrderError::Objective);
+        return Err(OrderError::MissionDestination(match objective {
+            Icon::Deploy => "Deploy requires a destination you own or control.",
+            _ if owns_destination => "Choose Deploy for a world you own.",
+            _ if controls_destination => "Choose Colonize or Deploy for a world you control.",
+            _ if already_protecting => {
+                "Choose Protect for a world where you have a protection fleet."
+            },
+            _ => "Choose a planet or moon mission objective for this destination.",
+        }));
     }
     let available = origin.mission_origin_army(player.id).ok_or(OrderError::Ownership)?;
     if mission.army.iter().any(|(unit, count)| *count > available.amount(unit)) {
@@ -315,9 +370,10 @@ pub fn validate_mission_with_patrols(
     }
     if mission.bombing != BombingRaid::None
         && (destination.is_moon()
-            || !mission.army.iter().any(|(unit, count)| {
-                *unit == Unit::Ship(crate::core::units::ships::Ship::Bomber) && *count > 0
-            }))
+            || !mission
+                .army
+                .iter()
+                .any(|(unit, count)| *unit == Unit::Ship(Ship::Bomber) && *count > 0))
     {
         return Err(OrderError::Bombing);
     }
@@ -329,8 +385,8 @@ pub fn validate_mission_with_patrols(
     if mission.jump_gate
         && (!matches!(mission.objective, Icon::Deploy | Icon::Protect)
             || !jump_route_allowed
-            || !origin.has(&Unit::Building(Building::JumpGate))
-            || !destination.has(&Unit::Building(Building::JumpGate))
+            || origin.operational_level(Building::JumpGate) == 0
+            || destination.operational_level(Building::JumpGate) == 0
             || mission.jump_cost() > origin.max_jump_capacity().saturating_sub(origin.jump_gate))
     {
         return Err(OrderError::JumpGate);

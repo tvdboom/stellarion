@@ -1,13 +1,21 @@
 use super::*;
-use crate::core::constants::{MIN_SPY_PROBES, ORBITAL_RAILGUN_FIRE_ENERGY_COST};
-use crate::core::units::defense::Defense;
-use crate::core::units::fauna::{encounter_threat, encounter_threat_budget, SpaceFauna};
-use crate::core::units::ships::Ship;
-use crate::core::units::Combat;
 use bevy::math::Vec2;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use strum::IntoEnumIterator;
+
+use crate::core::combat::report::{MissionReport, Side};
+use crate::core::constants::{MIN_SPY_PROBES, ORBITAL_RAILGUN_FIRE_ENERGY_COST};
+use crate::core::energy::EnergyGrid;
+use crate::core::map::asteroids::recycler_asteroid_targets;
+use crate::core::map::planet::SolarBand;
+use crate::core::missions::BombingRaid;
+use crate::core::orders::OrderError;
+use crate::core::units::defense::Defense;
+use crate::core::units::fauna::{encounter_threat, encounter_threat_budget, SpaceFauna};
+use crate::core::units::ships::Ship;
+use crate::core::units::Combat;
+use crate::test_support::empty_report;
 
 #[path = "spy_missions.rs"]
 mod spy_missions;
@@ -62,7 +70,7 @@ fn colonial_withdrawal_orders_enforce_ownership_levels_and_home_restriction() {
             3,
             Default::default()
         ),
-        Err(crate::core::orders::OrderError::ColonialAdministration)
+        Err(OrderError::ColonialAdministration)
     );
     model.map.get_mut(colony).army.remove(&Unit::Building(Building::ColonialAdministration));
     assert_eq!(
@@ -580,8 +588,8 @@ fn failed_attack_permanently_removes_independent_population_casualties() {
     let report = model.players[0].reports.last().unwrap();
     assert!(report.is_independent_population_encounter());
     assert_eq!(report.status(&model.players[0]), "defeat");
-    assert!(report.can_see(&crate::core::combat::report::Side::Attacker, owner));
-    assert!(!report.can_see(&crate::core::combat::report::Side::Defender, owner));
+    assert!(report.can_see(&Side::Attacker, owner));
+    assert!(!report.can_see(&Side::Defender, owner));
     assert_eq!(report.scout_probes, 0);
     let planet = model.map.get(target);
     let intelligence = model.players[0].last_info(planet, &model.missions).unwrap();
@@ -638,7 +646,7 @@ fn nullstar_behemoths_are_late_game_and_always_encountered_alone() {
             let (name, formation) = encounter_formation(turn, &mut StdRng::seed_from_u64(seed));
             if formation.contains_key(&behemoth) {
                 assert!(turn >= 50, "Nullstar Behemoth appeared on turn {turn}");
-                assert_eq!(name, "Lone Nullstar Behemoth");
+                assert_eq!(name, "Behemoth");
                 assert_eq!(formation, Army::from([(behemoth, 1)]));
                 found = true;
             }
@@ -722,30 +730,20 @@ fn fauna_formations_stay_gentle_through_turn_four_then_grow_gradually() {
 }
 
 #[test]
-fn fauna_formation_titles_describe_the_finished_creature_count() {
+fn fauna_formation_titles_use_compact_creature_and_group_names() {
     for turn in 1..=100 {
         for seed in 0..512_u64 {
             let (name, formation) = encounter_formation(turn, &mut StdRng::seed_from_u64(seed));
-            let total = formation.values().sum::<usize>();
-
-            assert_eq!(
-                name.starts_with("Lone "),
-                total == 1,
-                "turn {turn}, seed {seed}: {name:?} described {total} creatures"
+            assert!(
+                name.len() <= 17 && name.split_whitespace().count() <= 2,
+                "turn {turn}, seed {seed}: {name:?} is too long for a report header"
             );
             assert!(
-                !name.contains(" and ") && !name.ends_with(" Companions"),
-                "turn {turn}, seed {seed}: {name:?} should describe one encounter archetype"
+                formation
+                    .keys()
+                    .any(|unit| name.split_whitespace().any(|word| word == unit.to_name())),
+                "turn {turn}, seed {seed}: {name:?} does not identify a creature in the encounter"
             );
-            if name == "Nebula Grazer Family" {
-                let grazers =
-                    formation.get(&Unit::Fauna(SpaceFauna::NebulaGrazer)).copied().unwrap_or(0)
-                        + formation
-                            .get(&Unit::Fauna(SpaceFauna::NebulaGrazerCalf))
-                            .copied()
-                            .unwrap_or(0);
-                assert!((2..=3).contains(&grazers));
-            }
         }
     }
 }
@@ -1227,6 +1225,7 @@ fn protection_is_an_additional_hostile_world_objective_until_a_fleet_is_statione
             Icon::Attack,
             Icon::Raid,
             Icon::Spy,
+            Icon::Sabotage,
             Icon::MissileStrike,
             Icon::Destroy,
         ]
@@ -1618,7 +1617,7 @@ fn joint_missions_can_dispatch_controller_and_protector_units_from_the_same_worl
                     player_id: 1,
                     origin,
                     army: Army::from([(fighter, 3)]),
-                    bombing: crate::core::missions::BombingRaid::None,
+                    bombing: BombingRaid::None,
                     combat_probes: false,
                     battle_plan: Default::default(),
                 },
@@ -1626,7 +1625,7 @@ fn joint_missions_can_dispatch_controller_and_protector_units_from_the_same_worl
                     player_id: 2,
                     origin,
                     army: Army::from([(fighter, protector_count)]),
-                    bombing: crate::core::missions::BombingRaid::None,
+                    bombing: BombingRaid::None,
                     combat_probes: false,
                     battle_plan: Default::default(),
                 },
@@ -1765,10 +1764,7 @@ fn every_home_planet_starts_with_five_rocket_launchers() {
         .unwrap();
         model.start().unwrap();
         for player in &model.players {
-            assert_eq!(
-                model.map.solar_band(player.home_planet),
-                Some(crate::core::map::planet::SolarBand::Temperate)
-            );
+            assert_eq!(model.map.solar_band(player.home_planet), Some(SolarBand::Temperate));
             assert_eq!(
                 model
                     .map
@@ -2055,14 +2051,14 @@ fn direct_colonization_adds_balanced_starter_infrastructure() {
         assert_eq!(planet.army.amount(&Unit::Building(building)), 1, "{building:?}");
     }
     assert_eq!(planet.army.amount(&Unit::colony_ship()), 0);
-    assert_eq!(crate::core::energy::EnergyGrid::for_world(&model.map, planet).balance(), 0);
+    assert_eq!(EnergyGrid::for_world(&model.map, planet).balance(), 0);
 }
 
 #[test]
 fn recycler_salvage_bypasses_empire_grid_brownouts() {
     let mut model = started_model(2);
     let player_id = model.players[0].id;
-    let asteroid_targets = crate::core::map::asteroids::recycler_asteroid_targets(&model.map);
+    let asteroid_targets = recycler_asteroid_targets(&model.map);
     let home = model.players[0].home_planet;
     let reachable_world = *asteroid_targets
         .keys()
@@ -2072,7 +2068,7 @@ fn recycler_salvage_bypasses_empire_grid_brownouts() {
     let planet = model.map.get_mut(home);
     planet.position = reachable_position;
     planet.army.insert(Unit::Building(Building::Recycler), Building::MAX_LEVEL);
-    assert!(crate::core::map::asteroids::recycler_asteroid_targets(&model.map).contains_key(&home));
+    assert!(recycler_asteroid_targets(&model.map).contains_key(&home));
 
     model
         .map
@@ -2217,6 +2213,7 @@ fn mission_commands_ignore_zero_count_units() {
         BattlePlan::default(),
         false,
         false,
+        None,
     )
     .unwrap();
 
@@ -2269,7 +2266,8 @@ fn recalling_a_mission_launched_in_the_same_turn_restores_the_exact_prelaunch_st
 
 #[test]
 fn every_recallable_mission_type_can_be_recalled_from_its_current_position_for_free() {
-    let model = started_model(2);
+    let mut model = started_model(2);
+    model.rules.space_fauna_percent = 0;
     let player_id = model.players[0].id;
     let original_origin = model.players[0].home_planet;
     let outbound_destination = model.players[1].home_planet;
@@ -2312,7 +2310,7 @@ fn every_recallable_mission_type_can_be_recalled_from_its_current_position_for_f
         state.missions.push(mission);
         let resources = state.player(player_id).unwrap().resources;
 
-        let preview = preview_commands(
+        let mut preview = preview_commands(
             &state,
             player_id,
             &[TurnCommand::RecallMission {
@@ -2335,6 +2333,87 @@ fn every_recallable_mission_type_can_be_recalled_from_its_current_position_for_f
         assert!(!recalled.jump_gate);
         assert!(recalled.is_returning());
         assert!(recalled.logs.contains("Mission recalled to planet"));
+        assert!(preview.players[0].reports.is_empty());
+        let returning_army = preview.missions[0].army.clone();
+        for _ in 0..100 {
+            if preview.missions.is_empty() {
+                break;
+            }
+            assert!(preview.players[0].reports.is_empty(), "{objective:?}: not docked yet");
+            empty_turn(&mut preview);
+        }
+        assert!(preview.missions.is_empty(), "{objective:?}: fleet never returned");
+        assert_eq!(preview.players[0].reports.len(), 1);
+        let report = &preview.players[0].reports[0];
+        assert!(!report.hidden);
+        assert_eq!(report.mission.return_objective, Some(objective));
+        assert_eq!(report.mission.destination, original_origin);
+        assert_eq!(report.surviving_attacker, returning_army);
+        assert!(report.combat_report.is_none());
+        let restored =
+            PersistedGame::from_json(PersistedGame::new(preview.clone()).to_json().unwrap())
+                .unwrap();
+        assert_eq!(restored.state.players[0].reports[0].mission.return_objective, Some(objective));
+        assert!(!restored.state.players[0].reports[0].hidden);
+        empty_turn(&mut preview);
+        assert_eq!(preview.players[0].reports.len(), 1, "{objective:?}: only report docking once");
+    }
+}
+
+#[test]
+fn simultaneous_returns_keep_each_missions_report_and_original_objective() {
+    for allied_port in [false, true] {
+        let mut model = started_model(3);
+        model.rules.space_fauna_percent = 0;
+        let home = model.players[0].home_planet;
+        let port = if allied_port {
+            model.players[1].home_planet
+        } else {
+            home
+        };
+        let origin = model.players[2].home_planet;
+        if allied_port {
+            set_protection_permission_immediately(&mut model, 2, port, 1, true).unwrap();
+        }
+        let fighter = Unit::Ship(Ship::LightFighter);
+        let before = model.map.get(port).army.combined_amount(&fighter);
+        for (index, objective) in
+            [Some(Icon::Attack), Some(Icon::Spy), Some(Icon::Attack), None].into_iter().enumerate()
+        {
+            let mut mission = Mission::new_with_id(
+                100 + index as u64,
+                model.turn as usize,
+                1,
+                model.map.get(origin),
+                model.map.get(port),
+                Icon::Deploy,
+                Army::from([(fighter, 1)]),
+                BombingRaid::None,
+                false,
+                false,
+                None,
+            );
+            mission.return_objective = objective;
+            mission.position = model.map.get(port).position;
+            model.missions.push(mission);
+        }
+        empty_turn(&mut model);
+        assert!(model.missions.is_empty());
+        assert_eq!(model.map.get(port).army.combined_amount(&fighter), before + 4);
+        let reports = &model.players[0].reports;
+        assert_eq!(reports.len(), 4, "allied port {allied_port}");
+        for (index, objective) in
+            [Some(Icon::Attack), Some(Icon::Spy), Some(Icon::Attack), None].into_iter().enumerate()
+        {
+            let report =
+                reports.iter().find(|report| report.mission.id == 100 + index as u64).unwrap();
+            assert!(!report.hidden);
+            assert_eq!(report.mission.return_objective, objective);
+            assert_eq!(report.surviving_attacker.amount(&fighter), 1);
+            assert!(report.combat_report.is_none());
+        }
+        empty_turn(&mut model);
+        assert_eq!(model.players[0].reports.len(), 4);
     }
 }
 
@@ -2513,6 +2592,7 @@ fn departing_planets_and_moons_release_control_only_when_vacant() {
                 BattlePlan::default(),
                 false,
                 false,
+                None,
             )
             .unwrap();
 
@@ -3016,13 +3096,13 @@ fn rejects_malformed_persisted_state() {
         false,
         None,
     );
-    with_report.players[0].push_report(crate::core::combat::report::MissionReport {
+    with_report.players[0].push_report(MissionReport {
         id: 7,
         turn: 1,
         surviving_defender: destination.army.clone(),
         destination_owned: destination.owned,
         destination_controlled: destination.controlled,
-        ..crate::test_support::empty_report(mission, destination.clone())
+        ..empty_report(mission, destination.clone())
     });
     let mut invalid_report = PersistedGame::new(with_report.clone()).to_json().unwrap();
     invalid_report["state"]["players"][0]["reports"][0]["mission"]["destination"] =
@@ -3229,7 +3309,7 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
                 player_id: 1,
                 origin: leader_origin,
                 army: Army::from([(Unit::Ship(Ship::LightFighter), 4)]),
-                bombing: crate::core::missions::BombingRaid::None,
+                bombing: BombingRaid::None,
                 combat_probes: false,
                 battle_plan: Default::default(),
             },
@@ -3237,7 +3317,7 @@ fn joint_attack_synchronizes_fleets_and_stations_surviving_supporters_as_protect
                 player_id: 2,
                 origin: supporter_origin,
                 army: Army::from([(Unit::Ship(Ship::LightFighter), 3)]),
-                bombing: crate::core::missions::BombingRaid::None,
+                bombing: BombingRaid::None,
                 combat_probes: false,
                 battle_plan: Default::default(),
             },

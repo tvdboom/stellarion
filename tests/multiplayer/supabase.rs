@@ -1,3 +1,7 @@
+use super::*;
+use crate::core::simulation::{GameModel, GameRules};
+use crate::multiplayer::model::{BackendEvent, BackendEventKind, JoinDisposition};
+
 /// Every gameplay write uses the SQL RPC contract installed by schema.sql.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
@@ -176,10 +180,6 @@ fn rejected_refresh_recovers_without_hiding_other_failures() {
         }
     }
 }
-
-use super::*;
-use crate::core::simulation::{GameModel, GameRules};
-use crate::multiplayer::model::{BackendEvent, BackendEventKind, JoinDisposition};
 
 const SCHEMA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/supabase/schema.sql"));
 

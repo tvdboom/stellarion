@@ -1,8 +1,13 @@
 use rand::SeedableRng;
 
 use super::*;
-use crate::core::map::planet::PlanetKind;
-use crate::core::resources::Resources;
+
+use crate::core::map::planet::{PlanetKind, ShieldOverloadState};
+use crate::core::resources::{ResourceName, Resources};
+use crate::core::units::defense::Defense;
+use crate::core::units::operations::SpaceDockMode;
+use crate::core::units::ships::Ship;
+use crate::test_support::empty_report;
 
 #[test]
 fn elder_star_dragon_kills_an_unscreened_war_sun_without_rapid_fire() {
@@ -99,7 +104,6 @@ fn nullstar_behemoth_one_shots_every_conventional_spaceship() {
 
 #[test]
 fn bastion_statistics_apply_to_every_combat_round_and_survive_reports() {
-    use crate::core::units::operations::SpaceDockMode;
     let mut destination = Planet::new(1, "Bastion".into(), Vec2::X, false, 1.0);
     destination.colonize(2);
     destination.army.clear();
@@ -165,9 +169,10 @@ fn zero_damage_stalemate_terminates() {
         resources: Default::default(),
         raid_cache: Default::default(),
         jump_gate: 0,
+        sabotage: Default::default(),
 
         operations: Default::default(),
-        terraformer_focus: Some(crate::core::resources::ResourceName::Metal),
+        terraformer_focus: Some(ResourceName::Metal),
         command_relay_active: true,
         shield_overload: Default::default(),
         fleet_withdrawal: Default::default(),
@@ -304,7 +309,7 @@ fn ordinary_ships_use_one_target_pool_while_bombers_keep_defense_priority() {
 
     let ship = Unit::Ship(Ship::Probe);
     let dock = Unit::space_dock();
-    let defense = Unit::Defense(crate::core::units::defense::Defense::RocketLauncher);
+    let defense = Unit::Defense(Defense::RocketLauncher);
     let mut mixed = vec![combatant(1, ship), combatant(2, dock), combatant(3, defense)];
     let mut rng = rand_chacha::ChaCha8Rng::from_seed([14; 32]);
 
@@ -467,8 +472,8 @@ fn overloaded_planetary_shield_enters_combat_with_its_level_scaled_bonus() {
     destination.owned = Some(2);
     destination.controlled = Some(2);
     destination.army.insert(Unit::planetary_shield(), 5);
-    destination.army.insert(Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 1);
-    destination.shield_overload = crate::core::map::planet::ShieldOverloadState::Overloaded;
+    destination.army.insert(Unit::Defense(Defense::RocketLauncher), 1);
+    destination.shield_overload = ShieldOverloadState::Overloaded;
     let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
     origin.owned = Some(1);
     origin.controlled = Some(1);
@@ -517,9 +522,9 @@ fn ship_fire_never_reaches_ground_defenses_while_the_planetary_shield_remains() 
         (Unit::planetary_shield(), 5),
         (Unit::crawler(), 8),
         (Unit::repair_truck(), 8),
-        (Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 12),
-        (Unit::Defense(crate::core::units::defense::Defense::GaussCannon), 12),
-        (Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 12),
+        (Unit::Defense(Defense::RocketLauncher), 12),
+        (Unit::Defense(Defense::GaussCannon), 12),
+        (Unit::Defense(Defense::PlasmaTurret), 12),
     ])
     .into();
     let mut origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
@@ -622,9 +627,10 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         resources: Default::default(),
         raid_cache: Default::default(),
         jump_gate: 0,
+        sabotage: Default::default(),
 
         operations: Default::default(),
-        terraformer_focus: Some(crate::core::resources::ResourceName::Metal),
+        terraformer_focus: Some(ResourceName::Metal),
         command_relay_active: true,
         shield_overload: Default::default(),
         fleet_withdrawal: Default::default(),
@@ -636,8 +642,8 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         independent_population: Default::default(),
         army: Army::from([
             (Unit::crawler(), surviving_crawlers + 10),
-            (Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 10),
-            (Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 2),
+            (Unit::Defense(Defense::RocketLauncher), 10),
+            (Unit::Defense(Defense::PlasmaTurret), 2),
             (Unit::space_dock(), 1),
             (Unit::antiballistic_missile(), 1),
         ])
@@ -658,7 +664,7 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         &origin,
         &destination,
         Icon::Attack,
-        Army::from([(Unit::Ship(crate::core::units::ships::Ship::Cruiser), 1)]),
+        Army::from([(Unit::Ship(Ship::Cruiser), 1)]),
         BombingRaid::None,
         false,
         false,
@@ -669,14 +675,14 @@ fn salvage_report(surviving_crawlers: usize) -> MissionReport {
         turn: 1,
         surviving_defender: Army::from([
             (Unit::crawler(), surviving_crawlers),
-            (Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 4),
-            (Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 1),
+            (Unit::Defense(Defense::RocketLauncher), 4),
+            (Unit::Defense(Defense::PlasmaTurret), 1),
         ])
         .into(),
         destination_owned: Some(2),
         destination_controlled: Some(2),
         combat_report: Some(CombatReport::default()),
-        ..crate::test_support::empty_report(mission, destination)
+        ..empty_report(mission, destination)
     }
 }
 
@@ -689,14 +695,11 @@ fn crawler_salvage_is_component_wise_capped_and_requires_a_defender_win() {
     assert_eq!(salvage_report(100).defender_salvage(), Resources::new(290, 65, 55));
 
     let mut draw = salvage_report(100);
-    draw.surviving_attacker.insert(Unit::Ship(crate::core::units::ships::Ship::Cruiser), 1);
+    draw.surviving_attacker.insert(Unit::Ship(Ship::Cruiser), 1);
     assert!(draw.is_stalemate());
     assert_eq!(draw.defender_salvage(), Resources::default());
 
     let mut large = salvage_report(50);
-    large
-        .planet
-        .army
-        .insert(Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), usize::MAX);
+    large.planet.army.insert(Unit::Defense(Defense::RocketLauncher), usize::MAX);
     assert_eq!(large.defender_salvage().metal, usize::MAX / 2);
 }

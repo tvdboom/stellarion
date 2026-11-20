@@ -5,7 +5,7 @@ use std::iter::Iterator;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-use crate::core::resources::Resources;
+use crate::core::resources::{ResourceName, Resources};
 use crate::core::units::{orbitals, Description, Price, Unit};
 
 #[derive(
@@ -116,8 +116,7 @@ impl FleetWithdrawal {
 
 impl Building {
     /// Resource extracted by this building, when it is a mine or synthesizer.
-    pub const fn mined_resource(self) -> Option<crate::core::resources::ResourceName> {
-        use crate::core::resources::ResourceName;
+    pub const fn mined_resource(self) -> Option<ResourceName> {
         match self {
             Self::MetalMine => Some(ResourceName::Metal),
             Self::CrystalMine => Some(ResourceName::Crystal),

@@ -12,14 +12,15 @@ use crate::core::constants::{MAX_ZOOM, MESSAGE_DURATION};
 use crate::core::loading_screen::LoadingScreen;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
-use crate::core::map::planet::Planet;
-use crate::core::map::planet::PlanetId;
+use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::{select_planet, PublicStructure};
 use crate::core::missions::{Mission, MissionId, Missions};
 use crate::core::player::Player;
 use crate::core::states::{AppState, GameState};
 use crate::core::ui::location_marker::LocationMarker;
-use crate::core::ui::systems::{resource_bar_bottom, viewport_ui_scale, MissionTab, UiState};
+use crate::core::ui::systems::{
+    draw_ui, resource_bar_bottom, viewport_ui_scale, MissionTab, UiState,
+};
 use crate::core::units::Amount;
 use crate::multiplayer::client::MultiplayerSession;
 
@@ -706,10 +707,7 @@ impl Plugin for MessagesPlugin {
         app.init_resource::<Messages>()
             .add_systems(OnExit(AppState::Game), clear_notifications)
             .add_systems(OnEnter(AppState::LoadingGame), clear_notifications)
-            .add_systems(
-                EguiPrimaryContextPass,
-                check_messages.after(crate::core::ui::systems::draw_ui),
-            );
+            .add_systems(EguiPrimaryContextPass, check_messages.after(draw_ui));
     }
 }
 

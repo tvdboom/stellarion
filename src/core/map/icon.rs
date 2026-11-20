@@ -28,10 +28,14 @@ pub enum Icon {
     Raid,
     /// Searches a fixed area of space and attacks every detected foreign fleet.
     Patrol,
+    /// Explores a deep-space landmark and returns with resources or recovered ships.
+    Expedition,
     /// Ambushes one visible travelling enemy fleet before its arrival.
     Intercept,
     /// The spy value.
     Spy,
+    /// Probes temporarily disable a known orbital structure.
+    Sabotage,
     /// The missile strike value.
     MissileStrike,
     /// The destroy value.
@@ -73,7 +77,7 @@ impl Icon {
 
     /// Handles the planet only interaction.
     pub fn on_planet_only(&self) -> bool {
-        matches!(self, Icon::Colonize | Icon::Raid | Icon::MissileStrike)
+        matches!(self, Icon::Colonize | Icon::Raid | Icon::MissileStrike | Icon::Sabotage)
     }
 
     /// Returns whether this value mission.
@@ -85,8 +89,10 @@ impl Icon {
                 | Icon::Attack
                 | Icon::Raid
                 | Icon::Patrol
+                | Icon::Expedition
                 | Icon::Intercept
                 | Icon::Spy
+                | Icon::Sabotage
                 | Icon::MissileStrike
                 | Icon::Destroy
                 | Icon::Protect
@@ -102,16 +108,23 @@ impl Icon {
                 | Icon::Attack
                 | Icon::Raid
                 | Icon::Patrol
+                | Icon::Expedition
                 | Icon::Intercept
                 | Icon::Spy
+                | Icon::Sabotage
                 | Icon::Destroy
                 | Icon::Protect
         )
     }
 
+    /// Probe-only reconnaissance and sabotage share concealment and first-round withdrawal.
+    pub const fn is_probe_mission(self) -> bool {
+        matches!(self, Self::Spy | Self::Sabotage)
+    }
+
     /// Returns whether this value hidden.
     pub fn is_hidden(&self) -> bool {
-        matches!(self, Icon::Spy | Icon::MissileStrike)
+        matches!(self, Icon::Spy | Icon::Sabotage | Icon::MissileStrike)
     }
 
     /// Returns whether this action is hostile toward its destination.
@@ -122,6 +135,7 @@ impl Icon {
                 | Icon::Attack
                 | Icon::Raid
                 | Icon::Spy
+                | Icon::Sabotage
                 | Icon::MissileStrike
                 | Icon::Destroy
                 | Icon::RailgunStrike
@@ -146,7 +160,7 @@ impl Icon {
             Icon::Colonize => Some(2),
             Icon::Attack => Some(1),
             Icon::Raid => Some(1),
-            Icon::Spy => Some(4),
+            Icon::Spy | Icon::Sabotage => Some(4),
             Icon::MissileStrike => Some(5),
             Icon::Destroy => Some(3),
             Icon::Deploy | Icon::Protect => Some(0),
@@ -173,6 +187,7 @@ impl Icon {
                 Icon::Attack,
                 Icon::Raid,
                 Icon::Spy,
+                Icon::Sabotage,
                 Icon::MissileStrike,
                 Icon::Destroy,
             ];
@@ -192,11 +207,11 @@ impl Icon {
             },
             Icon::Fleet | Icon::Deploy | Icon::Protect => origin.has_fleet(),
             Icon::Defenses => origin.has_defense(),
-            Icon::Colonize => origin.has(&Unit::colony_ship()),
+            Icon::Colonize | Icon::Expedition => origin.has(&Unit::colony_ship()),
             Icon::Attack | Icon::Raid | Icon::Patrol | Icon::Intercept => {
                 origin.army.iter().any(|(u, c)| *c > 0 && u.is_combat_ship())
             },
-            Icon::Spy => origin.army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
+            Icon::Spy | Icon::Sabotage => origin.army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
             Icon::MissileStrike => origin.has(&Unit::interplanetary_missile()),
             Icon::Destroy => origin.has(&Unit::war_sun()),
             Icon::RailgunStrike | Icon::AlliedAttack | Icon::EnemyFleet => false,
@@ -206,11 +221,11 @@ impl Icon {
     /// Returns whether this objective can be launched from the supplied player-owned unit pool.
     pub fn condition_for_army(&self, army: &Army) -> bool {
         match self {
-            Icon::Colonize => army.amount(&Unit::colony_ship()) > 0,
+            Icon::Colonize | Icon::Expedition => army.amount(&Unit::colony_ship()) > 0,
             Icon::Attack | Icon::Raid | Icon::Patrol | Icon::Intercept => {
                 army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
             },
-            Icon::Spy => army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
+            Icon::Spy | Icon::Sabotage => army.amount(&Unit::probe()) >= MIN_SPY_PROBES,
             Icon::MissileStrike => army.amount(&Unit::interplanetary_missile()) > 0,
             Icon::Destroy => army.amount(&Unit::war_sun()) > 0,
             Icon::Deploy | Icon::Protect | Icon::Fleet => {
@@ -225,28 +240,48 @@ impl Icon {
 
     /// Checks the actual dispatched units, ignoring empty entries retained by the UI.
     pub fn accepts_army(self, army: &Army) -> bool {
-        let only = |predicate: fn(&Unit) -> bool| {
-            army.has_army() && army.iter().all(|(unit, count)| *count == 0 || predicate(unit))
+        self.fleet_unavailable_reason(army).is_none()
+    }
+
+    /// Explains a missing required unit or a disallowed unit in the dispatched fleet.
+    pub(crate) fn fleet_unavailable_reason(self, army: &Army) -> Option<&'static str> {
+        if !self.condition_for_army(army) {
+            return Some(match self {
+                Self::Colonize => "Colonization requires at least one Colony Ship.",
+                Self::Expedition => "An Expedition requires at least one Colony Ship.",
+                Self::Attack => "An Attack requires at least one combat ship.",
+                Self::Raid => "A Raid requires at least one combat ship.",
+                Self::Patrol => "A Patrol requires at least one combat ship. Probes can travel alone to reinforce your active patrol.",
+                Self::Intercept => "Select at least one combat ship for interception.",
+                Self::Spy | Self::Sabotage => "Spy and Sabotage missions require at least 5 Probes.",
+                Self::MissileStrike => "A Missile Strike requires at least one Interplanetary Missile.",
+                Self::Destroy => "A Destroy mission requires at least one War Sun.",
+                Self::Deploy | Self::Protect => "Select at least one ship for this mission.",
+                _ => "Select a mission objective.",
+            });
+        }
+        let has_disallowed_unit = |allowed: fn(&Unit) -> bool| {
+            army.iter().any(|(unit, count)| *count > 0 && !allowed(unit))
         };
         match self {
-            Self::Spy => {
-                only(|unit| *unit == Unit::probe()) && army.amount(&Unit::probe()) >= MIN_SPY_PROBES
+            Self::Spy | Self::Sabotage => has_disallowed_unit(|unit| *unit == Unit::probe())
+                .then_some("Only Probes can join Spy and Sabotage missions."),
+            Self::MissileStrike => {
+                has_disallowed_unit(|unit| *unit == Unit::interplanetary_missile())
+                    .then_some("Only Interplanetary Missiles can join a Missile Strike.")
             },
-            Self::MissileStrike => only(|unit| *unit == Unit::interplanetary_missile()),
-            Self::Deploy | Self::Protect => only(Unit::is_ship),
-            Self::Colonize => only(Unit::is_ship) && army.amount(&Unit::colony_ship()) > 0,
-            Self::Destroy => only(Unit::is_ship) && army.amount(&Unit::war_sun()) > 0,
-            Self::Attack | Self::Raid | Self::Patrol | Self::Intercept => {
-                only(Unit::is_ship)
-                    && army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship())
+            Self::Deploy
+            | Self::Protect
+            | Self::Colonize
+            | Self::Expedition
+            | Self::Destroy
+            | Self::Attack
+            | Self::Raid
+            | Self::Patrol
+            | Self::Intercept => {
+                has_disallowed_unit(Unit::is_ship).then_some("Only ships can join this mission.")
             },
-            Self::RailgunStrike
-            | Self::AlliedAttack
-            | Self::EnemyFleet
-            | Self::Buildings
-            | Self::Orbitals
-            | Self::Fleet
-            | Self::Defenses => false,
+            _ => Some("Select a mission objective."),
         }
     }
 
@@ -259,7 +294,11 @@ impl Icon {
                 "Select combat ships and a visible enemy mission with time to intercept."
             },
             Icon::Patrol => "Select combat ships and a patrol zone in empty space.",
+            Icon::Expedition => {
+                "Select at least one Colony Ship and a deep-space landmark destination."
+            },
             Icon::Spy => "A minimum of 5 Probes are required for a Spy mission.",
+            Icon::Sabotage => "A minimum of 5 Probes and a known orbital target are required.",
             Icon::MissileStrike => "No Interplanetary Missiles on the origin planet.",
             Icon::Destroy => "No War Suns on the origin planet.",
             Icon::Deploy => "No ships on the origin planet.",
@@ -276,6 +315,13 @@ impl Description for Icon {
     /// Returns the user-facing description of this gameplay value.
     fn description(&self) -> &str {
         match self {
+            Icon::Expedition => {
+                "Explore a point on the map with at least one Colony Ship. Most completed \
+                expeditions find some salvage. Sites farther from the nearest planet or moon you \
+                control offer better odds of larger hauls and recovered ships. The fleet returns \
+                automatically and delivers its \
+                rewards on docking. Recalling before exploration earns no rewards."
+            },
             Icon::Intercept => {
                 "Ambush a visible enemy fleet along its flight path, including its final \
                 approach before landing. A recall can make the committed rendezvous miss. \
@@ -308,6 +354,11 @@ impl Description for Icon {
                 "Fight normal combat, steal resources on victory, and return without taking \
                 ownership or control. Moons cannot be raided. Resources raided are chosen \
                 randomly, limited by the colony owner's shared stockpile."
+            },
+            Icon::Sabotage => {
+                "Send at least 5 Probes to disable a known Sensor Phalanx, Jump Gate, or Orbital \
+                Railgun for one turn. Probes withdraw after the first combat round. At least one \
+                Probe must survive, and the orbital must still be there on arrival."
             },
             Icon::Spy => {
                 "Send at least 5 Probes to gather intelligence on a target planet. Probes leave \

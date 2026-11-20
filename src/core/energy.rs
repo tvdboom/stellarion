@@ -7,21 +7,18 @@ use crate::core::constants::{
 use crate::core::identity::PlayerId;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{Planet, SolarBand};
+use crate::core::missions::Mission;
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::{Amount, Unit};
 
 /// Energy committed by this player's jumps launched during the current planning turn.
 /// The mission owns the cost even if its origin is later abandoned or destroyed.
-pub fn jump_gate_energy_demand(
-    missions: &[crate::core::missions::Mission],
-    player_id: PlayerId,
-    turn: usize,
-) -> usize {
+pub fn jump_gate_energy_demand(missions: &[Mission], player_id: PlayerId, turn: usize) -> usize {
     missions
         .iter()
         .filter(|mission| mission.owner == player_id && mission.send == turn)
-        .map(crate::core::missions::Mission::jump_energy_cost)
+        .map(Mission::jump_energy_cost)
         .fold(0, usize::saturating_add)
 }
 

@@ -1,10 +1,13 @@
 //! Crawler-style survivor pulses and floating resource gains in cinematic playback.
 
 use super::*;
+
+use crate::core::audio::PlayAudioMsg;
 use crate::core::combat::systems::{
     SALVAGE_HIGHLIGHT_TIME_MS, SALVAGE_PICKUP_REVEAL_TIME_MS, SALVAGE_PICKUP_TIME_MS,
     SALVAGE_RETURN_TIME_MS,
 };
+use crate::core::raids::ship_cargo_capacity;
 use crate::core::resources::{ResourceName, Resources};
 
 pub(super) struct ResourcePickup {
@@ -40,7 +43,7 @@ impl ResourcePickup {
         }
         let weights = actors
             .iter()
-            .map(|index| crate::core::raids::ship_cargo_capacity(timeline.actors[*index].unit))
+            .map(|index| ship_cargo_capacity(timeline.actors[*index].unit))
             .collect::<Vec<_>>();
         let shares = if raiding {
             super::super::rewards::resource_shares(resources, &weights)
@@ -86,7 +89,7 @@ impl ResourcePickup {
 }
 
 impl CinematicPlayback {
-    pub(crate) fn resource_pickup_cue(&self) -> Option<(f32, crate::core::audio::PlayAudioMsg)> {
+    pub(crate) fn resource_pickup_cue(&self) -> Option<(f32, PlayAudioMsg)> {
         self.resource_pickup.as_ref().map(|pickup| {
             (
                 pickup.starts_at + SALVAGE_HIGHLIGHT_TIME_MS as f32 / 1000.0,

@@ -99,18 +99,15 @@ defenses.
   buildings remain.
 - **Raid:** Fight normal combat, steal resources on victory, and return without taking ownership
   or control. Moons cannot be raided. Resources raided are chosen randomly, limited by the colony
-  owner's shared stockpile.
-- **Spy:** Gather intelligence on an enemies' strength using the Probe ships. A minimum of five
-  probes is required for a spy mission. The more Probes that return, the more intelligence is
-  revealed. Spy missions cannot be detected by a Sensor Phalanx and do not reveal their origin. If
-  Probes encounter space fauna en route, survivors withdraw after one combat round and continue.
-  **Deep Cover** requires a completed Command Relay at the origin and adds 10 deuterium per Probe
-  to the launch cost, without a Reactor discount. If the origin's completed relay level is higher
-  than the destination's on arrival, all Probes scan and return without combat, and the defender
-  receives no report or notification. Equal or lower levels trigger normal one-round Spy combat;
-  the extra fuel is still spent. Deep Cover missions never encounter space fauna. Both relay levels
-  count even with deception disabled. Relay deception continues to divert small groups sent without
-  Deep Cover.
+  owner's shared stockpile and the surviving fleet's cargo capacity. In raids and expeditions,
+  each Colony Ship carries 200 resources. Other ships at production levels 1–5 carry 0, 10, 30,
+  70, and 150 resources each, respectively.
+- **Spy:** Gather intelligence on an enemies' strength. A minimum of five probes is required for 
+  a spy mission. The more Probes that return, the more intelligence is revealed. Spy missions 
+  cannot be detected by a Sensor Phalanx and do not reveal their origin.
+- **Sabotage:** Send at least 5 Probes to disable a known Sensor Phalanx, Jump Gate, or Orbital
+  Railgun for one turn. Probes withdraw after the first combat round. At least one Probe must
+  survive, and the orbital must still be there on arrival.
 - **Missile Strike:** Launch Interplanetary Missiles against a planet. They bypass ships and the
   Planetary Shield to hit defenses directly. Surviving missiles are consumed. A strike always
   hits the destination, even if it  becomes friendly. Missile strikes reveal no enemy-unit
@@ -133,6 +130,10 @@ defenses.
   strongest intersecting zone. An intercepted fleet loses its remaining movement that turn. Each
   fleet participates in at most one space battle per turn. Missiles and deep cover missions
   cannot be intercepted. Each patrol also rolls the space-fauna chance.
+- **Expedition:** Send a fleet to explore outer space. Returning missions can carry resources
+  or newly found ships. Sites farther from your nearest controlled world offer larger hauls.
+  Expeditions require at least one Colony Ship and are subject to enemy patrols or space fauna
+  encounters. Recalling before exploration yields no discoveries.
 
 ### Units
 

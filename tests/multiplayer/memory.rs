@@ -2,11 +2,23 @@ use futures_lite::future::block_on;
 use std::sync::{Arc, Barrier};
 
 use super::*;
+
+use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
 use crate::core::identity::GameCode;
 use crate::core::map::icon::Icon;
 use crate::core::missions::BombingRaid;
 use crate::core::player::PlayerColor;
-use crate::core::simulation::{resolve_turn, GameModel, GameRules, TurnCommand};
+use crate::core::resources::Resources;
+use crate::core::simulation::{
+    preview_commands, resolve_turn, GameModel, GameRules, JointAttackContribution, TurnCommand,
+};
+use crate::core::units::buildings::Building;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Army, Unit};
+#[cfg(all(feature = "app", debug_assertions))]
+use crate::multiplayer::client::close_local_practice_negotiations;
+use crate::multiplayer::model::{JointAttackParticipant, TradeParticipant};
+use crate::multiplayer::recovery::{generate_game_code, RecoveryCode};
 
 #[test]
 fn sync_suppresses_unchanged_rosters_and_preserves_private_replay() {
@@ -77,11 +89,6 @@ fn sync_suppresses_unchanged_rosters_and_preserves_private_replay() {
         Err(BackendError::Forbidden)
     ));
 }
-use crate::core::units::buildings::Building;
-use crate::core::units::ships::Ship;
-use crate::core::units::{Army, Unit};
-use crate::multiplayer::model::JointAttackParticipant;
-use crate::multiplayer::recovery::{generate_game_code, RecoveryCode};
 
 /// Creates a session and a matching recovery credential.
 fn identity(backend: &InMemoryBackend) -> (AuthSession, RecoveryCode) {
@@ -412,11 +419,11 @@ fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world
     let guest_home = active.persisted.state.player(2).unwrap().home_planet;
     let outsider_home = active.persisted.state.player(3).unwrap().home_planet;
     let fighter = Unit::Ship(Ship::LightFighter);
-    let contribution = |player_id, origin| crate::core::simulation::JointAttackContribution {
+    let contribution = |player_id, origin| JointAttackContribution {
         player_id,
         origin,
         army: Army::from([(fighter, 1)]),
-        bombing: crate::core::missions::BombingRaid::None,
+        bombing: BombingRaid::None,
         battle_plan: Default::default(),
         combat_probes: false,
     };
@@ -548,7 +555,7 @@ fn joint_attack_invitations_are_private_live_and_reject_attacking_your_own_world
         } = &mut forged_plan.commands[0]
         {
             contributions[1].battle_plan.automatic_tactic = false;
-            contributions[1].battle_plan.tactic = crate::core::combat::plan::CombatTactic::Siege;
+            contributions[1].battle_plan.tactic = CombatTactic::Siege;
         }
         assert!(validate_joint_attack_commands(stored, &forged_plan).is_err());
         freeze_joint_attack_launches(stored, &exact_launch).unwrap();
@@ -714,7 +721,7 @@ fn two_player_games_reject_joint_attack_invitations() {
             JointAttackParticipant {
                 player_id: 1,
                 response: JointAttackResponse::Accepted,
-                contribution: Some(crate::core::simulation::JointAttackContribution {
+                contribution: Some(JointAttackContribution {
                     player_id: 1,
                     origin: host_home,
                     army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
@@ -1756,8 +1763,6 @@ fn reconnect_replays_notifications_and_loads_current_state() {
 
 #[test]
 fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_guests() {
-    use crate::core::missions::BombingRaid;
-    use crate::core::simulation::JointAttackContribution;
     let backend = InMemoryBackend::new();
     let (host, recovery) = identity(&backend);
     let created = create(&backend, &host, &recovery, 4);
@@ -1849,11 +1854,11 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
     .is_err());
     let mut guest_fleet = contribution(2);
     guest_fleet.combat_probes = true;
-    guest_fleet.battle_plan = crate::core::combat::plan::BattlePlan {
+    guest_fleet.battle_plan = BattlePlan {
         automatic_tactic: false,
-        tactic: crate::core::combat::plan::CombatTactic::Interception,
-        target_priority: crate::core::combat::plan::TargetPriority::LightTargets,
-        protection: crate::core::combat::plan::ProtectionPosture::Bulwark,
+        tactic: CombatTactic::Interception,
+        target_priority: TargetPriority::LightTargets,
+        protection: ProtectionPosture::Bulwark,
     };
     let respond = |revision, response, fleet| {
         block_on(backend.respond_joint_attack(
@@ -1960,7 +1965,7 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
                     .battle_plan
                     .automatic_tactic = false;
                 proposal.participants[0].contribution.as_mut().unwrap().battle_plan.tactic =
-                    crate::core::combat::plan::CombatTactic::Siege;
+                    CombatTactic::Siege;
             },
             _ => unreachable!(),
         }
@@ -2071,13 +2076,6 @@ fn joint_planning_publishes_drafts_revises_consent_and_launches_without_pending_
 #[cfg(all(feature = "app", debug_assertions))]
 #[test]
 fn local_practice_declines_open_trades_and_missions_but_preserves_committed_orders() {
-    use crate::core::missions::BombingRaid;
-    use crate::core::resources::Resources;
-    use crate::core::simulation::JointAttackContribution;
-    use crate::core::units::buildings::Building;
-    use crate::multiplayer::client::close_local_practice_negotiations;
-    use crate::multiplayer::model::TradeParticipant;
-
     let backend = InMemoryBackend::new();
     let (host, recovery) = identity(&backend);
     let mut game = create(&backend, &host, &recovery, 4).game;
@@ -2243,9 +2241,6 @@ fn local_practice_declines_open_trades_and_missions_but_preserves_committed_orde
 
 #[test]
 fn trade_edits_are_live_reset_both_sides_and_require_current_consent_to_finalize() {
-    use crate::core::resources::Resources;
-    use crate::core::units::buildings::Building;
-    use crate::multiplayer::model::TradeParticipant;
     let backend = InMemoryBackend::new();
     let (host, recovery) = identity(&backend);
     let created = create(&backend, &host, &recovery, 2);
@@ -2385,7 +2380,7 @@ fn trade_edits_are_live_reset_both_sides_and_require_current_consent_to_finalize
     let storage = backend.lock().unwrap();
     let model = &storage.games[&game.id].record.persisted.state;
     assert_eq!(model.trades.len(), 1);
-    let projected = crate::core::simulation::preview_commands(model, 1, &[]).unwrap();
+    let projected = preview_commands(model, 1, &[]).unwrap();
     assert_eq!(projected.players[0].resources.metal, 9_850);
     assert_eq!(projected.players[1].resources.crystal, 9_750);
     drop(storage);

@@ -15,13 +15,10 @@ pub(super) struct CombatRoundView<'a> {
 impl<'a> CombatRoundView<'a> {
     pub fn new(rounds: &'a [RoundReport]) -> Option<Self> {
         let first = rounds.first()?;
+        let last = rounds.last()?;
         Some(Self {
             rounds,
-            buildings: &rounds
-                .iter()
-                .find(|round| !round.buildings.is_empty())
-                .unwrap_or(first)
-                .buildings,
+            buildings: &last.buildings,
             planetary_shield: rounds
                 .iter()
                 .fold(0, |sum, round| sum.saturating_add(round.planetary_shield)),

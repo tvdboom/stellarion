@@ -62,7 +62,7 @@ impl Description for Ship {
                 as fodder in combat. Probes are the fastest ships in the game."
             },
             Ship::ColonyShip => {
-                "This ship is used to colonize (gain ownership) planets. The Colony Ship does \
+                "This ship colonizes planets and carries resources on raids and expeditions. It does \
                 not take part in any combat and is automatically destroyed if the fight is lost. \
                 Upon colonizing a planet, the ship is deconstructed. Colony ships are very slow \
                 and consume a lot of fuel."

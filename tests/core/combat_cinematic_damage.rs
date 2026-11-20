@@ -1,8 +1,10 @@
 use super::*;
+
 use crate::core::combat::report::{CombatReport, RoundReport};
 use crate::core::combat::resolution::CombatUnit;
 use crate::core::missions::Mission;
 use crate::core::units::Combat;
+use crate::test_support::empty_report;
 
 fn motion(mass: f32, mirror: bool) -> WreckMotion {
     WreckMotion {
@@ -83,7 +85,7 @@ fn torn_hull_meshes_crop_one_atlas_cell_and_preserve_the_original_mirror() {
 }
 
 fn destruction_movie() -> CinematicPlayback {
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
@@ -167,7 +169,7 @@ fn destruction_rewinds_exactly_and_never_uses_an_uncropped_firing_atlas() {
 }
 
 fn damaged_movie(unit: Unit, repair: bool) -> (CinematicPlayback, usize) {
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );

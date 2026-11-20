@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::core::orders::OrderError;
+
 fn cover_game(
     origin_level: usize,
     destination_level: usize,
@@ -167,7 +169,7 @@ fn deep_cover_launch_requires_a_built_relay_spy_objective_and_extra_fuel() {
             model.map.get(mission.destination),
             &wrong_objective,
         ),
-        Err(crate::core::orders::OrderError::DeepCover)
+        Err(OrderError::DeepCover)
     );
     model.players[0].resources.deuterium =
         mission.clone().with_deep_cover(false).fuel_consumption(&model.map);

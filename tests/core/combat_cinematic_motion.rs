@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::core::combat::resolution::ShotReport;
+
 #[test]
 fn approach_has_no_delayed_thrust_or_heading_snap() {
     let movie = tests::replay();
@@ -182,7 +184,7 @@ fn recorded_contact(
         target: Some(0),
         launch_at: impact_at - 0.5,
         impact_at,
-        outcome: crate::core::combat::resolution::ShotReport {
+        outcome: ShotReport {
             target_id: movie.timeline.actors[0].id,
             unit: Some(movie.timeline.actors[0].unit),
             hull_damage: hull,

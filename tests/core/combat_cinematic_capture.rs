@@ -1,20 +1,28 @@
 //! Opt-in offscreen GPU review using the actual cinematic painter and playback controls.
 
 use super::*;
-use crate::core::combat::resolution::resolve_combat_with_rng;
+use strum::IntoEnumIterator;
+
+use crate::core::assets::WorldAssets;
+use crate::core::audio::{draw_audio_controls, ChangeAudioMsg, VolumeFeedbackMsg};
+use crate::core::basis_texture::{BasisTexturePlugin, BasisTextureSettings};
+use crate::core::combat::report::MissionReport;
+use crate::core::combat::resolution::{resolve_combat_with_rng, CombatUnit};
+use crate::core::combat::systems::spawn_combat_result_banner;
 use crate::core::identity::{GameCode, GameId, UserId};
 use crate::core::map::icon::Icon;
-use crate::core::map::planet::Planet;
-use crate::core::missions::{BombingRaid, Mission};
+use crate::core::map::planet::{Garrison, Planet, PlanetKind};
+use crate::core::missions::{BombingRaid, JointAttackMission, Mission};
 use crate::core::random::DeterministicRngState;
 use crate::core::simulation::{GameModel, GameRules, PersistedGame};
+use crate::core::states::AppState;
+use crate::core::ui::systems::{set_ui_style, viewport_ui_scale};
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::client::MultiplayerSession;
 use crate::multiplayer::model::{GameMembership, GameRecord};
 use crate::utils::NameFromEnum;
-use strum::IntoEnumIterator;
 
 fn preview_session() -> MultiplayerSession {
     let model = GameModel::new(
@@ -52,7 +60,7 @@ fn preview_session() -> MultiplayerSession {
     session
 }
 
-fn battle(war_sun: bool) -> crate::core::combat::report::MissionReport {
+fn battle(war_sun: bool) -> MissionReport {
     if !war_sun {
         return battle_with_seed(false, 4567);
     }
@@ -62,7 +70,7 @@ fn battle(war_sun: bool) -> crate::core::combat::report::MissionReport {
         .expect("capture requires a successful recorded destruction")
 }
 
-fn battle_with_seed(war_sun: bool, seed: u64) -> crate::core::combat::report::MissionReport {
+fn battle_with_seed(war_sun: bool, seed: u64) -> MissionReport {
     let mut rng = DeterministicRngState::from_u64(seed).next_rng();
     let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
     origin.colonize(1);
@@ -127,7 +135,7 @@ fn battle_with_seed(war_sun: bool, seed: u64) -> crate::core::combat::report::Mi
     resolve_combat_with_rng(1, &mission, &planet, &mut rng)
 }
 
-fn bombing_battle(raid: BombingRaid) -> crate::core::combat::report::MissionReport {
+fn bombing_battle(raid: BombingRaid) -> MissionReport {
     let buildings = match raid {
         BombingRaid::Economic => Unit::resource_buildings(),
         BombingRaid::Industrial => Unit::industrial_buildings(),
@@ -173,7 +181,7 @@ fn bombing_battle(raid: BombingRaid) -> crate::core::combat::report::MissionRepo
     panic!("capture fixture must exercise hits on all three buildings");
 }
 
-fn stalemate_battle() -> crate::core::combat::report::MissionReport {
+fn stalemate_battle() -> MissionReport {
     let mut rng = DeterministicRngState::from_u64(9).next_rng();
     let mut origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
     origin.colonize(1);
@@ -202,10 +210,6 @@ fn stalemate_battle() -> crate::core::combat::report::MissionReport {
 #[test]
 #[ignore = "offscreen GPU review; writes PNGs under target/cinematic-preview"]
 fn render_cinematic_preview() {
-    use crate::core::assets::WorldAssets;
-    use crate::core::audio::{draw_audio_controls, ChangeAudioMsg, VolumeFeedbackMsg};
-    use crate::core::basis_texture::{BasisTexturePlugin, BasisTextureSettings};
-    use crate::core::states::AppState;
     use bevy::asset::RenderAssetUsages;
     use bevy::camera::RenderTarget;
     use bevy::ecs::system::RunSystemOnce;
@@ -386,11 +390,7 @@ fn render_cinematic_preview() {
     .add_message::<VolumeFeedbackMsg>()
     .add_systems(
         EguiPrimaryContextPass,
-        (
-            crate::core::ui::systems::set_ui_style,
-            draw_cinematic.run_if(in_state(GameState::Combat)),
-            draw_audio_controls,
-        )
+        (set_ui_style, draw_cinematic.run_if(in_state(GameState::Combat)), draw_audio_controls)
             .chain(),
     );
     app.finish();
@@ -560,7 +560,7 @@ fn render_cinematic_preview() {
         .run_system_once(|mut contexts: EguiContexts| {
             let context = contexts.ctx_mut().unwrap();
             let rect = context.content_rect();
-            let scale = crate::core::ui::systems::viewport_ui_scale(rect.size());
+            let scale = viewport_ui_scale(rect.size());
             let spacing = context.global_style().spacing.item_spacing.x;
             let sound = rect.right_top() + egui::vec2(-36.0, 36.0) * scale;
             [sound - egui::vec2((32.0 + spacing) * scale, 0.0), sound]
@@ -738,21 +738,19 @@ fn render_cinematic_preview() {
         }
     }
     let first = &allied.combat_report.as_ref().unwrap().rounds[0];
-    let army = |records: &[crate::core::combat::resolution::CombatUnit], owner| {
+    let army = |records: &[CombatUnit], owner| {
         let mut army = Army::new();
         for record in records.iter().filter(|record| record.owner == Some(owner)) {
             *army.entry(record.unit).or_default() += 1;
         }
         army
     };
-    allied.mission.joint_attack = Some(crate::core::missions::JointAttackMission {
+    allied.mission.joint_attack = Some(JointAttackMission {
         attackers: [(1, army(&first.attacker, 1)), (3, army(&first.attacker, 3))].into(),
         ..default()
     });
-    allied.planet.army = crate::core::map::planet::Garrison::from_parts(
-        army(&first.defender, 2),
-        [(4, army(&first.defender, 4))].into(),
-    );
+    allied.planet.army =
+        Garrison::from_parts(army(&first.defender, 2), [(4, army(&first.defender, 4))].into());
     let mut playback = CinematicPlayback::new(&allied);
     playback.elapsed = playback.timeline.entrance_duration + 1.1;
     for (name, handle) in &app.world().resource::<CaptureImages>().0 {
@@ -882,11 +880,7 @@ fn render_cinematic_preview() {
         let schematic_banner = app
             .world_mut()
             .run_system_once(move |mut commands: Commands, assets: Res<WorldAssets>| {
-                let root = crate::core::combat::systems::spawn_combat_result_banner(
-                    &mut commands,
-                    &assets,
-                    status,
-                );
+                let root = spawn_combat_result_banner(&mut commands, &assets, status);
                 commands.entity(root).insert(UiTargetCamera(camera));
                 root
             })
@@ -905,10 +899,10 @@ fn render_cinematic_preview() {
     }
 
     for (category, raid, kind) in [
-        ("economic", BombingRaid::Economic, crate::core::map::planet::PlanetKind::Dry),
-        ("industrial", BombingRaid::Industrial, crate::core::map::planet::PlanetKind::Water),
-        ("gas-economic", BombingRaid::Economic, crate::core::map::planet::PlanetKind::Gas),
-        ("gas-industrial", BombingRaid::Industrial, crate::core::map::planet::PlanetKind::Gas),
+        ("economic", BombingRaid::Economic, PlanetKind::Dry),
+        ("industrial", BombingRaid::Industrial, PlanetKind::Water),
+        ("gas-economic", BombingRaid::Economic, PlanetKind::Gas),
+        ("gas-industrial", BombingRaid::Industrial, PlanetKind::Gas),
     ] {
         let mut report = bombing_battle(raid);
         // The report's original kind selects presentation only; recorded damage stays intact.
@@ -943,7 +937,7 @@ fn render_cinematic_preview() {
     }
 
     // Inspect all globe types through the production camera, including both stable variants.
-    for kind in crate::core::map::planet::PlanetKind::iter() {
+    for kind in PlanetKind::iter() {
         for variant in 1..=2 {
             let mut report = battle(false);
             report.planet.kind = kind;

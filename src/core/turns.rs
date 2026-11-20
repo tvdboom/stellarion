@@ -12,7 +12,8 @@ use crate::core::constants::EXPLOSION_Z;
 use crate::core::identity::PlayerId;
 use crate::core::map::battle::{BattleEffect, FaunaEffect};
 use crate::core::map::icon::Icon;
-use crate::core::map::model::Map;
+use crate::core::map::interception::InterceptEffect;
+use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::orbital_railgun::OrbitalStrikeEffect;
 use crate::core::map::planet::{Planet, PlanetId};
 use crate::core::map::systems::{ExplosionCmp, PlanetCmp};
@@ -83,14 +84,7 @@ pub(crate) fn end_game_presentation_inactive(presentation: Res<EndGamePresentati
 pub(crate) fn finish_end_game_presentation(
     presentation: Res<EndGamePresentation>,
     orbital_strikes: Query<(), With<OrbitalStrikeEffect>>,
-    battle_aftermath: Query<
-        (),
-        Or<(
-            With<BattleEffect>,
-            With<FaunaEffect>,
-            With<crate::core::map::interception::InterceptEffect>,
-        )>,
-    >,
+    battle_aftermath: Query<(), Or<(With<BattleEffect>, With<FaunaEffect>, With<InterceptEffect>)>>,
     planet_destructions: Query<(), With<ExplosionCmp>>,
     mut next_game_state: ResMut<NextState<GameState>>,
 ) {
@@ -199,6 +193,13 @@ fn report_notification(
         return MessageMsg::info("Your patrol detected a friendly fleet. No combat.")
             .with_action(MessageAction::OpenMissionReport(report.id));
     }
+    if report.mission.return_objective == Some(Icon::Expedition)
+        && report.combat_report.is_none()
+        && !report.is_space_fauna_encounter()
+    {
+        return MessageMsg::info("Expedition returned from outer space.")
+            .with_action(MessageAction::OpenMissionReport(report.id));
+    }
     if matches!(report.mission.objective, Icon::Patrol | Icon::Intercept)
         && !report.is_space_fauna_encounter()
     {
@@ -220,6 +221,38 @@ fn report_notification(
             MessageMsg::warning("Mission survived an unresolved deep-space encounter.")
         };
         return notification.with_action(MessageAction::FocusSpaceEncounter(report.mission.id));
+    }
+    if report.mission.objective == Icon::Sabotage {
+        if let Some(sabotage) = report.mission.sabotage {
+            if report.mission.owner != player.id {
+                let text = if sabotage.succeeded {
+                    format!(
+                        "Your {} on {} was sabotaged.",
+                        sabotage.target.name(),
+                        destination.name
+                    )
+                } else {
+                    format!("Enemy sabotage failed on {}.", destination.name)
+                };
+                return MessageMsg::warning(text)
+                    .with_action(MessageAction::OpenMissionReport(report.id));
+            }
+            let text = if sabotage.succeeded {
+                format!(
+                    "Sabotage succeeded: {} on {}.",
+                    sabotage.target.name(),
+                    destination.name
+                )
+            } else {
+                format!("Sabotage failed on {}.", destination.name)
+            };
+            return if sabotage.succeeded {
+                MessageMsg::info(text)
+            } else {
+                MessageMsg::warning(text)
+            }
+            .with_action(MessageAction::OpenMissionReport(report.id));
+        }
     }
     let local_victory = report.won_by(player.id);
     let notification = match report.mission.objective {
@@ -422,11 +455,7 @@ pub fn start_turn(
             if let Some(presentation) = end_game_presentation.as_deref_mut() {
                 presentation.request();
                 if gameplay_blockers.is_empty() {
-                    commands.spawn((
-                        add_root_node(true),
-                        GameplayInputBlocker,
-                        crate::core::map::model::MapCmp,
-                    ));
+                    commands.spawn((add_root_node(true), GameplayInputBlocker, MapCmp));
                 }
                 true
             } else {

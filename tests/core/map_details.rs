@@ -1,11 +1,16 @@
 use super::*;
-use crate::core::combat::report::CombatReport;
+use std::collections::BTreeSet;
+
+use crate::core::basis_texture::{BasisTexturePlugin, BasisTextureSettings};
+use crate::core::combat::report::{CombatReport, DefenderRetreat};
+use crate::core::constants::VORONOI_Z;
 use crate::core::map::icon::Icon;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::recycling::debris_sites;
 use crate::core::simulation::{GameModel, GameRules};
 use crate::core::units::ships::Ship;
-use std::collections::BTreeSet;
+use crate::test_support::empty_report;
+use Building::*;
 
 fn model() -> GameModel {
     let mut model = GameModel::new([7; 32], GameRules::default()).unwrap();
@@ -168,7 +173,6 @@ fn gas_development_tiles_have_transparent_gutters() {
 
 #[test]
 fn gas_building_categories_appear_independently_and_do_not_duplicate() {
-    use Building::*;
     let mut planet = model().map.planets[0].clone();
     planet.kind = PlanetKind::Gas;
     let image = Handle::<Image>::default();
@@ -249,7 +253,6 @@ fn planetary_senate_replaces_surface_sensor_artwork() {
 
 #[test]
 fn planetary_terraformer_art_uses_only_an_available_one_of_four_slots() {
-    use Building::*;
     let image = Handle::<Image>::default();
     let robotics = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(4), default());
     let gas_robotics = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(5), default());
@@ -313,7 +316,6 @@ fn planetary_terraformer_art_uses_only_an_available_one_of_four_slots() {
 
 #[test]
 fn completed_planetary_building_keeps_its_surface_position() {
-    use Building::*;
     let image = Handle::<Image>::default();
     let robotics = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(4), default());
     let gas_robotics = Handle::Uuid(bevy::asset::uuid::Uuid::from_u128(5), default());
@@ -367,7 +369,6 @@ fn completed_planetary_building_keeps_its_surface_position() {
 
 #[test]
 fn moon_artwork_uses_completed_lunar_buildings_with_a_three_image_limit() {
-    use Building::*;
     let mut planet = model().map.planets[0].clone();
     planet.kind = PlanetKind::Gray;
     let image = Handle::<Image>::default();
@@ -461,7 +462,7 @@ fn report(id: u64, turn: usize, planet: &Planet, losses: usize) -> MissionReport
         destination_owned: planet.owned,
         destination_controlled: planet.controlled,
         combat_report: Some(CombatReport::default()),
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission::new_with_id(
                 id,
                 1,
@@ -524,13 +525,12 @@ fn escaping_ships_do_not_become_public_battle_wreckage() {
     let mut battle = report(1, 2, &model.map.planets[0], 0);
     battle.planet.army.insert(Unit::probe(), 10);
     battle.surviving_defender.insert(Unit::probe(), 2);
-    battle.combat_report.as_mut().unwrap().defender_retreat =
-        Some(crate::core::combat::report::DefenderRetreat {
-            after_round: Some(0),
-            home_planet: 1,
-            ships: Army::from([(Unit::probe(), 7)]),
-            fleets: Default::default(),
-        });
+    battle.combat_report.as_mut().unwrap().defender_retreat = Some(DefenderRetreat {
+        after_round: Some(0),
+        home_planet: 1,
+        ships: Army::from([(Unit::probe(), 7)]),
+        fleets: Default::default(),
+    });
     assert_eq!(destroyed_units(&battle), 1);
 }
 
@@ -971,7 +971,7 @@ fn debris_hit_targets_follow_the_art_behind_worlds_and_reject_empty_space() {
                             "debris and its hit targets must stay behind planets and moons"
                         );
                         assert!(
-                            depth > crate::core::constants::VORONOI_Z,
+                            depth > VORONOI_Z,
                             "debris must remain visible above the territory background"
                         );
                     }
@@ -1229,7 +1229,6 @@ fn projection_reuses_entities_and_removes_expired_debris() {
 #[test]
 #[ignore = "opens a native render fixture; requires a GPU and generated runtime assets"]
 fn render_development_and_wreckage() {
-    use crate::core::basis_texture::BasisTexturePlugin;
     use bevy::app::AppExit;
     use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
     use bevy::winit::WinitPlugin;
@@ -1293,11 +1292,9 @@ fn render_development_and_wreckage() {
                 let development_image = development_loaded.get_or_insert_with(|| {
                     server
                         .load_builder()
-                        .with_settings(
-                            |settings: &mut crate::core::basis_texture::BasisTextureSettings| {
-                                settings.linear_filtering = true;
-                            },
-                        )
+                        .with_settings(|settings: &mut BasisTextureSettings| {
+                            settings.linear_filtering = true;
+                        })
                         .load("images/buildings/development.basisu.ktx2")
                 });
                 let Some(development_texture) = images.get(&*development_image) else {
@@ -1306,24 +1303,22 @@ fn render_development_and_wreckage() {
                 let facilities_image = facilities_loaded.get_or_insert_with(|| {
                     server
                         .load_builder()
-                        .with_settings(
-                            |settings: &mut crate::core::basis_texture::BasisTextureSettings| {
-                                settings.linear_filtering = true;
-                            },
-                        )
+                        .with_settings(|settings: &mut BasisTextureSettings| {
+                            settings.linear_filtering = true;
+                        })
                         .load("images/buildings/facilities.basisu.ktx2")
                 });
                 let Some(facilities_texture) = images.get(&*facilities_image) else {
                     return;
                 };
-                let gas_image =
-                    gas_loaded.get_or_insert_with(|| {
-                        server.load_builder().with_settings(
-                        |settings: &mut crate::core::basis_texture::BasisTextureSettings| {
+                let gas_image = gas_loaded.get_or_insert_with(|| {
+                    server
+                        .load_builder()
+                        .with_settings(|settings: &mut BasisTextureSettings| {
                             settings.linear_filtering = true;
-                        },
-                    ).load("images/buildings/gas-development.basisu.ktx2")
-                    });
+                        })
+                        .load("images/buildings/gas-development.basisu.ktx2")
+                });
                 let Some(gas_texture) = images.get(&*gas_image) else {
                     return;
                 };

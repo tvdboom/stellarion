@@ -10,12 +10,15 @@ use super::identity_ui::{show_identity_tooltip, CombatIdentityPlan};
 use super::report::{combat_strength_ranges, MissionReport, ReportId, Side};
 use super::result_banner;
 use super::systems::{combat_identity_participants, combat_identity_plans};
+
+use crate::core::assets::WorldAssets;
 use crate::core::audio::{set_ui_sound, PlayAudioMsg, SoundEffect, StopAudioMsg};
 use crate::core::constants::BUTTON_TEXT_SIZE;
 use crate::core::map::utils::{
     MAIN_BUTTON_BOTTOM, MAIN_BUTTON_HEIGHT, MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH,
 };
 use crate::core::player::Player;
+pub(crate) use crate::core::settings::CombatView;
 use crate::core::settings::Settings;
 use crate::core::states::GameState;
 use crate::core::ui::systems::{viewport_ui_scale, UiState};
@@ -23,8 +26,6 @@ use crate::core::ui::utils::ImageIds;
 use crate::core::units::Unit;
 use crate::multiplayer::client::MultiplayerSession;
 use crate::utils::ToColor32;
-
-pub(crate) use crate::core::settings::CombatView;
 
 #[derive(Resource)]
 pub(crate) struct CinematicSoundtrack {
@@ -133,7 +134,7 @@ pub(crate) fn setup_cinematic(
     state: Res<UiState>,
     player: Res<Player>,
     mut audio: MessageWriter<PlayAudioMsg>,
-    assets: Option<Res<crate::core::assets::WorldAssets>>,
+    assets: Option<Res<WorldAssets>>,
     images: Option<Res<Assets<Image>>>,
 ) {
     if let Some(report) =

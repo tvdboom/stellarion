@@ -1,24 +1,27 @@
 use super::*;
+use bevy_tweening::{AnimCompletedEvent, AnimTargetKind};
+
 use crate::core::camera::MainCamera;
 use crate::core::combat::effects::PendingImpact;
+use crate::core::combat::report::{CombatReport, RoundReport};
 use crate::core::combat::resolution::{
-    resolve_combat_with_energy_with_rng, resolve_combat_with_rng,
+    resolve_combat_with_energy_with_rng, resolve_combat_with_rng, CombatUnit,
 };
-use crate::core::combat::systems::CombatFormationState;
+use crate::core::combat::systems::{update_combat_stats, CombatFormationState, HullCmp, ShieldCmp};
 use crate::core::energy::EnergyGrid;
-use crate::core::map::model::Map;
+use crate::core::map::model::{Map, SolarCorner};
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::random::DeterministicRngState;
-use crate::core::units::{defense::Defense, ships::Ship, Army, Combat};
+use crate::core::systems::check_keys_combat;
+use crate::core::units::defense::Defense;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Army, Combat};
 use crate::multiplayer::client::MultiplayerSession;
-use bevy_tweening::{AnimCompletedEvent, AnimTargetKind};
+use crate::test_support::empty_report;
 
 #[test]
 fn snapshot_matches_hull_by_id_across_casualties_and_reordered_rounds() {
-    use crate::core::combat::report::{CombatReport, RoundReport};
-    use crate::core::combat::resolution::CombatUnit;
-
     let unit = Unit::Ship(Ship::LightFighter);
     let record = |id, hull, shield| CombatUnit {
         fleet_id: 0,
@@ -31,10 +34,8 @@ fn snapshot_matches_hull_by_id_across_casualties_and_reordered_rounds() {
         repairs: Vec::new(),
         shots: Vec::new(),
     };
-    let mut report = crate::test_support::empty_report(
-        Mission::default(),
-        Planet::new(1, "Target".into(), Vec2::ZERO, false, 1.0),
-    );
+    let mut report =
+        empty_report(Mission::default(), Planet::new(1, "Target".into(), Vec2::ZERO, false, 1.0));
     report.combat_report = Some(CombatReport {
         rounds: vec![
             RoundReport {
@@ -106,7 +107,7 @@ fn app_with_army(army: Army, raid: BombingRaid) -> App {
         .init_resource::<MultiplayerSession>()
         .insert_resource(Map {
             rect: Rect::new(-100., -100., 100., 100.),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets: vec![origin, target],
         })
         .insert_resource(player)
@@ -272,8 +273,6 @@ fn eliminated_army_finishes_its_wrecks_before_concluding_playback() {
 
 #[test]
 fn automatic_individual_conclusion_waits_for_wrecks_and_preserves_survivor_layout() {
-    use super::super::systems::{HullCmp, ShieldCmp};
-
     #[derive(Debug, PartialEq)]
     struct CardGeometry {
         home: Vec3,
@@ -422,8 +421,6 @@ fn automatic_individual_conclusion_waits_for_wrecks_and_preserves_survivor_layou
 
 #[test]
 fn automatic_conclusion_keeps_damaged_bars_at_their_recorded_values() {
-    use super::super::systems::{update_combat_stats, HullCmp, ShieldCmp};
-
     let bars = |app: &mut App| {
         let mut cards =
             app.world_mut()
@@ -772,7 +769,7 @@ fn round_jump_key_release_does_not_also_change_playback_speed() {
     app.init_resource::<Settings>()
         .init_resource::<ButtonInput<KeyCode>>()
         .insert_resource(State::new(CombatState::Fire))
-        .add_systems(Update, crate::core::systems::check_keys_combat);
+        .add_systems(Update, check_keys_combat);
     let speed = app.world().resource::<Settings>().combat_speed;
     key(&mut app, KeyCode::ArrowRight, true);
     app.update();
@@ -802,7 +799,7 @@ fn final_result_cannot_be_paused() {
     app.init_resource::<Settings>()
         .init_resource::<ButtonInput<KeyCode>>()
         .insert_resource(State::new(CombatState::EndCombat))
-        .add_systems(Update, crate::core::systems::check_keys_combat);
+        .add_systems(Update, check_keys_combat);
     app.world_mut().resource_mut::<Settings>().combat_paused = true;
     key(&mut app, KeyCode::Space, false);
 

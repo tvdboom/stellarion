@@ -1,9 +1,5 @@
 //! Bevy application plugin and system scheduling.
 
-use crate::core::combat::cinematic_ui::{
-    advance_cinematic, cinematic_selected, draw_cinematic, exit_cinematic, setup_cinematic,
-};
-use crate::core::combat::playback::control_combat_playback;
 use bevy::prelude::*;
 use bevy_egui::{EguiPostUpdateSet, EguiPrimaryContextPass};
 use strum::IntoEnumIterator;
@@ -15,6 +11,10 @@ use crate::core::camera::{
     clamp_camera_to_worlds, move_camera, move_camera_keyboard, reset_camera, setup_camera,
     update_parallax,
 };
+use crate::core::combat::cinematic_ui::{
+    advance_cinematic, cinematic_selected, draw_cinematic, exit_cinematic, setup_cinematic,
+};
+use crate::core::combat::playback::control_combat_playback;
 use crate::core::combat::systems::{
     animate_combat, draw_combat_identity_tooltips, exit_combat, exit_combat_menu,
     restore_combat_camera, run_combat_animations, setup_combat, setup_combat_menu,
@@ -23,10 +23,11 @@ use crate::core::combat::systems::{
 };
 use crate::core::loading::{
     begin_gameplay_loading, finish_boot, finish_gameplay_loading, refresh_gameplay_projection,
-    PublicStructureChangeMsg,
+    refresh_turn_draft, PublicStructureChangeMsg,
 };
 use crate::core::loading_screen::{
-    advance_loading_screen, begin_loading_screen, draw_loading_screen, reveal_loaded_screen,
+    advance_loading_screen, begin_loading_screen, dismiss_game_start_preview, draw_loading_screen,
+    preload_loading_art, preview_game_start, reveal_loaded_screen, showing_game_start,
     LoadingScreen,
 };
 use crate::core::map::ambience::PlanetAmbiencePlugin;
@@ -36,6 +37,7 @@ use crate::core::map::details::MapDetailsPlugin;
 use crate::core::map::detection::{
     animate_public_structure_changes, show_public_structure_changes, MissionDetectionPlugin,
 };
+use crate::core::map::interception::InterceptionAnimationPlugin;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::orbital_railgun::OrbitalRailgunAnimationPlugin;
 use crate::core::map::systems::{
@@ -54,6 +56,7 @@ use crate::core::menu::systems::{
 use crate::core::messages::MessageMsg;
 use crate::core::mission_systems::{
     animate_jump_gate_missions, animate_mission_recalls, recall_protection,
+    update_mission_hover_flag,
 };
 use crate::core::missions::{
     recall_mission, send_mission, update_mission_route_arrow, update_missions,
@@ -66,10 +69,9 @@ use crate::core::systems::{
     check_keys, check_keys_combat, check_keys_menu, check_preference_keys, on_resize_system,
     resume_gameplay_interactions, suspend_gameplay_interactions, testing_boost_keys,
 };
-use crate::core::turns::{check_turn_ended, start_turn, StartTurnMsg};
 use crate::core::turns::{
-    clear_end_game_presentation, end_game_presentation_inactive, finish_end_game_presentation,
-    EndGamePresentation,
+    check_turn_ended, clear_end_game_presentation, end_game_presentation_inactive,
+    finish_end_game_presentation, start_turn, EndGamePresentation, StartTurnMsg,
 };
 use crate::core::ui::location_marker::{draw_location_marker, SpriteMarkerRing};
 use crate::core::ui::minimap::{block_minimap_world_picking, draw_minimap, minimap_shown};
@@ -125,7 +127,7 @@ impl Plugin for GamePlugin {
             .add_plugins(MultiplayerClientPlugin)
             .add_plugins(ColonizationPlugin)
             .add_plugins(BattleAftermathPlugin)
-            .add_plugins(crate::core::map::interception::InterceptionAnimationPlugin)
+            .add_plugins(InterceptionAnimationPlugin)
             .add_plugins(OrbitalRailgunAnimationPlugin)
             .add_plugins(MissionDetectionPlugin)
             .add_plugins(MapDetailsPlugin)
@@ -227,6 +229,7 @@ impl Plugin for GamePlugin {
                     hide_planet_details,
                     update_missions,
                     update_mission_route_arrow,
+                    update_mission_hover_flag,
                 )
                     .chain()
                     .run_if(resource_exists::<Map>),
@@ -242,7 +245,8 @@ impl Plugin for GamePlugin {
                     draw_menu.run_if(
                         not(in_state(AppState::Game))
                             .and_then(not(in_state(AppState::Boot)))
-                            .and_then(not(in_state(AppState::LoadingGame))),
+                            .and_then(not(in_state(AppState::LoadingGame)))
+                            .and_then(not(showing_game_start)),
                     ),
                 )
                     .chain(),
@@ -277,6 +281,7 @@ impl Plugin for GamePlugin {
             )
             // Deferred loading
             .add_systems(OnEnter(AppState::Boot), begin_loading_screen)
+            .add_systems(OnEnter(AppState::MainMenu), preload_loading_art)
             .add_systems(OnEnter(AppState::LoadingGame), begin_loading_screen)
             .add_systems(OnExit(AppState::Boot), reveal_loaded_screen)
             .add_systems(OnExit(AppState::LoadingGame), reveal_loaded_screen)
@@ -284,9 +289,13 @@ impl Plugin for GamePlugin {
                 Update,
                 advance_loading_screen.before(finish_boot).before(finish_gameplay_loading),
             )
+            .add_systems(PostUpdate, dismiss_game_start_preview.before(EguiPostUpdateSet::EndPass))
             .add_systems(
                 EguiPrimaryContextPass,
-                draw_loading_screen.after(draw_audio_controls).after(draw_ui),
+                (preview_game_start, draw_loading_screen)
+                    .chain()
+                    .after(draw_audio_controls)
+                    .after(draw_ui),
             )
             .add_systems(Update, fit_menu_background)
             .add_systems(Update, finish_boot.run_if(in_state(AppState::Boot)))
@@ -295,9 +304,7 @@ impl Plugin for GamePlugin {
             .add_systems(Update, refresh_gameplay_projection.in_set(InGameSet))
             .add_systems(
                 Update,
-                crate::core::loading::refresh_turn_draft
-                    .after(refresh_gameplay_projection)
-                    .in_set(InGameSet),
+                refresh_turn_draft.after(refresh_gameplay_projection).in_set(InGameSet),
             )
             .add_systems(OnExit(AppState::LoadingGame), add_ui_images)
             // Utilities
@@ -363,7 +370,8 @@ impl Plugin for GamePlugin {
                         update_patrol_zones.after(update_missions),
                         animate_patrol_wakes.after(update_missions),
                         animate_mission_recalls.after(update_missions).after(recall_mission),
-                        update_mission_route_arrow,
+                        update_mission_route_arrow.after(update_missions),
+                        update_mission_hover_flag.after(update_missions),
                     )
                         .in_set(InPlayingGameSet),
                 ),

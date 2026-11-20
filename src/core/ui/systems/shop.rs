@@ -1,7 +1,9 @@
 //! Shop panels for the game interface.
 
 use super::*;
+
 use crate::core::combat::plan::CombatTactic;
+use crate::core::constants::{PS_OVERLOAD_BONUS_PERCENT_PER_LEVEL, PS_OVERLOAD_ENERGY_COST};
 use crate::core::map::planet::ShieldOverloadState;
 use crate::core::orders::conversion_output;
 use crate::core::ui::utils::sized_image_tile_button;
@@ -278,6 +280,16 @@ pub(super) fn draw_unit_hover(
         });
         ui.vertical(|ui| {
             ui.label(unit.to_name());
+            if let Unit::Building(building) = unit {
+                if (player.owns(planet) || player.controls(planet))
+                    && planet.sabotage.is_disabled(*building)
+                {
+                    ui.colored_label(
+                        Color32::RED,
+                        RichText::new("Disabled by sabotage for this planning turn.").small(),
+                    );
+                }
+            }
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.;
@@ -867,8 +879,8 @@ pub(super) fn draw_planetary_shield_overload(
         .on_hover_small(format!(
             "Overload for the next turn: +{}% shield strength and +{} Energy demand. After \
                 use, the shield must cool down for one turn.",
-            level.saturating_mul(crate::core::constants::PS_OVERLOAD_BONUS_PERCENT_PER_LEVEL),
-            crate::core::constants::PS_OVERLOAD_ENERGY_COST,
+            level.saturating_mul(PS_OVERLOAD_BONUS_PERCENT_PER_LEVEL),
+            PS_OVERLOAD_ENERGY_COST,
         ));
         if active != planet.shield_overload.is_overloaded()
             && pending.push(TurnCommand::SetPlanetaryShieldOverload {

@@ -1,4 +1,6 @@
 use super::*;
+
+use crate::core::energy::jump_gate_energy_demand;
 use crate::core::units::operations::{BuildingOperations, MineMode, SpaceDockMode};
 
 #[test]
@@ -242,14 +244,7 @@ fn abandoning_a_colony_cannot_refund_jump_energy_or_skip_extraction_recovery() {
         ],
     )
     .unwrap();
-    assert_eq!(
-        crate::core::energy::jump_gate_energy_demand(
-            &projected.missions,
-            1,
-            projected.turn as usize
-        ),
-        1
-    );
+    assert_eq!(jump_gate_energy_demand(&projected.missions, 1, projected.turn as usize), 1);
     assert!(projected.map.get(colony).operations.mine(ResourceName::Metal).recovering);
 }
 
@@ -279,24 +274,14 @@ fn jumps_round_energy_per_mission_refund_cancellation_and_charge_only_launch_tur
     };
     for (count, expected) in [(1, 1), (5, 1), (6, 2), (10, 2), (11, 3)] {
         let preview = preview_commands(&model, 1, &[send(1, count)]).unwrap();
-        assert_eq!(
-            crate::core::energy::jump_gate_energy_demand(
-                &preview.missions,
-                1,
-                preview.turn as usize
-            ),
-            expected
-        );
+        assert_eq!(jump_gate_energy_demand(&preview.missions, 1, preview.turn as usize), expected);
         assert_eq!(
             preview.players[0].energy_grid(&preview.map).with_action_demand(expected).demand,
             idle.demand + expected
         );
     }
     let preview = preview_commands(&model, 1, &[send(1, 1), send(2, 1)]).unwrap();
-    assert_eq!(
-        crate::core::energy::jump_gate_energy_demand(&preview.missions, 1, preview.turn as usize),
-        2
-    );
+    assert_eq!(jump_gate_energy_demand(&preview.missions, 1, preview.turn as usize), 2);
     let cancelled = preview_commands(
         &preview,
         1,
@@ -305,14 +290,7 @@ fn jumps_round_energy_per_mission_refund_cancellation_and_charge_only_launch_tur
         }],
     )
     .unwrap();
-    assert_eq!(
-        crate::core::energy::jump_gate_energy_demand(
-            &cancelled.missions,
-            1,
-            cancelled.turn as usize
-        ),
-        1
-    );
+    assert_eq!(jump_gate_energy_demand(&cancelled.missions, 1, cancelled.turn as usize), 1);
     let uncharged = model.clone();
     let expected_raw = model.players[0].raw_resource_production(&model.map);
     let before = model.players[0].resources;
@@ -325,10 +303,7 @@ fn jumps_round_energy_per_mission_refund_cancellation_and_charge_only_launch_tur
         model.players[0].resources - before,
         idle.with_action_demand(2).scale_resources(expected_raw)
     );
-    assert_eq!(
-        crate::core::energy::jump_gate_energy_demand(&model.missions, 1, model.turn as usize),
-        0
-    );
+    assert_eq!(jump_gate_energy_demand(&model.missions, 1, model.turn as usize), 0);
     assert_eq!(
         model.players[0].energy_grid(&model.map),
         uncharged.players[0].energy_grid(&uncharged.map)

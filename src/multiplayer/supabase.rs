@@ -7,18 +7,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::identity::{GameCode, GameId, PlayerId, UserId};
 use crate::core::player::PlayerColor;
+use crate::core::resources::Resources;
 use crate::core::simulation::{
-    MatchStatus, PersistedGame, TurnSubmission, MAX_COMMANDS_PER_SUBMISSION,
+    JointAttackContribution, MatchStatus, PersistedGame, TurnSubmission,
+    MAX_COMMANDS_PER_SUBMISSION,
 };
 use crate::multiplayer::backend::{
     BackendError, BackendFuture, MultiplayerBackend, TurnSubmissionScope,
 };
-use crate::multiplayer::model::GamePreferences;
 use crate::multiplayer::model::{
-    AuthSession, CreateGameRequest, EventBatch, GameMembership, GameRecord, GameSummary, GameSync,
-    JoinGameRequest, JointAttackInvitation, JointAttackResponse, MembershipResult,
-    ProtectionPermissionUpdate, RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission,
-    SubmissionDisposition, TradeInvitation, TradeResponse, MAX_DISPLAY_NAME_CHARS,
+    AuthSession, CreateGameRequest, EventBatch, GameMembership, GamePreferences, GameRecord,
+    GameSummary, GameSync, JoinGameRequest, JointAttackInvitation, JointAttackResponse,
+    MembershipResult, ProtectionPermissionUpdate, RecoverPlayerRequest, SaveAcknowledgement,
+    StoredTurnSubmission, SubmissionDisposition, TradeInvitation, TradeResponse,
+    MAX_DISPLAY_NAME_CHARS,
 };
 use crate::multiplayer::recovery::{RecoveryCode, CROCKFORD_ALPHABET};
 use crate::platform::config::SupabaseConfig;
@@ -270,7 +272,7 @@ impl MultiplayerBackend for SupabaseBackend {
         attack_id: u64,
         expected_revision: u64,
         response: JointAttackResponse,
-        contribution: Option<crate::core::simulation::JointAttackContribution>,
+        contribution: Option<JointAttackContribution>,
     ) -> BackendFuture<'a, JointAttackInvitation> {
         Box::pin(self.rpc(
             session,
@@ -339,7 +341,7 @@ impl MultiplayerBackend for SupabaseBackend {
         game_id: &'a GameId,
         trade_id: u64,
         expected_revision: u64,
-        resources: crate::core::resources::Resources,
+        resources: Resources,
         response: TradeResponse,
     ) -> BackendFuture<'a, TradeInvitation> {
         Box::pin(self.rpc(
@@ -779,7 +781,7 @@ struct RespondJointAttackRpc<'a> {
     #[serde(rename = "p_response")]
     response: JointAttackResponse,
     #[serde(rename = "p_contribution")]
-    contribution: Option<crate::core::simulation::JointAttackContribution>,
+    contribution: Option<JointAttackContribution>,
 }
 
 #[derive(Serialize)]
@@ -809,7 +811,7 @@ struct RespondTradeRpc<'a> {
     #[serde(rename = "p_expected_revision")]
     expected_revision: u64,
     #[serde(rename = "p_resources")]
-    resources: crate::core::resources::Resources,
+    resources: Resources,
     #[serde(rename = "p_response")]
     response: TradeResponse,
 }

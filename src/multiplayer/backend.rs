@@ -7,13 +7,13 @@ use thiserror::Error;
 
 use crate::core::identity::{GameId, PlayerId};
 use crate::core::player::PlayerColor;
-use crate::core::simulation::{PersistedGame, TurnSubmission};
-use crate::multiplayer::model::GamePreferences;
+use crate::core::resources::Resources;
+use crate::core::simulation::{JointAttackContribution, PersistedGame, TurnSubmission};
 use crate::multiplayer::model::{
-    AuthSession, CreateGameRequest, EventBatch, GameRecord, GameSummary, GameSync, JoinGameRequest,
-    JointAttackInvitation, JointAttackResponse, MembershipResult, ProtectionPermissionUpdate,
-    RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission, SubmissionDisposition,
-    TradeInvitation, TradeResponse,
+    AuthSession, CreateGameRequest, EventBatch, GameMembership, GamePreferences, GameRecord,
+    GameSummary, GameSync, JoinGameRequest, JointAttackInvitation, JointAttackResponse,
+    MembershipResult, ProtectionPermissionUpdate, RecoverPlayerRequest, SaveAcknowledgement,
+    StoredTurnSubmission, SubmissionDisposition, TradeInvitation, TradeResponse,
 };
 
 /// A heartbeat lease shared by displayed presence, resume readiness, and recovery protection.
@@ -191,7 +191,7 @@ pub trait MultiplayerBackend: Send + Sync {
         _attack_id: u64,
         _expected_revision: u64,
         _response: JointAttackResponse,
-        _contribution: Option<crate::core::simulation::JointAttackContribution>,
+        _contribution: Option<JointAttackContribution>,
     ) -> BackendFuture<'a, JointAttackInvitation> {
         Box::pin(async { Err(BackendError::Configuration("joint attacks are unavailable".into())) })
     }
@@ -233,7 +233,7 @@ pub trait MultiplayerBackend: Send + Sync {
         _game_id: &'a GameId,
         _trade_id: u64,
         _expected_revision: u64,
-        _resources: crate::core::resources::Resources,
+        _resources: Resources,
         _response: TradeResponse,
     ) -> BackendFuture<'a, TradeInvitation> {
         Box::pin(async { Err(BackendError::Configuration("trading is unavailable".into())) })
@@ -356,5 +356,5 @@ pub trait MultiplayerBackend: Send + Sync {
         session: &'a AuthSession,
         game_id: &'a GameId,
         connected: bool,
-    ) -> BackendFuture<'a, Vec<crate::multiplayer::model::GameMembership>>;
+    ) -> BackendFuture<'a, Vec<GameMembership>>;
 }

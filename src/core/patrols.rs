@@ -6,6 +6,8 @@ use bevy::prelude::Vec2;
 use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 
+pub use crate::core::constants::PATROL_RADIUS;
+
 use crate::core::combat::report::{combat_fleet_strength, MissionReport};
 use crate::core::combat::resolution::resolve_combat_with_rng;
 use crate::core::identity::PlayerId;
@@ -17,9 +19,8 @@ use crate::core::resources::Resources;
 use crate::core::simulation::{GameModel, TurnCommand};
 use crate::core::units::buildings::FleetWithdrawal;
 use crate::core::units::{Amount, Army, Combat, Unit};
+use crate::serialization::required_option;
 
-/// Every patrol covers a fixed three-AU radius; local flight is abstracted within this circle.
-pub const PATROL_RADIUS: f32 = Planet::SIZE * 3.0;
 /// Fully exposed production strength giving a fifty-percent contact probability.
 pub const PATROL_DETECTION_SCALE: f64 = 20.0;
 /// Bounds the optional player-selected number of complete operating turns.
@@ -43,7 +44,7 @@ pub struct Patrol {
     /// Exact strategic location; the displayed radius and local maneuvers do not change it.
     pub center: Vec2,
     /// Complete operating turns still available, or no deadline until manually recalled.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub remaining_turns: Option<usize>,
     /// Current travel or operating phase.
     pub phase: PatrolPhase,
@@ -93,6 +94,11 @@ impl Mission {
 
     /// Returns the authoritative space or world destination for this travel leg.
     pub fn target_position(&self, map: &Map) -> Vec2 {
+        if let Some(expedition) =
+            self.expedition.as_ref().filter(|_| self.objective == Icon::Expedition)
+        {
+            return expedition.center;
+        }
         if let Some(intercept) = &self.intercept {
             if self.objective == Icon::Intercept {
                 return intercept.point;
@@ -153,6 +159,7 @@ impl Mission {
             && !self.jump_gate
             && !self.deep_cover
             && self.joint_attack.is_none()
+            && self.expedition.is_none()
             && self.bombing == BombingRaid::None
             && self.protected_player.is_none()
             && self.army.has_army()
@@ -457,6 +464,7 @@ pub(crate) fn encounter_site(
     site.fleet_withdrawal = FleetWithdrawal::Off;
     site.shield_overload = ShieldOverloadState::Ready;
     site.independent_population = IndependentPopulation::Empty;
+    site.sabotage = Default::default();
     site.resources = Resources::default();
     site.raid_cache = Resources::default();
     site.buy.clear();
@@ -740,18 +748,15 @@ pub(crate) fn resolve_encounters<R: Rng + ?Sized>(
     delayed
 }
 
-/// Whether a patrol's space target is valid for a new dispatch.
+/// Whether a patrol can launch to a space target outside the visible body of the Sun.
 pub fn valid_patrol_target(
     map: &Map,
     origin: PlanetId,
     center: Vec2,
     turns: Option<usize>,
 ) -> bool {
-    center.is_finite()
-        && map.rect.contains(center)
-        && turns.is_none_or(|turns| (1..=MAX_PATROL_TURNS).contains(&turns))
-        && map.planets.iter().all(|planet| center.distance(planet.position) > planet.size() * 0.7)
-        && map.try_get(origin).is_some()
+    turns.is_none_or(|turns| (1..=MAX_PATROL_TURNS).contains(&turns))
+        && map.valid_space_target(origin, center)
 }
 
 #[cfg(test)]

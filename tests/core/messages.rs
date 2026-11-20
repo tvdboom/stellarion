@@ -3,7 +3,9 @@ use bevy::ecs::system::RunSystemOnce;
 use bevy::state::{app::StatesPlugin, state::StateTransition};
 use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
+use crate::core::constants::MIN_ZOOM;
 use crate::core::simulation::{GameModel, GameRules};
+use crate::core::systems::check_keys_menu;
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::location_marker::LocationMarkerTarget;
 use crate::core::units::ships::Ship;
@@ -64,7 +66,7 @@ fn escape_hides_turn_toasts_until_gameplay_resumes() {
         let remaining = app.world().resource::<Messages>().0[0].remaining_seconds;
 
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Escape);
-        app.world_mut().run_system_once(crate::core::systems::check_keys_menu).unwrap();
+        app.world_mut().run_system_once(check_keys_menu).unwrap();
         app.world_mut().run_schedule(StateTransition);
         assert_eq!(*app.world().resource::<State<GameState>>().get(), GameState::GameMenu);
         app.world_mut().write_message(MessageMsg::warning("Player disconnected."));
@@ -728,7 +730,7 @@ fn space_encounter_toast_uses_a_close_but_not_maximum_zoom() {
     assert_eq!(state.focus_position, Some(position));
     assert_eq!(state.focus_zoom, Some(SPACE_ENCOUNTER_FOCUS_ZOOM));
     let zoom = state.focus_zoom.unwrap();
-    assert!(zoom > crate::core::constants::MIN_ZOOM);
+    assert!(zoom > MIN_ZOOM);
     assert!(zoom < MAX_ZOOM);
     assert!(state.to_selected);
     assert!(!state.mission);

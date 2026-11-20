@@ -9,15 +9,15 @@ use crate::core::camera::MainCamera;
 use crate::core::combat::systems::BackgroundImageCmp;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::menu::utils::{add_root_node, scaled_text_font_size, TextSize};
+use crate::core::messages::MessageMsg;
 use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::simulation::TurnCommand;
 use crate::core::states::{AppState, CombatState, GameState};
 use crate::core::turns::StartTurnMsg;
 use crate::core::ui::systems::{MissionTab, UiState};
-use crate::multiplayer::client::MultiplayerRequest;
 use crate::multiplayer::client::{
-    MultiplayerSession, PendingTurnCommands, COMMAND_LIMIT_REACHED_MESSAGE,
+    MultiplayerRequest, MultiplayerSession, PendingTurnCommands, COMMAND_LIMIT_REACHED_MESSAGE,
 };
 
 #[derive(Component)]
@@ -362,7 +362,7 @@ pub fn testing_boost_keys(
     mut player: ResMut<Player>,
     mut session: ResMut<MultiplayerSession>,
     mut pending: ResMut<PendingTurnCommands>,
-    mut messages: MessageWriter<crate::core::messages::MessageMsg>,
+    mut messages: MessageWriter<MessageMsg>,
 ) {
     let ctrl_pressed = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     let shift_pressed = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -381,7 +381,7 @@ pub fn testing_boost_keys(
     }
 
     if !pending.push(TurnCommand::PracticeBoost) {
-        messages.write(crate::core::messages::MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
+        messages.write(MessageMsg::error(COMMAND_LIMIT_REACHED_MESSAGE));
         return;
     }
     let preview = session.preview_commands(&record.persisted.state, player.id, &pending.commands);
@@ -393,9 +393,7 @@ pub fn testing_boost_keys(
         },
         Err(error) => {
             pending.commands.pop();
-            messages.write(crate::core::messages::MessageMsg::error(format!(
-                "Could not apply testing shortcut: {error}"
-            )));
+            messages.write(MessageMsg::error(format!("Could not apply testing shortcut: {error}")));
         },
     }
 }

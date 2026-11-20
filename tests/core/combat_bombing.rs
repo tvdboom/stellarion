@@ -1,6 +1,8 @@
 //! Raid limits, eligibility, deterministic targeting and report persistence.
 
 use super::*;
+
+use crate::core::missions::{FleetCombatOrders, JointAttackMission};
 use crate::core::random::DeterministicRngState;
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
@@ -217,7 +219,6 @@ fn bombing_reports_preserve_misses_and_replay_deterministically() {
 
 #[test]
 fn joint_bombers_follow_each_owners_policy_in_one_bounded_raid() {
-    use crate::core::missions::{FleetCombatOrders, JointAttackMission};
     let mut rng = DeterministicRngState::from_u64(43).next_rng();
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
     let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1.0, &mut rng);
@@ -291,7 +292,6 @@ fn joint_bombers_follow_each_owners_policy_in_one_bounded_raid() {
 
 #[test]
 fn joint_probes_only_withdraw_for_commanders_who_disable_combat_probes() {
-    use crate::core::missions::{FleetCombatOrders, JointAttackMission};
     let mut rng = DeterministicRngState::from_u64(44).next_rng();
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
     let mut target = Planet::new_with_rng(1, "Target".into(), Vec2::X, false, 1.0, &mut rng);

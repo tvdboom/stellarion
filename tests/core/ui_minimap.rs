@@ -3,6 +3,8 @@ use bevy::camera::{CameraProjection, ComputedCameraValues, RenderTargetInfo};
 use bevy::window::WindowResolution;
 use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
+use crate::core::camera::{clamp_camera_to_worlds, move_camera};
+
 #[test]
 fn camera_outline_follows_world_pan_zoom_and_viewport_aspect() {
     let minimap = Minimap::fit(
@@ -155,7 +157,6 @@ fn overlapping_hover_panel_paints_over_minimap_without_moving_it() {
 
 #[test]
 fn minimap_clicks_and_drags_obey_map_bounds_and_keep_the_viewport_grab_offset() {
-    use crate::core::camera::{clamp_camera_to_worlds, move_camera};
     use bevy::ecs::system::RunSystemOnce;
     use bevy::input::mouse::MouseWheel;
     use bevy::picking::pointer::Location;

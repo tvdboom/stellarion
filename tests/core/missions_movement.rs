@@ -1,4 +1,6 @@
 use super::*;
+
+use crate::core::map::model::SolarCorner;
 use crate::core::units::ships::Ship;
 
 #[test]
@@ -51,7 +53,7 @@ fn journey(old_turns: f32, army: Army) -> (Map, Mission) {
     (
         Map {
             rect: Rect::default(),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets: vec![origin, destination],
         },
         mission,

@@ -4,21 +4,26 @@ use rand::seq::SliceRandom;
 use rand::{Rng, RngExt};
 
 use crate::core::combat::report::MissionReport;
+use crate::core::constants::COLONY_SHIP_CARGO;
 use crate::core::map::planet::Planet;
 use crate::core::player::Player;
 use crate::core::resources::{ResourceName, Resources};
 use crate::core::units::{Army, Price, Unit};
 
-/// Per-ship raid cargo: production levels 1–5 carry 0, 10, 30, 70, and 150 resources.
-/// Non-ships cannot carry cargo. The exponential curve is `10 * (2^(level - 1) - 1)`.
+/// Per-ship resource cargo capacity for raids and expeditions.
 pub fn ship_cargo_capacity(unit: Unit) -> usize {
+    if unit == Unit::colony_ship() {
+        return COLONY_SHIP_CARGO;
+    }
     if !unit.is_ship() {
         return 0;
     }
-    2_usize
-        .saturating_pow(unit.production().saturating_sub(1) as u32)
-        .saturating_sub(1)
-        .saturating_mul(10)
+    cargo_capacity_at_production_level(unit.production())
+}
+
+/// Standard hold by production level, using `10 * (2^(level - 1) - 1)`.
+pub(crate) fn cargo_capacity_at_production_level(level: usize) -> usize {
+    2_usize.saturating_pow(level.saturating_sub(1) as u32).saturating_sub(1).saturating_mul(10)
 }
 
 /// Combined carrying capacity of the surviving ships, saturating for very large fleets.

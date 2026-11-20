@@ -4,26 +4,6 @@
 //! cargo test --lib render_readme_screenshots -- --ignored --nocapture
 //! Review target/readme-screenshots before copying the six PNGs into scenery/.
 
-use crate::core::camera::MainCamera;
-use crate::core::combat::plan::{BattlePlan, CombatTactic, TargetPriority};
-use crate::core::combat::resolution::resolve_combat_with_rng;
-use crate::core::identity::{GameCode, GameId, UserId};
-use crate::core::map::icon::Icon;
-use crate::core::map::model::Map;
-use crate::core::missions::Mission;
-use crate::core::player::Player;
-use crate::core::resources::Resources;
-use crate::core::settings::Settings;
-use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
-use crate::core::states::{AppState, AudioState, GameState};
-use crate::core::ui::systems::{MissionTab, Shop, UiState};
-use crate::core::units::buildings::Building;
-use crate::core::units::defense::Defense;
-use crate::core::units::fauna::SpaceFauna;
-use crate::core::units::ships::Ship;
-use crate::core::units::{Army, Unit};
-use crate::multiplayer::client::{ConnectionStatus, MultiplayerSession};
-use crate::multiplayer::model::{GameMembership, GameRecord};
 use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
@@ -33,6 +13,36 @@ use bevy_egui::{egui, EguiInput, EguiPlugin, EguiPreUpdateSet};
 use bevy_kira_audio::AudioPlugin;
 use bevy_tweening::TweeningPlugin;
 use std::time::Duration;
+
+use crate::core::camera::MainCamera;
+use crate::core::combat::plan::{BattlePlan, CombatTactic, TargetPriority};
+use crate::core::combat::resolution::resolve_combat_with_rng;
+use crate::core::combat::systems::SalvagePickupCmp;
+use crate::core::identity::{GameCode, GameId, UserId};
+use crate::core::map::icon::Icon;
+use crate::core::map::model::Map;
+use crate::core::map::planet::Planet;
+use crate::core::map::systems::MissionCmp;
+use crate::core::messages::{Messages as NotificationMessages, MessagesPlugin};
+use crate::core::missions::{BombingRaid, Mission, Missions};
+use crate::core::patrols::{valid_patrol_target, PatrolPhase};
+use crate::core::player::Player;
+use crate::core::random::DeterministicRngState;
+use crate::core::resources::Resources;
+use crate::core::settings::{CombatView, Settings};
+use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+use crate::core::states::{AppState, AudioState, CombatState, GameState};
+use crate::core::ui::location_marker::LocationMarker;
+use crate::core::ui::systems::{MissionTab, Shop, UiState};
+use crate::core::units::buildings::Building;
+use crate::core::units::defense::Defense;
+use crate::core::units::fauna::SpaceFauna;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Amount, Army, Unit};
+use crate::core::GamePlugin;
+use crate::multiplayer::client::tests::isolate_screenshot_client;
+use crate::multiplayer::client::{ConnectionStatus, MultiplayerSession};
+use crate::multiplayer::model::{GameMembership, GameRecord};
 
 #[derive(Resource)]
 struct CaptureScene {
@@ -383,9 +393,6 @@ fn render_raid_report_screenshots() {
 #[test]
 #[ignore = "requires generated assets and a GPU; captures raid loot layering offline"]
 fn render_raid_loot_screenshots() {
-    use crate::core::combat::systems::SalvagePickupCmp;
-    use crate::core::random::DeterministicRngState;
-
     assert_eq!(std::env::var("STELLARION_BACKEND").as_deref(), Ok("mock"));
     std::fs::create_dir_all("target/raid-loot-preview").unwrap();
     let mut app = capture_app();
@@ -402,7 +409,7 @@ fn render_raid_loot_screenshots() {
             frame < 1_200,
             "raid capture timed out: game {:?}, combat {:?}, selected {:?}",
             world.resource::<State<GameState>>().get(),
-            world.resource::<State<crate::core::states::CombatState>>().get(),
+            world.resource::<State<CombatState>>().get(),
             world.resource::<UiState>().in_combat,
         );
         if frame == 80 {
@@ -426,7 +433,7 @@ fn render_raid_loot_screenshots() {
             world.resource_mut::<UiState>().in_combat = Some(report.id);
             world.resource_mut::<Player>().reports = vec![report];
             let mut settings = world.resource_mut::<Settings>();
-            settings.combat_view = crate::core::settings::CombatView::Schematic;
+            settings.combat_view = CombatView::Schematic;
             settings.combat_paused = false;
             settings.combat_speed = 4.0;
             settings.combat_volley_fire = true;
@@ -499,7 +506,7 @@ fn render_location_marker_screenshots() {
         };
         assert!(frame < 1_000, "location marker capture timed out");
         if frame == 80 {
-            world.insert_resource(crate::core::messages::Messages::default());
+            world.insert_resource(NotificationMessages::default());
             let position = world.resource::<CaptureScene>().camera;
             let mut state = world.resource_mut::<UiState>();
             state.planet_selected = None;
@@ -509,8 +516,7 @@ fn render_location_marker_screenshots() {
             state.to_selected = true;
             state.mission = false;
             state.combat_report = None;
-            state.location_marker =
-                Some(crate::core::ui::location_marker::LocationMarker::new(position));
+            state.location_marker = Some(LocationMarker::new(position));
         }
         if frame <= 80 || world.resource::<UiState>().to_selected {
             return;
@@ -541,8 +547,6 @@ fn render_location_marker_screenshots() {
 #[test]
 #[ignore = "requires generated assets and a GPU; captures fleet-following location echoes offline"]
 fn render_fleet_location_marker_screenshots() {
-    use crate::core::ui::location_marker::LocationMarker;
-
     assert_eq!(std::env::var("STELLARION_BACKEND").as_deref(), Ok("mock"));
     std::fs::create_dir_all("target/fleet-marker-preview").unwrap();
     let mut app = capture_app();
@@ -557,7 +561,7 @@ fn render_fleet_location_marker_screenshots() {
         };
         assert!(frame < 1_000, "fleet marker capture timed out");
         if frame == 60 {
-            world.insert_resource(crate::core::messages::Messages::default());
+            world.insert_resource(NotificationMessages::default());
             let scene = world.resource::<CaptureScene>();
             let center = scene.camera + Vec2::Y * 350.0;
             let mut mission = Mission::new_patrol(
@@ -570,8 +574,8 @@ fn render_fleet_location_marker_screenshots() {
                 None,
             );
             mission.position = center;
-            mission.patrol.as_mut().unwrap().phase = crate::core::patrols::PatrolPhase::OnStation;
-            world.resource_mut::<crate::core::missions::Missions>().0 = vec![mission];
+            mission.patrol.as_mut().unwrap().phase = PatrolPhase::OnStation;
+            world.resource_mut::<Missions>().0 = vec![mission];
             let mut state = world.resource_mut::<UiState>();
             state.planet_selected = None;
             state.focus_planet = None;
@@ -583,8 +587,7 @@ fn render_fleet_location_marker_screenshots() {
         }
         if frame == 300 {
             let position = world.resource::<UiState>().focus_position.unwrap();
-            let mut fleets =
-                world.query::<(&crate::core::map::systems::MissionCmp, &GlobalTransform)>();
+            let mut fleets = world.query::<(&MissionCmp, &GlobalTransform)>();
             let (_, transform) = fleets.iter(world).find(|(fleet, _)| fleet.id == 9909).unwrap();
             assert!(transform.translation().truncate().distance(position) > 25.0);
             world.resource_mut::<UiState>().location_marker =
@@ -632,13 +635,8 @@ fn capture_app() -> App {
                 run_on_any_thread: true,
             }),
     )
-    .add_plugins((
-        EguiPlugin::default(),
-        crate::core::messages::MessagesPlugin,
-        AudioPlugin,
-        TweeningPlugin,
-    ))
-    .add_plugins(crate::core::GamePlugin)
+    .add_plugins((EguiPlugin::default(), MessagesPlugin, AudioPlugin, TweeningPlugin))
+    .add_plugins(GamePlugin)
     .insert_resource(WinitSettings::continuous())
     .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
         1.0 / 60.0,
@@ -682,9 +680,6 @@ fn render_intercept_screenshots() {
 }
 
 fn capture_intercept_views(world: &mut World) {
-    use crate::core::map::planet::Planet;
-    use crate::core::missions::BombingRaid;
-    use crate::core::units::Amount;
     use rand::SeedableRng;
     if *world.resource::<State<AppState>>().get() != AppState::Game {
         return;
@@ -695,7 +690,7 @@ fn capture_intercept_views(world: &mut World) {
         scene.frame
     };
     if frame == 60 {
-        world.insert_resource(crate::core::messages::Messages::default());
+        world.insert_resource(NotificationMessages::default());
         let origin = world.resource::<CaptureScene>().origin;
         world
             .resource_mut::<Map>()
@@ -720,7 +715,7 @@ fn capture_intercept_views(world: &mut World) {
             None,
         );
         target.position = map.get(origin).position + Vec2::X * Planet::SIZE * 12.0;
-        world.resource_mut::<crate::core::missions::Missions>().0 = vec![target.clone()];
+        world.resource_mut::<Missions>().0 = vec![target.clone()];
         let mut ui = world.resource_mut::<UiState>();
         ui.planet_selected = Some(origin);
         ui.choose_intercept_target(&map, &player, turn, &target);
@@ -754,7 +749,7 @@ fn capture_intercept_views(world: &mut World) {
         site.owned = None;
         site.controlled = Some(2);
         site.army = fleet(&[(Ship::LightFighter, 3), (Ship::Cruiser, 1)]).into();
-        let mut report = crate::core::combat::resolution::resolve_combat_with_rng(
+        let mut report = resolve_combat_with_rng(
             world.resource::<Settings>().turn,
             &mission,
             &site,
@@ -798,7 +793,7 @@ fn capture_intercept_views(world: &mut World) {
             None,
         );
         target.position = map.get(origin).position + Vec2::X * Planet::SIZE;
-        world.resource_mut::<crate::core::missions::Missions>().0 = vec![target.clone()];
+        world.resource_mut::<Missions>().0 = vec![target.clone()];
         let mut ui = world.resource_mut::<UiState>();
         ui.planet_selected = Some(origin);
         ui.choose_intercept_target(&map, &player, turn, &target);
@@ -835,14 +830,14 @@ fn capture_patrol_views(world: &mut World) {
         (scene.origin, scene.model.turn as usize)
     };
     if frame == 60 {
-        world.insert_resource(crate::core::messages::Messages::default());
+        world.insert_resource(NotificationMessages::default());
         let map = world.resource::<Map>();
         let point = (1..20)
             .flat_map(|x| (1..20).map(move |y| (x, y)))
             .map(|(x, y)| {
                 map.rect.min + map.rect.size() * Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
             })
-            .filter(|point| crate::core::patrols::valid_patrol_target(map, origin, *point, Some(5)))
+            .filter(|point| valid_patrol_target(map, origin, *point, Some(5)))
             .min_by(|a, b| {
                 a.distance_squared(map.get(origin).position)
                     .total_cmp(&b.distance_squared(map.get(origin).position))
@@ -884,14 +879,11 @@ fn capture_patrol_views(world: &mut World) {
         let point = mission.patrol.as_ref().unwrap().center;
         mission.position = point;
         mission.travel_turns = 1;
-        mission.patrol.as_mut().unwrap().phase = crate::core::patrols::PatrolPhase::OnStation;
+        mission.patrol.as_mut().unwrap().phase = PatrolPhase::OnStation;
         let mut returning = mission.clone();
         returning.id = 9911;
         returning.return_patrol(world.resource::<Map>(), turn);
-        world
-            .resource_mut::<crate::core::missions::Missions>()
-            .0
-            .extend([mission, outbound, returning]);
+        world.resource_mut::<Missions>().0.extend([mission, outbound, returning]);
         let mut ui = world.resource_mut::<UiState>();
         ui.patrol_center = Some(point);
         ui.selecting_patrol_zone = false;
@@ -937,18 +929,12 @@ fn capture_patrol_views(world: &mut World) {
             fleet(&[(Ship::LightFighter, 8), (Ship::Cruiser, 3)]),
             None,
         );
-        let mut encounter = crate::core::map::planet::Planet::new(
-            origin,
-            "Aether Ray Swarm".to_owned(),
-            point,
-            false,
-            1.0,
-        );
+        let mut encounter = Planet::new(origin, "Aether Ray Swarm".to_owned(), point, false, 1.0);
         encounter.army.insert(Unit::Fauna(SpaceFauna::AetherRay), 5);
         let mut rng = world.resource::<CaptureScene>().model.rng.clone().next_rng();
         let mut report = resolve_combat_with_rng(turn, &mission, &encounter, &mut rng);
         report.id = 9912;
-        world.resource_mut::<crate::core::player::Player>().reports.push(report);
+        world.resource_mut::<Player>().reports.push(report);
         let mut ui = world.resource_mut::<UiState>();
         ui.mission = true;
         ui.mission_tab = MissionTab::MissionReports;
@@ -1033,7 +1019,7 @@ fn install_scene(world: &mut World) {
         })
         .collect::<Vec<_>>();
     // Discard boot authentication and keep all profile writes in memory.
-    crate::multiplayer::client::tests::isolate_screenshot_client(world);
+    isolate_screenshot_client(world);
     let mut session = MultiplayerSession::default();
     session.connection = ConnectionStatus::Connected;
     session.membership = Some(members[0].clone());
@@ -1082,7 +1068,7 @@ fn capture_views(world: &mut World) {
     }
     let report_id = world.resource::<Player>().reports[0].id;
     match frame {
-        80 => world.insert_resource(crate::core::messages::Messages::default()),
+        80 => world.insert_resource(NotificationMessages::default()),
         140 => {
             let mut ui = world.resource_mut::<UiState>();
             ui.planet_selected = Some(origin);

@@ -7,12 +7,14 @@ use std::time::Duration;
 use bevy::platform::time::Instant;
 use sha2::{Digest, Sha256};
 
-use crate::core::identity::{GameId, PlayerId, UserId};
+use crate::core::identity::{GameCode, GameId, PlayerId, UserId};
+use crate::core::map::icon::Icon;
 use crate::core::player::PlayerColor;
+use crate::core::resources::Resources;
 use crate::core::simulation::{
     add_trade_agreement_immediately, set_protection_permission_immediately,
-    validate_submission_batch, MatchStatus, PersistedGame, TurnCommand, TurnSubmission,
-    MAX_COMMANDS_PER_SUBMISSION,
+    validate_submission_batch, GameError, JointAttackContribution, MatchStatus, PersistedGame,
+    TurnCommand, TurnSubmission, MAX_COMMANDS_PER_SUBMISSION,
 };
 use crate::core::trading::{trading_post_capacity, trading_posts_are_adjacent, TradeAgreement};
 use crate::core::units::buildings::Building;
@@ -24,13 +26,12 @@ use crate::multiplayer::authority::{
 use crate::multiplayer::backend::{
     BackendError, BackendFuture, MultiplayerBackend, TurnSubmissionScope, PLAYER_CONNECTION_TIMEOUT,
 };
-use crate::multiplayer::model::GamePreferences;
 use crate::multiplayer::model::{
     AuthSession, BackendEvent, BackendEventKind, CreateGameRequest, EventBatch, GameMembership,
-    GameRecord, GameSummary, GameSync, JoinDisposition, JoinGameRequest, JointAttackInvitation,
-    JointAttackResponse, MembershipResult, ProtectionPermissionUpdate, RecoverPlayerRequest,
-    SaveAcknowledgement, StoredTurnSubmission, SubmissionDisposition, TradeInvitation,
-    TradeResponse, MAX_DISPLAY_NAME_CHARS,
+    GamePreferences, GameRecord, GameSummary, GameSync, JoinDisposition, JoinGameRequest,
+    JointAttackInvitation, JointAttackParticipant, JointAttackResponse, MembershipResult,
+    ProtectionPermissionUpdate, RecoverPlayerRequest, SaveAcknowledgement, StoredTurnSubmission,
+    SubmissionDisposition, TradeInvitation, TradeResponse, MAX_DISPLAY_NAME_CHARS,
 };
 use crate::multiplayer::recovery::{generate_user_token, RecoveryCode};
 
@@ -69,7 +70,7 @@ struct MemoryState {
     next_game_id: u64,
     sessions: HashMap<String, UserId>,
     games: HashMap<GameId, StoredGame>,
-    codes: HashMap<crate::core::identity::GameCode, GameId>,
+    codes: HashMap<GameCode, GameId>,
     #[cfg(test)]
     now: Option<Instant>,
 }
@@ -434,9 +435,9 @@ impl MultiplayerBackend for InMemoryBackend {
                             submission.submission.commands.iter().any(|command| {
                                 matches!(
                                     command,
-                                    crate::core::simulation::TurnCommand::SendMission {
+                                    TurnCommand::SendMission {
                                         destination,
-                                        objective: crate::core::map::icon::Icon::Protect,
+                                        objective: Icon::Protect,
                                         ..
                                     } if *destination == planet_id
                                 )
@@ -503,12 +504,7 @@ impl MultiplayerBackend for InMemoryBackend {
                 || invitation.inviter != inviter
                 || invitation.canceled
                 || invitation.launched
-                || !matches!(
-                    invitation.objective,
-                    crate::core::map::icon::Icon::Colonize
-                        | crate::core::map::icon::Icon::Attack
-                        | crate::core::map::icon::Icon::Destroy
-                )
+                || !matches!(invitation.objective, Icon::Colonize | Icon::Attack | Icon::Destroy)
                 || invitation.participants.len() < 2
                 || destination.is_none_or(|planet| {
                     planet.is_destroyed
@@ -623,7 +619,7 @@ impl MultiplayerBackend for InMemoryBackend {
         attack_id: u64,
         expected_revision: u64,
         response: JointAttackResponse,
-        contribution: Option<crate::core::simulation::JointAttackContribution>,
+        contribution: Option<JointAttackContribution>,
     ) -> BackendFuture<'a, JointAttackInvitation> {
         Box::pin(async move {
             let mut state = self.lock()?;
@@ -920,7 +916,7 @@ impl MultiplayerBackend for InMemoryBackend {
         game_id: &'a GameId,
         trade_id: u64,
         expected_revision: u64,
-        resources: crate::core::resources::Resources,
+        resources: Resources,
         response: TradeResponse,
     ) -> BackendFuture<'a, TradeInvitation> {
         Box::pin(async move {
@@ -1668,8 +1664,8 @@ impl MultiplayerBackend for InMemoryBackend {
 
 /// Every fleet edit changes the offer the other players accepted.
 fn joint_attack_offer_changed(
-    previous: Option<&crate::core::simulation::JointAttackContribution>,
-    next: Option<&crate::core::simulation::JointAttackContribution>,
+    previous: Option<&JointAttackContribution>,
+    next: Option<&JointAttackContribution>,
 ) -> bool {
     previous != next
 }
@@ -1707,7 +1703,7 @@ fn freeze_joint_attack_launches(
         launching.iter().map(|(attack_id, _)| *attack_id).collect::<HashSet<_>>();
     let launched_fleets =
         launching.iter().flat_map(|(_, contributions)| contributions).cloned().collect::<Vec<_>>();
-    let overlaps_launch = |participant: &crate::multiplayer::model::JointAttackParticipant| {
+    let overlaps_launch = |participant: &JointAttackParticipant| {
         participant.contribution.as_ref().is_some_and(|reserved| {
             launched_fleets.iter().any(|launched| {
                 launched.player_id == reserved.player_id
@@ -1893,7 +1889,7 @@ fn validate_recovery_code(code: &str) -> Result<(), BackendError> {
 }
 
 /// Converts core validation failures into transport-neutral data errors.
-fn invalid_game(error: crate::core::simulation::GameError) -> BackendError {
+fn invalid_game(error: GameError) -> BackendError {
     BackendError::InvalidData(error.to_string())
 }
 

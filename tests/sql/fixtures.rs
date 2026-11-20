@@ -3,15 +3,20 @@
 use rand::SeedableRng;
 use stellarion::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
 use stellarion::core::combat::resolution::resolve_combat_with_rng;
+use stellarion::core::expeditions::valid_expedition_target;
 use stellarion::core::map::icon::Icon;
 use stellarion::core::map::planet::Planet;
 use stellarion::core::missions::{BombingRaid, Mission};
+use stellarion::core::patrols::{valid_patrol_target, PatrolPhase};
 use stellarion::core::resources::Resources;
+use stellarion::core::sabotage::SabotageTarget;
 use stellarion::core::simulation::{
-    resolve_turn, GameModel, GameRules, PersistedGame, TurnCommand, TurnSubmission,
+    preview_commands, resolve_turn, GameModel, GameRules, PersistedGame, TurnCommand,
+    TurnSubmission,
 };
 use stellarion::core::trading::{trading_post_capacity, trading_posts_are_adjacent};
 use stellarion::core::units::{buildings::Building, ships::Ship, Amount, Army, Unit};
+use stellarion::multiplayer::model::GamePreferences;
 
 fn trade_route_fixtures(model: &GameModel) -> Vec<serde_json::Value> {
     let mut map = model.map.clone();
@@ -237,12 +242,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::json!({
-            "game_preferences": stellarion::multiplayer::model::GamePreferences::default(),
+            "game_preferences": GamePreferences::default(),
             "battle_plan": BattlePlan::default(),
             "battle_plans": battle_plans,
             "battle_report": battle_report,
             "combat_game": combat_fixture(active.clone())?,
             "patrol_game": patrol_fixture(active.clone())?,
+            "expedition_game": expedition_fixture(active.clone())?,
+            "sabotage_game": sabotage_fixture(active.clone())?,
             "intercept_game": intercept_fixture(active.clone())?,
             "patrol_contacts": patrol_contact_fixture(active.clone())?,
             "trade_routes": trade_route_fixtures(&active),
@@ -309,11 +316,7 @@ fn intercept_fixture(
         army: Army::from([(Unit::Ship(Ship::LightFighter), 1)]),
         battle_plan: BattlePlan::default(),
     };
-    let draft = PersistedGame::new(stellarion::core::simulation::preview_commands(
-        &model,
-        1,
-        std::slice::from_ref(&launch),
-    )?);
+    let draft = PersistedGame::new(preview_commands(&model, 1, std::slice::from_ref(&launch))?);
     let mut turns = Vec::new();
     for step in 0..30 {
         let submissions = vec![
@@ -356,9 +359,7 @@ fn patrol_fixture(mut model: GameModel) -> Result<serde_json::Value, Box<dyn std
             model.map.rect.min
                 + model.map.rect.size() * bevy::math::Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
         })
-        .filter(|point| {
-            stellarion::core::patrols::valid_patrol_target(&model.map, origin, *point, Some(2))
-        })
+        .filter(|point| valid_patrol_target(&model.map, origin, *point, Some(2)))
         .max_by(|a, b| {
             a.distance_squared(model.map.get(origin).position)
                 .total_cmp(&b.distance_squared(model.map.get(origin).position))
@@ -411,7 +412,6 @@ fn patrol_fixture(mut model: GameModel) -> Result<serde_json::Value, Box<dyn std
 fn patrol_contact_fixture(
     mut model: GameModel,
 ) -> Result<PersistedGame, Box<dyn std::error::Error>> {
-    use stellarion::core::patrols::{valid_patrol_target, PatrolPhase};
     model.rules.space_fauna_percent = 0;
     let point = (1..20)
         .flat_map(|x| (1..20).map(move |y| (x, y)))
@@ -455,4 +455,135 @@ fn patrol_contact_fixture(
         }
     }
     Err("friendly patrol fixture did not detect its contacts".into())
+}
+
+/// Exercises discovery cargo and both travel legs through the current snapshot transport.
+fn expedition_fixture(
+    mut model: GameModel,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    model.rules.space_fauna_percent = 0;
+    model.rules.independent_populations = false;
+    let origin = model.players[0].home_planet;
+    let center = (1..20)
+        .flat_map(|x| (1..20).map(move |y| (x, y)))
+        .map(|(x, y)| {
+            model.map.rect.min
+                + model.map.rect.size() * bevy::math::Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
+        })
+        .find(|point| valid_expedition_target(&model.map, origin, *point))
+        .ok_or("no expedition destination")?;
+    let army = Army::from([(Unit::colony_ship(), 2), (Unit::Ship(Ship::Cruiser), 3)]);
+    model.map.get_mut(origin).army.extend(army.clone());
+    model.players[0].resources.deuterium = 100_000;
+    model.validate()?;
+    let initial = PersistedGame::new(model.clone());
+    let launch = TurnCommand::SendExpedition {
+        mission_id: 9903,
+        origin,
+        center,
+        army,
+        battle_plan: BattlePlan::default(),
+    };
+    let mut turns = Vec::new();
+    for index in 0..100 {
+        let submissions = vec![
+            TurnSubmission::new(
+                1,
+                model.turn,
+                if index == 0 {
+                    vec![launch.clone()]
+                } else {
+                    vec![]
+                },
+            ),
+            TurnSubmission::new(2, model.turn, vec![]),
+        ];
+        resolve_turn(&mut model, &submissions)?;
+        turns.push(serde_json::json!({ "submissions": submissions, "resolved": PersistedGame::new(model.clone()) }));
+        if model.missions.is_empty() {
+            break;
+        }
+    }
+    assert!(model.missions.is_empty(), "expedition must return and dock");
+    Ok(serde_json::json!({ "initial": initial, "turns": turns, "launch": launch }))
+}
+
+/// Three separately targeted probe operations disable orbitals for one planning turn.
+fn sabotage_fixture(mut model: GameModel) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    model.rules.space_fauna_percent = 0;
+    model.rules.independent_populations = false;
+    let origin = model.players[0].home_planet;
+    let target = model.players[1].home_planet;
+    model.players[0].resources.deuterium = 100_000;
+    model.map.get_mut(origin).army.insert(Unit::probe(), 25);
+    model.map.get_mut(target).army.clear();
+    for target_type in SabotageTarget::ALL {
+        model.map.get_mut(target).army.insert(Unit::Building(target_type.building()), 1);
+    }
+    let scan = Mission::new_with_id(
+        9800,
+        1,
+        1,
+        model.map.get(origin),
+        model.map.get(target),
+        Icon::Spy,
+        Army::from([(Unit::probe(), 25)]),
+        BombingRaid::None,
+        false,
+        false,
+        None,
+    );
+    let report = resolve_combat_with_rng(
+        1,
+        &scan,
+        model.map.get(target),
+        &mut rand_chacha::ChaCha8Rng::seed_from_u64(19),
+    );
+    model.players[0].push_report(report);
+    model.validate()?;
+    let initial = PersistedGame::new(model.clone());
+    let commands = SabotageTarget::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(index, target_type)| TurnCommand::SendSabotage {
+            mission_id: 9904 + index as u64,
+            origin,
+            destination: target,
+            target: target_type,
+            army: Army::from([(Unit::probe(), 5)]),
+            deep_cover: false,
+            battle_plan: BattlePlan::default(),
+        })
+        .collect::<Vec<_>>();
+    let mut turns = Vec::new();
+    for index in 0..100 {
+        let submissions = vec![
+            TurnSubmission::new(
+                1,
+                model.turn,
+                if index == 0 {
+                    commands.clone()
+                } else {
+                    vec![]
+                },
+            ),
+            TurnSubmission::new(2, model.turn, vec![]),
+        ];
+        resolve_turn(&mut model, &submissions)?;
+        turns.push(serde_json::json!({"submissions":submissions,"resolved":PersistedGame::new(model.clone())}));
+        if model.missions.is_empty() {
+            break;
+        }
+    }
+    assert!(model.missions.is_empty(), "sabotage probes must return and dock");
+    assert_eq!(
+        turns
+            .iter()
+            .filter(|turn| turn["resolved"]["state"]["map"]["planets"][target]["sabotage"]
+                ["jump_gate"]
+                == true)
+            .count(),
+        1
+    );
+    Ok(serde_json::json!({"initial":initial,"turns":turns,"commands":commands,"target":target}))
 }

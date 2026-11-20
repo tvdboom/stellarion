@@ -2,6 +2,8 @@
 
 use bevy::color::Color;
 
+use crate::core::map::planet::Planet;
+
 /// General
 pub const WIDTH: f32 = 1600.;
 /// Logical game-window height in pixels.
@@ -87,6 +89,16 @@ pub const MIN_SPY_PROBES: usize = 5;
 pub const DEEP_COVER_DEUTERIUM_PER_PROBE: usize = 10;
 /// Fleet-fuel reduction granted by each Reactor level.
 pub const REACTOR_FUEL_REDUCTION_FACTOR: f32 = 0.1;
+/// Resource units each Colony Ship can carry.
+pub const COLONY_SHIP_CARGO: usize = 200;
+/// Patrol coverage radius in map units, equivalent to three AU.
+pub const PATROL_RADIUS: f32 = Planet::SIZE * 3.0;
+/// Maximum number of simultaneous in-flight missions retained in persisted state.
+pub const MAX_ACTIVE_MISSIONS: usize = 4096;
+/// Tradable resources one completed Trading Post level can send in a turn.
+pub const TRADE_RESOURCES_PER_LEVEL: usize = 500;
+/// Center-to-center reach granted by each completed Trading Post level, in AU.
+pub const TRADING_POST_RANGE_PER_LEVEL: f32 = 1.5;
 /// Sensor-phalanx range granted per building level, measured in AU (planet-size units).
 pub const PHALANX_DISTANCE: f32 = 1.0;
 /// Orbital-radar range granted per building level, measured in AU (planet-size units).
@@ -129,10 +141,20 @@ pub const VORONOI_Z: f32 = 1.;
 pub const PLANET_Z: f32 = 2.;
 /// Travelling missions sit above planets and orbital structures, below the map's icon overlays.
 pub const MISSION_Z: f32 = PLANET_Z + 0.4;
+/// Strategic map size of a probe mission and its aftermath sprite.
+#[cfg(feature = "app")]
+pub(crate) const SPY_MISSION_SIZE: f32 = 36.0;
+/// Shared rotation rate for gate links and mission helices, in radians per second.
+#[cfg(feature = "app")]
+pub(crate) const JUMP_GATE_HELIX_ANGULAR_SPEED: f32 = 5.0;
 /// Render layer of strategic map explosions.
 pub const EXPLOSION_Z: f32 = 4.;
 /// Rendered diameter of the large solar landmark used as the solar-band origin.
 pub const SOLAR_STAR_SIZE: f32 = 1_440.0;
+
+/// Mission panel width shared by the interception target card and its route column.
+#[cfg(feature = "app")]
+pub(crate) const INTERCEPTION_TARGET_LABEL_WIDTH: f32 = 160.0;
 
 /// Unique names sampled for generated planets and moons.
 pub const PLANET_NAMES: [&str; 162] = [

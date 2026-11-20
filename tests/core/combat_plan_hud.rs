@@ -1,9 +1,18 @@
+use super::super::identity_ui::show_identity_tooltip;
 use super::*;
+
+use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
+use crate::core::combat::report::{CombatReport, RoundReport};
+use crate::core::combat::resolution::CombatUnit;
+use crate::core::map::planet::Planet;
+use crate::core::missions::Mission;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Army, Combat, Unit};
+use crate::test_support::empty_report;
 
 #[test]
 #[ignore = "requires a GPU; saves full and compact combat-plan HUD previews"]
 fn render_combat_plan_hud() {
-    use crate::core::combat::plan::{BattlePlan, CombatTactic, ProtectionPosture, TargetPriority};
     use bevy::app::AppExit;
     use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
     use bevy::winit::{WinitPlugin, WinitSettings};
@@ -178,7 +187,6 @@ fn render_combat_plan_hud() {
 
 #[test]
 fn combat_identity_hover_card_fits_small_windows_and_scrolls_all_fleets() {
-    use super::super::identity_ui::show_identity_tooltip;
     let context = egui::Context::default();
     context.global_style_mut(|style| {
         style.animation_time = 0.0;
@@ -263,13 +271,6 @@ fn combat_identity_hover_card_fits_small_windows_and_scrolls_all_fleets() {
 
 #[test]
 fn combat_identity_bonuses_use_each_opponent_and_keep_the_opening_affinity() {
-    use crate::core::combat::plan::{BattlePlan, CombatTactic};
-    use crate::core::combat::report::{CombatReport, RoundReport};
-    use crate::core::combat::resolution::CombatUnit;
-    use crate::core::map::planet::Planet;
-    use crate::core::missions::Mission;
-    use crate::core::units::{ships::Ship, Army, Combat, Unit};
-
     let combatant = |id, owner, unit: Unit, tactic| CombatUnit {
         id,
         owner: Some(owner),
@@ -302,7 +303,7 @@ fn combat_identity_bonuses_use_each_opponent_and_keep_the_opening_affinity() {
     planet.owned = Some(3);
     planet.controlled = Some(3);
     planet.army = Army::new().into();
-    let mut report = crate::test_support::empty_report(Mission::default(), planet);
+    let mut report = empty_report(Mission::default(), planet);
     report.combat_report = Some(CombatReport {
         rounds: vec![
             RoundReport {

@@ -3,8 +3,11 @@ use std::time::Duration;
 use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
+
 use crate::core::map::icon::Icon;
+use crate::core::messages::MessageLevel;
 use crate::core::missions::BombingRaid;
+use crate::core::player::PlayerColor;
 use crate::core::simulation::{GameModel, GameRules};
 use crate::core::units::buildings::Building;
 use crate::core::units::{Army, Unit};
@@ -108,7 +111,7 @@ fn newly_visible_enemy_mission_gets_a_radar_ping_at_its_map_position() {
         app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect::<Vec<_>>();
     assert_eq!(notifications.len(), 1);
     assert_eq!(notifications[0].message, "Enemy mission detected.");
-    assert_eq!(notifications[0].level, crate::core::messages::MessageLevel::Warning);
+    assert_eq!(notifications[0].level, MessageLevel::Warning);
     assert_eq!(notifications[0].action, Some(MessageAction::OpenEnemyMissions));
     assert!(!notifications[0].silent);
 
@@ -151,7 +154,7 @@ fn incoming_protection_uses_an_informational_toast_and_protection_label() {
         app.world_mut().resource_mut::<Messages<MessageMsg>>().drain().collect::<Vec<_>>();
     assert_eq!(notifications.len(), 1);
     assert_eq!(notifications[0].message, "Protection fleet incoming.");
-    assert_eq!(notifications[0].level, crate::core::messages::MessageLevel::Info);
+    assert_eq!(notifications[0].level, MessageLevel::Info);
     assert_eq!(notifications[0].action, Some(MessageAction::OpenEnemyMissions));
 
     let effect = effects(&mut app)[0];
@@ -306,7 +309,7 @@ fn public_structure_pulses_use_the_owners_color_follow_the_marker_and_expire() {
         let material = app.world().get::<MeshMaterial2d<ColorMaterial>>(pulse).unwrap();
         assert_eq!(
             app.world().resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
-            crate::core::player::PlayerColor::for_player(owner).color().with_alpha(0.0)
+            PlayerColor::for_player(owner).color().with_alpha(0.0)
         );
     }
     assert_ne!(owner, player.id, "the test must exercise another player's structures");
@@ -365,7 +368,7 @@ fn destruction_pulses_hold_a_public_railgun_marker_until_the_effect_finishes() {
     assert_eq!(*app.world().get::<Pickable>(railgun).unwrap(), Pickable::IGNORE);
     assert_eq!(
         app.world().get::<Sprite>(railgun).unwrap().color,
-        crate::core::player::PlayerColor::for_player(owner).color()
+        PlayerColor::for_player(owner).color()
     );
 
     app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(4));

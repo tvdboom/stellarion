@@ -1,5 +1,7 @@
 use super::*;
+
 use crate::core::missions::Mission;
+use crate::core::ui::utils::{toggle, CustomUi};
 
 /// Runs actual egui pointer press/release frames against an interactive widget.
 fn click_widget(
@@ -64,8 +66,6 @@ fn button_clicks_ignore_disabled_widgets_and_secondary_clicks() {
 
 #[test]
 fn gameplay_controls_share_click_feedback() {
-    use crate::core::ui::utils::{toggle, CustomUi};
-
     let primary = egui::PointerButton::Primary;
     let images = ImageIds::default();
     assert_eq!(

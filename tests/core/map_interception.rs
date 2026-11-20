@@ -1,10 +1,13 @@
 use super::*;
+use std::time::Duration;
+
 use crate::core::combat::report::CombatReport;
 use crate::core::interception::{Intercept, InterceptPhase};
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::simulation::{GameModel, GameRules};
-use crate::core::units::{ships::Ship, Army};
-use std::time::Duration;
+use crate::core::units::ships::Ship;
+use crate::core::units::Army;
+use crate::test_support::empty_report;
 
 fn presentation() -> App {
     let mut model = GameModel::new([8; 32], GameRules::default()).unwrap();
@@ -46,7 +49,7 @@ fn presentation() -> App {
         false,
         None,
     );
-    let mut report = crate::test_support::empty_report(mission, target.clone());
+    let mut report = empty_report(mission, target.clone());
     report.id = 5;
     report.turn = 2;
     report.combat_report = Some(CombatReport::default());

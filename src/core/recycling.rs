@@ -110,10 +110,7 @@ pub(crate) fn debris_sites<'a>(
     let mut sites = BTreeMap::<PlanetId, DebrisSite>::new();
     for report in reports {
         // Patrol battles take place away from worlds; their return port is not a debris site.
-        if matches!(
-            report.mission.objective,
-            crate::core::map::icon::Icon::Patrol | crate::core::map::icon::Icon::Intercept
-        ) {
+        if matches!(report.mission.objective, Icon::Patrol | Icon::Intercept) {
             continue;
         }
         if !seen.insert(report.id) {
@@ -151,7 +148,7 @@ pub(crate) fn visible_debris_sites<'a>(
         .reports
         .iter()
         .filter(|report| {
-            report.mission.objective == Icon::Spy
+            report.mission.objective.is_probe_mission()
                 && report.mission.owner == viewer.id
                 && report.scout_probes > 0
                 && report.turn <= turn

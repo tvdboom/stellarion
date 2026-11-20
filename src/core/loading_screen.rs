@@ -1,6 +1,5 @@
 //! Full-screen loading artwork, measured progress, and the reveal into the menu or map.
 
-use bevy::asset::LoadState;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use rand::seq::IteratorRandom;
@@ -11,16 +10,18 @@ use crate::core::states::AppState;
 use crate::multiplayer::client::{ConnectionStatus, MultiplayerRequest, MultiplayerSession};
 
 const BACKGROUNDS: [&str; 9] = [
+    // Preload the smallest texture before the rest of the slideshow.
+    "battleship",
     "orbit",
     "station",
     "fleet",
     "expedition",
     "outpost",
     "armada",
-    "battleship",
     "asteroids",
     "gate",
 ];
+const ARTWORK_FADE: f32 = 0.4;
 const SLIDE_HOLD: f32 = 2.4;
 const CROSSFADE: f32 = 0.8;
 const MIN_DISPLAY: f32 = 1.2;
@@ -30,10 +31,10 @@ const REVEAL: f32 = 0.7;
 #[derive(Resource)]
 pub(crate) struct LoadingScreen {
     boot: bool,
+    starting_game: bool,
     menu_texture: Option<egui::TextureId>,
-    images: [Handle<Image>; BACKGROUNDS.len()],
+    images: [Option<Handle<Image>>; BACKGROUNDS.len()],
     textures: [Option<egui::TextureId>; BACKGROUNDS.len()],
-    start: usize,
     current: Option<usize>,
     next: Option<usize>,
     slide_elapsed: f32,
@@ -50,11 +51,11 @@ impl Default for LoadingScreen {
     fn default() -> Self {
         Self {
             boot: true,
+            starting_game: false,
             menu_texture: None,
             // Match wallpapers are optional and must not compete with startup assets.
-            images: std::array::from_fn(|_| Handle::default()),
+            images: Default::default(),
             textures: [None; BACKGROUNDS.len()],
-            start: 0,
             current: None,
             next: None,
             slide_elapsed: 0.0,
@@ -70,6 +71,32 @@ impl Default for LoadingScreen {
 }
 
 impl LoadingScreen {
+    fn reset(&mut self) {
+        self.next = None;
+        self.slide_elapsed = 0.0;
+        self.artwork_elapsed = 0.0;
+        self.elapsed = 0.0;
+        self.progress = 0.0;
+        self.ready = false;
+        self.ready_elapsed = 0.0;
+        self.reveal_elapsed = None;
+        self.boot_error = None;
+    }
+
+    fn begin_match(&mut self, images: &Assets<Image>) {
+        self.boot = false;
+        self.reset();
+        let ready = self.ready_backgrounds(images);
+        self.current =
+            choose_background(ready, self.current).or_else(|| choose_background(ready, None));
+    }
+
+    fn ready_backgrounds(&self, images: &Assets<Image>) -> [bool; BACKGROUNDS.len()] {
+        std::array::from_fn(|index| {
+            self.images[index].as_ref().is_some_and(|handle| images.contains(handle))
+        })
+    }
+
     /// Signals actual completion; a short full-bar pause makes the automatic handoff readable.
     pub(crate) fn finish(&mut self) -> bool {
         self.ready = true;
@@ -87,37 +114,71 @@ impl LoadingScreen {
     }
 }
 
+fn load_background(server: &AssetServer, name: &str) -> Handle<Image> {
+    server
+        .load_builder()
+        .with_settings(|settings: &mut BasisTextureSettings| {
+            settings.linear_filtering = true;
+        })
+        .load(format!("images/bg/loading/{name}.basisu.ktx2"))
+}
+
+/// Keeps one light wallpaper ready before a match can start, outside the required boot assets.
+pub(crate) fn preload_loading_art(server: Res<AssetServer>, mut screen: ResMut<LoadingScreen>) {
+    screen.images[0].get_or_insert_with(|| load_background(&server, BACKGROUNDS[0]));
+}
+
+/// Suppresses the lobby controls while the start request owns the foreground.
+pub(crate) fn showing_game_start(screen: Res<LoadingScreen>) -> bool {
+    screen.starting_game
+}
+
+/// Starts the fade in the pass that accepted the click, before the backend responds.
+pub(crate) fn preview_game_start(
+    mut requests: MessageReader<MultiplayerRequest>,
+    state: Res<State<AppState>>,
+    images: Res<Assets<Image>>,
+    mut screen: ResMut<LoadingScreen>,
+) {
+    let start_requested =
+        requests.read().any(|request| matches!(request, MultiplayerRequest::StartGame));
+    if start_requested && *state.get() == AppState::Lobby && !screen.starting_game {
+        screen.begin_match(&images);
+        screen.starting_game = true;
+    }
+}
+
+/// Restores the lobby before drawing it if the request failed or the player left.
+pub(crate) fn dismiss_game_start_preview(
+    state: Res<State<AppState>>,
+    session: Res<MultiplayerSession>,
+    mut screen: ResMut<LoadingScreen>,
+) {
+    if screen.starting_game && (*state.get() != AppState::Lobby || session.menu_error.is_some()) {
+        screen.starting_game = false;
+        screen.reveal_elapsed = Some(REVEAL);
+    }
+}
+
 pub(crate) fn begin_loading_screen(
     state: Res<State<AppState>>,
     server: Res<AssetServer>,
+    images: Res<Assets<Image>>,
     mut screen: ResMut<LoadingScreen>,
 ) {
-    // Keep the loading destination through the reveal, after AppState has already changed.
-    screen.boot = *state.get() == AppState::Boot;
-    if !screen.boot {
-        screen.images = BACKGROUNDS.map(|name| {
-            server
-                .load_builder()
-                .with_settings(|settings: &mut BasisTextureSettings| {
-                    settings.linear_filtering = true;
-                })
-                .load(format!("images/bg/loading/{name}.basisu.ktx2"))
-        });
-        // This randomness affects presentation only, never the persisted simulation.
-        screen.start =
-            choose_background([true; BACKGROUNDS.len()], screen.current.or(Some(screen.start)))
-                .unwrap_or(0);
+    if *state.get() == AppState::Boot {
+        screen.boot = true;
+        screen.reset();
+        return;
     }
-    screen.current = None;
-    screen.next = None;
-    screen.slide_elapsed = 0.0;
-    screen.elapsed = 0.0;
-    screen.progress = 0.0;
-    screen.ready = false;
-    screen.ready_elapsed = 0.0;
-    screen.reveal_elapsed = None;
-    screen.boot_error = None;
-    screen.artwork_elapsed = 0.0;
+    // Keep the artwork and its fade when the start request hands off to gameplay loading.
+    if !screen.starting_game {
+        screen.begin_match(&images);
+    }
+    screen.starting_game = false;
+    for (handle, name) in screen.images.iter_mut().zip(BACKGROUNDS) {
+        handle.get_or_insert_with(|| load_background(&server, name));
+    }
 }
 
 pub(crate) fn reveal_loaded_screen(mut screen: ResMut<LoadingScreen>) {
@@ -174,28 +235,14 @@ pub(crate) fn advance_loading_screen(
     }
 
     if screen.current.is_none() {
-        // Honor the random choice instead of always taking the first texture to finish.
-        if images.contains(&screen.images[screen.start]) {
-            screen.current = Some(screen.start);
-            screen.slide_elapsed = 0.0;
-        } else if matches!(
-            server.get_load_state(screen.images[screen.start].id()),
-            Some(LoadState::Failed(_))
-        ) {
-            screen.current = choose_background(
-                std::array::from_fn(|index| images.contains(&screen.images[index])),
-                Some(screen.start),
-            );
-        }
+        screen.current = choose_background(screen.ready_backgrounds(&images), None);
+        screen.slide_elapsed = 0.0;
     }
     screen.slide_elapsed += delta;
     if let Some(current) = screen.current {
         screen.artwork_elapsed += delta;
         if screen.slide_elapsed >= SLIDE_HOLD && screen.next.is_none() {
-            screen.next = choose_background(
-                std::array::from_fn(|index| images.contains(&screen.images[index])),
-                Some(current),
-            );
+            screen.next = choose_background(screen.ready_backgrounds(&images), Some(current));
             // A slow optional download gets a complete crossfade when it finally arrives.
             screen.slide_elapsed = SLIDE_HOLD;
         }
@@ -251,17 +298,17 @@ pub(crate) fn draw_loading_screen(
         return;
     }
     let menu_image = assets.image("menu");
-    if screen.boot {
-        if screen.menu_texture.is_none() && images.contains(&menu_image) {
-            screen.menu_texture =
-                Some(contexts.add_image(EguiTextureHandle::Strong(menu_image.clone())));
-        }
-    } else {
+    if screen.menu_texture.is_none() && images.contains(&menu_image) {
+        screen.menu_texture =
+            Some(contexts.add_image(EguiTextureHandle::Strong(menu_image.clone())));
+    }
+    if !screen.boot {
         for index in [screen.current, screen.next].into_iter().flatten() {
             if screen.textures[index].is_none() {
-                screen.textures[index] = Some(
-                    contexts.add_image(EguiTextureHandle::Strong(screen.images[index].clone())),
-                );
+                if let Some(handle) = &screen.images[index] {
+                    screen.textures[index] =
+                        Some(contexts.add_image(EguiTextureHandle::Strong(handle.clone())));
+                }
             }
         }
     }
@@ -269,16 +316,12 @@ pub(crate) fn draw_loading_screen(
         return;
     };
     let viewport = context.content_rect();
+    let viewport_size = Vec2::new(viewport.width(), viewport.height());
+    let menu_art = screen.menu_texture.zip(images.get(&menu_image).map(Image::size_f32));
     let scale = (viewport.width() / 1200.0).min(viewport.height() / 760.0).clamp(0.7, 1.3);
     let alpha = 1.0 - smoothstep(screen.reveal_elapsed.unwrap_or(0.0) / REVEAL);
     if screen.boot {
-        draw_boot_loading(
-            context,
-            screen.menu_texture.zip(images.get(&menu_image).map(Image::size_f32)),
-            screen.progress,
-            alpha,
-            screen.boot_error.as_deref(),
-        );
+        draw_boot_loading(context, menu_art, screen.progress, alpha, screen.boot_error.as_deref());
         return;
     }
     let error = if *state.get() == AppState::LoadingGame {
@@ -288,6 +331,8 @@ pub(crate) fn draw_loading_screen(
     };
     let status = if error.is_some() {
         "Loading interrupted"
+    } else if screen.starting_game {
+        "Starting game…"
     } else if screen.ready {
         "Ready. Entering the sector…"
     } else {
@@ -296,6 +341,7 @@ pub(crate) fn draw_loading_screen(
     egui::Area::new(egui::Id::new("stellarion_loading_screen"))
         .order(egui::Order::Foreground)
         .fixed_pos(viewport.min)
+        .fade_in(false)
         .show(context, |ui| {
             ui.set_opacity(alpha);
             ui.set_min_size(viewport.size());
@@ -303,21 +349,28 @@ pub(crate) fn draw_loading_screen(
             ui.allocate_rect(viewport, egui::Sense::hover());
             let painter = ui.painter();
             painter.rect_filled(viewport, 0.0, egui::Color32::from_rgb(5, 11, 20));
+            let artwork_opacity = smoothstep(screen.artwork_elapsed / ARTWORK_FADE);
+            if artwork_opacity < 1.0 {
+                if let Some((texture, size)) = menu_art {
+                    painter.image(
+                        texture,
+                        viewport,
+                        cover_uv(size, viewport_size),
+                        egui::Color32::WHITE,
+                    );
+                }
+            }
             for (index, opacity) in [
-                (screen.current, smoothstep(screen.artwork_elapsed / 0.6)),
+                (screen.current, artwork_opacity),
                 (screen.next, smoothstep((screen.slide_elapsed - SLIDE_HOLD) / CROSSFADE)),
             ] {
                 if let Some(index) = index {
-                    if let (Some(texture), Some(image)) =
-                        (screen.textures[index], images.get(&screen.images[index]))
-                    {
+                    let image = screen.images[index].as_ref().and_then(|handle| images.get(handle));
+                    if let (Some(texture), Some(image)) = (screen.textures[index], image) {
                         painter.image(
                             texture,
                             viewport,
-                            cover_uv(
-                                image.size_f32(),
-                                Vec2::new(viewport.width(), viewport.height()),
-                            ),
+                            cover_uv(image.size_f32(), viewport_size),
                             egui::Color32::WHITE.gamma_multiply(opacity),
                         );
                     }
@@ -378,11 +431,19 @@ pub(crate) fn draw_loading_screen(
                 egui::Color32::from_rgb(148, 177, 201),
                 width,
             );
-            painter.galley(
-                egui::pos2(center - galley.size().x * 0.5, bar.bottom() + 16.0 * scale),
-                galley,
-                egui::Color32::WHITE,
-            );
+            let status_pos =
+                egui::pos2(center - galley.size().x * 0.5, bar.bottom() + 16.0 * scale);
+            let status_bottom = status_pos.y + galley.size().y;
+            painter.galley(status_pos, galley, egui::Color32::WHITE);
+            if screen.starting_game {
+                let leave_button = egui::Rect::from_center_size(
+                    egui::pos2(center, status_bottom + 25.0 * scale),
+                    egui::vec2(120.0 * scale, 26.0 * scale),
+                );
+                if ui.put(leave_button, egui::Button::new("Leave Lobby")).clicked() {
+                    requests.write(MultiplayerRequest::LeaveGame);
+                }
+            }
             if let Some(error) = error {
                 // Errors replace the hero so arbitrarily long diagnostics remain scrollable.
                 let size = egui::vec2(width, (viewport.height() * 0.5).min(320.0 * scale));

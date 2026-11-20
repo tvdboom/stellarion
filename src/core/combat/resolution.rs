@@ -18,11 +18,13 @@ use crate::core::constants::REPAIR_TRUCK_HEALING_PER_ROUND;
 use crate::core::energy::EnergyGrid;
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
-use crate::core::map::planet::{Garrison, Planet};
+use crate::core::map::planet::{Garrison, Planet, PlanetId};
 use crate::core::missions::{BombingRaid, Mission};
+use crate::core::units::buildings::Building;
 use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Unit};
+use crate::serialization::required_option;
 
 /// Hard ceiling that turns shield stalemates into deterministic draws.
 pub const MAX_COMBAT_ROUNDS: usize = 20;
@@ -49,10 +51,10 @@ static RAPID_FIRE: LazyLock<HashMap<Unit, HashMap<Unit, usize>>> = LazyLock::new
 /// Outcome of one combatant firing once at a selected target.
 pub struct ShotReport {
     /// Exact combatant selected by this shot, when it targeted an ordinary unit.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub target_id: Option<u64>,
     /// Unit kind represented by this record or presentation component.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub unit: Option<Unit>,
     /// Damage absorbed by the target's ordinary shield.
     pub shield_damage: usize,
@@ -82,8 +84,8 @@ pub struct CombatUnit {
     /// Stable identifier used to cross-reference this value.
     pub id: u64,
     /// Player whose independently persisted fleet supplied this unit.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
-    pub owner: Option<crate::core::identity::PlayerId>,
+    #[serde(deserialize_with = "required_option")]
+    pub owner: Option<PlayerId>,
     /// Source identity retained for replay and survivor tracking.
     pub fleet_id: u64,
     /// Frozen orders shared by this commander's combined force before combat starts.
@@ -109,7 +111,7 @@ impl CombatUnit {
     /// Creates a combat unit while retaining the contributing player's identity.
     pub fn new_owned_with_rng<R: Rng + ?Sized>(
         unit: &Unit,
-        owner: Option<crate::core::identity::PlayerId>,
+        owner: Option<PlayerId>,
         rng: &mut R,
     ) -> Self {
         Self {
@@ -163,7 +165,7 @@ pub fn resolve_combat_with_retreat_with_rng<R: Rng + ?Sized>(
     mission: &Mission,
     destination: &Planet,
     energy: EnergyGrid,
-    retreat_home: Option<crate::core::map::planet::PlanetId>,
+    retreat_home: Option<PlanetId>,
     rng: &mut R,
 ) -> MissionReport {
     let retreat_homes =
@@ -177,7 +179,7 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
     mission: &Mission,
     destination: &Planet,
     energy: EnergyGrid,
-    retreat_homes: &BTreeMap<crate::core::identity::PlayerId, crate::core::map::planet::PlanetId>,
+    retreat_homes: &BTreeMap<PlayerId, PlanetId>,
     rng: &mut R,
 ) -> MissionReport {
     if matches!(mission.objective, Icon::Deploy | Icon::Protect)
@@ -198,14 +200,12 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
             destination_owned: destination.owned,
             destination_controlled: destination.controlled,
             combat_report: None,
-            hidden: mission.is_returning(), // Hide returning probes or fleets.
+            hidden: false,
         };
     }
 
     let mut combat_report = CombatReport::default();
-    let administration = destination
-        .army
-        .amount(&Unit::Building(crate::core::units::buildings::Building::ColonialAdministration));
+    let administration = destination.army.amount(&Unit::Building(Building::ColonialAdministration));
     let defender_owner = destination.controlled.or(destination.owned);
     let retreat_enabled =
         defender_owner.and_then(|owner| retreat_homes.get(&owner)).is_some_and(|home| {
@@ -229,7 +229,7 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
             .filter(|(owner, _)| retreat_homes.contains_key(owner))
             .map(|(_, fleet)| combat_fleet_strength(fleet))
             .sum::<u128>();
-    let mut support_colonies = BTreeMap::<crate::core::identity::PlayerId, usize>::new();
+    let mut support_colonies = BTreeMap::<PlayerId, usize>::new();
     if let Some(owner) = defender_owner {
         support_colonies.insert(owner, destination.army.controller().amount(&Unit::colony_ship()));
     }
@@ -331,7 +331,7 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
 
     let mut round = 1;
     let mut returning_probes = 0;
-    let mut returning_probes_by_owner = BTreeMap::<crate::core::identity::PlayerId, usize>::new();
+    let mut returning_probes_by_owner = BTreeMap::<PlayerId, usize>::new();
     let mut used_antiballistic = vec![];
     let mut planet_destroyed = false;
     let mut bombing_resolved = false;
@@ -625,7 +625,7 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
             attack_army.retain(|probe| {
                 let returning = probe.unit == Unit::probe()
                     && ((!mission.combat_probes_for(probe.owner) && !defend_army.is_empty())
-                        || mission.objective == Icon::Spy);
+                        || mission.objective.is_probe_mission());
                 if returning {
                     returning_probes += 1;
                     if let Some(owner) = probe.owner {
@@ -664,7 +664,7 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
         *army.entry(cu.unit).or_insert(0) += 1;
         army
     });
-    let mut surviving_attackers = BTreeMap::<crate::core::identity::PlayerId, Army>::new();
+    let mut surviving_attackers = BTreeMap::<PlayerId, Army>::new();
     for combatant in &attack_army {
         if let Some(owner) = combatant.owner {
             let count =
@@ -675,7 +675,7 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
 
     let defense_survives = !defend_army.is_empty();
     let mut surviving_controller = Army::new();
-    let mut surviving_protectors = BTreeMap::<crate::core::identity::PlayerId, Army>::new();
+    let mut surviving_protectors = BTreeMap::<PlayerId, Army>::new();
     for combatant in &defend_army {
         let army = if combatant.owner == defender_owner {
             &mut surviving_controller
@@ -778,9 +778,9 @@ pub fn resolve_combat_with_retreats_with_rng<R: Rng + ?Sized>(
 fn record_defender_retreat(
     report: &mut CombatReport,
     army: &mut Vec<CombatUnit>,
-    colonies: &mut BTreeMap<crate::core::identity::PlayerId, usize>,
-    withdrawing_owner: Option<crate::core::identity::PlayerId>,
-    homes: &BTreeMap<crate::core::identity::PlayerId, crate::core::map::planet::PlanetId>,
+    colonies: &mut BTreeMap<PlayerId, usize>,
+    withdrawing_owner: Option<PlayerId>,
+    homes: &BTreeMap<PlayerId, PlanetId>,
     after_round: Option<usize>,
 ) {
     let Some(withdrawing_owner) = withdrawing_owner else {
@@ -789,7 +789,7 @@ fn record_defender_retreat(
     let Some(home_planet) = homes.get(&withdrawing_owner).copied() else {
         return;
     };
-    let mut fleets = BTreeMap::<crate::core::identity::PlayerId, Army>::new();
+    let mut fleets = BTreeMap::<PlayerId, Army>::new();
     army.retain(|unit| {
         if unit.unit.is_ship() && unit.owner.is_some_and(|owner| homes.contains_key(&owner)) {
             if unit.hull > 0 {

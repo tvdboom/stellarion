@@ -1,0 +1,19 @@
+{
+  "tool": "image_gen",
+  "use_case": "stylized-concept",
+  "assets": [
+    {
+      "path": "assets/images/mission/sabotage.png",
+      "size": [53, 53],
+      "transparent": true,
+      "references": ["assets/images/mission/spy.png"],
+      "description": "Ivory satellite and interrupted signal on an amber glass tile, matching the Spy objective's beveled gold frame. Generated at full resolution, then downsampled."
+    },
+    {
+      "path": "assets/images/mission/sabotage cover.png",
+      "size": [200, 200],
+      "references": ["assets/images/mission/spy cover.png", "assets/images/ships/probe.png"],
+      "description": "Established Probe designs briefly disrupt an orbital sensor satellite with a localized electrical discharge. Painted in the existing sci-fi style and downsampled from the generated source."
+    }
+  ]
+}

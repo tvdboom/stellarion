@@ -422,6 +422,84 @@ as $$
 $$;
 revoke all on function public.stellarion_patrol_valid(jsonb) from public, anon, authenticated;
 
+-- Sabotage uses probe reconnaissance combat, then disables one known orbital system.
+-- Outage flags describe the current planning turn. Rust clears them on the next real
+-- resolution, after validating that turn's orders; previews cannot restore a disabled
+-- Phalanx, Railgun or Jump Gate. Already committed shots and jumps are not cancelled.
+create function public.stellarion_sabotage_state_valid(p_state jsonb)
+returns boolean language sql immutable set search_path = pg_catalog
+as $$
+    select coalesce(jsonb_typeof(p_state) = 'object'
+        and p_state ?& array['sensor_phalanx', 'orbital_railgun', 'jump_gate']
+        and p_state - array['sensor_phalanx', 'orbital_railgun', 'jump_gate'] = '{}'::jsonb
+        and jsonb_typeof(p_state -> 'sensor_phalanx') = 'boolean'
+        and jsonb_typeof(p_state -> 'orbital_railgun') = 'boolean'
+        and jsonb_typeof(p_state -> 'jump_gate') = 'boolean', false)
+$$;
+revoke all on function public.stellarion_sabotage_state_valid(jsonb) from public, anon, authenticated;
+
+create function public.stellarion_sabotage_valid(p_sabotage jsonb)
+returns boolean language sql immutable set search_path = pg_catalog
+as $$
+    select case when p_sabotage = 'null'::jsonb then true else coalesce(
+        jsonb_typeof(p_sabotage) = 'object'
+        and p_sabotage ?& array['target', 'succeeded']
+        and p_sabotage - array['target', 'succeeded'] = '{}'::jsonb
+        and p_sabotage ->> 'target' in ('SensorPhalanx', 'OrbitalRailgun', 'JumpGate')
+        and jsonb_typeof(p_sabotage -> 'succeeded') = 'boolean', false) end
+$$;
+revoke all on function public.stellarion_sabotage_valid(jsonb) from public, anon, authenticated;
+
+-- Expeditions share normal fleet fuel, fauna, patrol and interception rules. Rust
+-- derives discoveries from the persisted random stream and distance from the site to
+-- the nearest planet or moon the player controls on arrival. Ship discoveries also
+-- scale with the surviving expedition's production and the arrival turn. Recoveries
+-- can include a single War Sun; Rust applies the weighted quality and value budget.
+-- SQL checks the transport and lifecycle. Cargo is credited only after safe docking.
+-- No scheduler or separate backend executes expeditions between submitted turns.
+create function public.stellarion_expedition_valid(p_expedition jsonb)
+returns boolean
+language plpgsql
+immutable
+set search_path = pg_catalog
+as $$
+begin
+    if p_expedition = 'null'::jsonb then return true; end if;
+    if jsonb_typeof(p_expedition) is distinct from 'object'
+       or not (p_expedition ?& array['center', 'phase', 'resources', 'ships'])
+       or p_expedition - array['center', 'phase', 'resources', 'ships'] <> '{}'::jsonb
+       or jsonb_typeof(p_expedition -> 'center') is distinct from 'array'
+       or not coalesce(p_expedition ->> 'phase' in ('Outbound', 'Returning'), false)
+       or jsonb_typeof(p_expedition -> 'resources') is distinct from 'object'
+       or jsonb_typeof(p_expedition -> 'ships') is distinct from 'object' then return false; end if;
+    if jsonb_array_length(p_expedition -> 'center') <> 2
+       or not ((p_expedition -> 'resources') ?& array['metal', 'crystal', 'deuterium'])
+       or (p_expedition -> 'resources') - array['metal', 'crystal', 'deuterium'] <> '{}'::jsonb
+       or exists (
+           select 1 from jsonb_array_elements(p_expedition -> 'center') coordinate
+            where not case when jsonb_typeof(coordinate) = 'number'
+                then abs(coordinate::text::numeric) <= 3.4028235e38 else false end
+       ) or exists (
+           select 1 from jsonb_each(p_expedition -> 'resources') entry
+            where not case when jsonb_typeof(entry.value) = 'number' then
+                entry.value::text::numeric between 0 and 18446744073709551615
+                and trunc(entry.value::text::numeric) = entry.value::text::numeric else false end
+       ) or exists (
+           select 1 from jsonb_each(p_expedition -> 'ships') entry
+            where entry.key not in ('Ship(LightFighter)', 'Ship(HeavyFighter)', 'Ship(Destroyer)',
+                'Ship(Cruiser)', 'Ship(Bomber)', 'Ship(Battleship)', 'Ship(Dreadnought)', 'Ship(WarSun)')
+               or not case when jsonb_typeof(entry.value) = 'number' then
+                   entry.value::text::numeric between 1 and 10000
+                   and (entry.key <> 'Ship(WarSun)' or entry.value::text::numeric = 1)
+                   and trunc(entry.value::text::numeric) = entry.value::text::numeric else false end
+       ) then return false; end if;
+    return p_expedition ->> 'phase' = 'Returning'
+        or (p_expedition -> 'ships' = '{}'::jsonb
+            and p_expedition -> 'resources' = '{"metal":0,"crystal":0,"deuterium":0}'::jsonb);
+end;
+$$;
+revoke all on function public.stellarion_expedition_valid(jsonb) from public, anon, authenticated;
+
 -- Intercept is a committed rendezvous with a visible travelling mission. Rust predicts
 -- normal accelerated flight segments, including final approach outside the arrival radius.
 -- The contact fraction fixes timing within the encounter turn; surviving targets keep their
@@ -700,6 +778,9 @@ begin
            or jsonb_typeof(v_item -> 'protector_battle_plans') is distinct from 'object' then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:planet_battle_plan';
         end if;
+        if not public.stellarion_sabotage_state_valid(v_item -> 'sabotage') then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:planet_sabotage';
+        end if;
         for v_plan_entry in select key, value from jsonb_each(v_item -> 'protector_battle_plans')
         loop
             if v_plan_entry.key !~ '^[1-4]$'
@@ -733,6 +814,59 @@ begin
                 or v_item -> 'origin' is distinct from v_item -> 'destination'
               end) then
             raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_patrol';
+        end if;
+        if not (v_item ? 'sabotage') or not public.stellarion_sabotage_valid(v_item -> 'sabotage')
+           or (case when v_item -> 'sabotage' = 'null'::jsonb then
+                v_item ->> 'objective' = 'Sabotage' or v_item ->> 'return_objective' = 'Sabotage'
+              else not (v_item ->> 'objective' = 'Sabotage' and v_item -> 'return_objective' = 'null'::jsonb
+                    or v_item ->> 'return_objective' = 'Sabotage')
+                or v_item -> 'patrol' <> 'null'::jsonb
+                or v_item -> 'intercept' <> 'null'::jsonb
+                or v_item -> 'expedition' <> 'null'::jsonb
+                or v_item -> 'jump_gate' <> 'false'::jsonb
+                or v_item -> 'joint_attack' <> 'null'::jsonb
+                or v_item ->> 'bombing' is distinct from 'None'
+                or exists (select 1 from jsonb_each(case when jsonb_typeof(v_item -> 'army') = 'object' then v_item -> 'army' else '{}'::jsonb end) entry where entry.key <> 'Ship(Probe)' and entry.value <> '0'::jsonb)
+              end) then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_sabotage';
+        end if;
+        if not (v_item ? 'expedition') or not public.stellarion_expedition_valid(v_item -> 'expedition')
+           or (case when v_item -> 'expedition' = 'null'::jsonb then
+                v_item ->> 'objective' = 'Expedition' or v_item ->> 'return_objective' = 'Expedition'
+              else v_item -> 'patrol' <> 'null'::jsonb
+                or v_item -> 'intercept' <> 'null'::jsonb
+                or v_item -> 'jump_gate' <> 'false'::jsonb
+                or v_item -> 'deep_cover' <> 'false'::jsonb
+                or v_item -> 'joint_attack' <> 'null'::jsonb
+                or v_item -> 'protected_player' <> 'null'::jsonb
+                or v_item ->> 'bombing' is distinct from 'None'
+                or (case when v_item #>> '{expedition,phase}' = 'Returning' then
+                    v_item ->> 'objective' is distinct from 'Deploy'
+                    or v_item ->> 'return_objective' is distinct from 'Expedition'
+                  else v_item ->> 'objective' is distinct from 'Expedition'
+                    or v_item -> 'return_objective' <> 'null'::jsonb
+                    or v_item -> 'origin' is distinct from v_item -> 'destination'
+                    or not (case when jsonb_typeof(v_item #> '{army,Ship(ColonyShip)}') = 'number'
+                        then (v_item #>> '{army,Ship(ColonyShip)}')::numeric >= 1 else false end)
+                  end)
+              end) then
+            raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_expedition';
+        end if;
+        if v_item -> 'expedition' <> 'null'::jsonb then
+            -- Match the shared Rust cargo capacities for surviving dispatched ships.
+            if (select coalesce(sum(value::text::numeric), 0)
+                  from jsonb_each(v_item #> '{expedition,resources}'))
+               > (select coalesce(sum((case when jsonb_typeof(entry.value) = 'number'
+                    then greatest(entry.value::text::numeric, 0) else 0 end) *
+                    (case entry.key when 'Ship(ColonyShip)' then 200
+                        when 'Ship(Destroyer)' then 10
+                        when 'Ship(Cruiser)' then 30 when 'Ship(Bomber)' then 30
+                        when 'Ship(Battleship)' then 70 when 'Ship(Dreadnought)' then 70
+                        when 'Ship(WarSun)' then 150 else 0 end)), 0)
+                  from jsonb_each(case when jsonb_typeof(v_item -> 'army') = 'object'
+                    then v_item -> 'army' else '{}'::jsonb end) entry) then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_expedition';
+            end if;
         end if;
         if not (v_item ? 'intercept') or not public.stellarion_intercept_valid(v_item -> 'intercept')
            or (case when v_item -> 'intercept' = 'null'::jsonb then
@@ -782,6 +916,10 @@ begin
             end loop;
         end if;
     end loop;
+    if exists (select 1 from jsonb_array_elements(v_missions) mission
+        where mission ->> 'objective' = 'Sabotage' and mission #> '{sabotage,succeeded}' = 'true'::jsonb) then
+        raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:mission_sabotage';
+    end if;
     for v_item in
         select value from jsonb_path_query(p_persisted, '$.state.players[*].reports[*].combat_report.rounds[*].attacker[*]') as entries(value)
         union all
@@ -2401,7 +2539,7 @@ begin
                                'return_objective', 'Protect',
                                'bombing', 'None',
                                'combat_probes', false,
-                               -- Return fleets never attempt the outgoing Spy-only cover option.
+                               -- Return fleets never attempt the outgoing probe-only cover option.
                                'deep_cover', false,
                                'jump_gate', false,
                                'logs', (mission ->> 'logs') || E'\n- (' || v_game.current_turn::text
@@ -2673,6 +2811,31 @@ begin
     end if;
     for v_command in select value from jsonb_array_elements(p_submission -> 'commands')
     loop
+        if v_command ->> 'kind' = 'send_sabotage' then
+            if not (v_command ?& array['kind', 'mission_id', 'origin', 'destination', 'target', 'army', 'deep_cover', 'battle_plan'])
+               or v_command - array['kind', 'mission_id', 'origin', 'destination', 'target', 'army', 'deep_cover', 'battle_plan'] <> '{}'::jsonb
+               or not coalesce(v_command ->> 'target' in ('SensorPhalanx', 'OrbitalRailgun', 'JumpGate'), false)
+               or jsonb_typeof(v_command -> 'deep_cover') is distinct from 'boolean'
+               or not public.stellarion_battle_plan_valid(v_command -> 'battle_plan')
+               or jsonb_typeof(v_command -> 'army') is distinct from 'object'
+               -- Combat results may retain zero-count ship entries; only dispatched units count.
+               or exists (select 1 from jsonb_each(case when jsonb_typeof(v_command -> 'army') = 'object'
+                    then v_command -> 'army' else '{}'::jsonb end) entry
+                    where entry.key <> 'Ship(Probe)' and entry.value <> '0'::jsonb)
+               or not (case when jsonb_typeof(v_command #> '{army,Ship(Probe)}') = 'number' then
+                   (v_command #>> '{army,Ship(Probe)}')::numeric between 5 and 18446744073709551615
+                   and trunc((v_command #>> '{army,Ship(Probe)}')::numeric) = (v_command #>> '{army,Ship(Probe)}')::numeric
+                   else false end)
+               or exists (
+                   select 1 from jsonb_each(v_command - array['kind', 'target', 'army', 'deep_cover', 'battle_plan']) entry
+                    where not case when jsonb_typeof(entry.value) = 'number' then
+                        entry.value::text::numeric between
+                            (case when entry.key = 'mission_id' then 1 else 0 end) and 18446744073709551615
+                        and trunc(entry.value::text::numeric) = entry.value::text::numeric else false end
+               ) then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:sabotage_command';
+            end if;
+        end if;
         if v_command ->> 'kind' = 'send_intercept' then
             if not (v_command ?& array['kind', 'mission_id', 'origin', 'target', 'army', 'battle_plan'])
                or v_command - array['kind', 'mission_id', 'origin', 'target', 'army', 'battle_plan'] <> '{}'::jsonb
@@ -2688,6 +2851,36 @@ begin
                         else false end
                ) or v_command -> 'mission_id' = v_command -> 'target' then
                 raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:intercept_command';
+            end if;
+        end if;
+        if v_command ->> 'kind' = 'send_expedition' then
+            if not (v_command ?& array['kind', 'mission_id', 'origin', 'center', 'army', 'battle_plan'])
+               or v_command - array['kind', 'mission_id', 'origin', 'center', 'army', 'battle_plan'] <> '{}'::jsonb
+               or not public.stellarion_expedition_valid(jsonb_build_object(
+                   'center', v_command -> 'center', 'phase', 'Outbound', 'ships', '{}'::jsonb,
+                   'resources', '{"metal":0,"crystal":0,"deuterium":0}'::jsonb))
+               or not public.stellarion_battle_plan_valid(v_command -> 'battle_plan')
+               or jsonb_typeof(v_command -> 'army') is distinct from 'object'
+               or exists (
+                   select 1 from jsonb_each(case when jsonb_typeof(v_command -> 'army') = 'object'
+                       then v_command -> 'army' else '{}'::jsonb end) entry
+                    where entry.key not in ('Ship(Probe)', 'Ship(ColonyShip)', 'Ship(LightFighter)',
+                        'Ship(HeavyFighter)', 'Ship(Destroyer)', 'Ship(Cruiser)', 'Ship(Bomber)',
+                        'Ship(Battleship)', 'Ship(Dreadnought)', 'Ship(WarSun)')
+                       or not case when jsonb_typeof(entry.value) = 'number' then
+                           entry.value::text::numeric between 0 and 18446744073709551615
+                           and trunc(entry.value::text::numeric) = entry.value::text::numeric else false end
+               )
+               or not (case when jsonb_typeof(v_command #> '{army,Ship(ColonyShip)}') = 'number'
+                   then (v_command #>> '{army,Ship(ColonyShip)}')::numeric >= 1 else false end)
+               or exists (
+                   select 1 from jsonb_each(v_command - array['kind', 'center', 'army', 'battle_plan']) entry
+                    where not case when jsonb_typeof(entry.value) = 'number' then
+                        entry.value::text::numeric between
+                            (case when entry.key = 'origin' then 0 else 1 end) and 18446744073709551615
+                        and trunc(entry.value::text::numeric) = entry.value::text::numeric else false end
+               ) then
+                raise exception using errcode = 'P0001', message = 'STLR_INVALID_DATA:expedition_command';
             end if;
         end if;
         if v_command ->> 'kind' = 'send_patrol' then

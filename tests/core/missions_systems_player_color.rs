@@ -1,14 +1,197 @@
 use super::*;
+use bevy::time::TimeUpdateStrategy;
+use bevy_kira_audio::AudioSource;
+
 use crate::core::camera::MainCamera;
 use crate::core::identity::{GameCode, GameId};
 use crate::core::map::icon::Icon;
+use crate::core::map::planet::Planet;
 use crate::core::map::systems::{draw_map, PlanetCmp};
 use crate::core::missions::{JointAttackMission, Mission};
+use crate::core::patrols::{valid_patrol_target, Patrol, PatrolPhase};
 use crate::core::player::PLAYER_COLOR_PALETTE;
 use crate::core::simulation::{GameModel, GameRules, PersistedGame};
+use crate::core::units::buildings::Building;
+use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
 use crate::multiplayer::model::GameRecord;
-use bevy_kira_audio::AudioSource;
+
+#[test]
+fn expedition_hover_waves_a_player_colored_flag_then_shows_only_homebound_arrows_on_return() {
+    let mut model = GameModel::new([73; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let home = model.map.get(player.home_planet);
+    let home_position = home.position;
+    let center = home_position + Vec2::new(800.0, 300.0);
+    let mut expedition = Mission::new_expedition(
+        710,
+        1,
+        player.id,
+        home,
+        center,
+        Army::from([(Unit::colony_ship(), 1)]),
+    );
+    expedition.position = home_position.lerp(center, 0.5);
+    let mut foreign = expedition.clone();
+    foreign.id = 711;
+    foreign.owner = 2;
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<AudioSource>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<UiState>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<MultiplayerSession>()
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(200)))
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .insert_resource(Missions(vec![expedition, foreign]))
+        .add_systems(Update, (update_mission_hover_flag, update_mission_route_arrow));
+    let mut flags = app.world_mut().query_filtered::<
+        (Entity, &Mesh2d, &MeshMaterial2d<ColorMaterial>, &Transform),
+        With<MissionSiteFlag>,
+    >();
+
+    for hover in [Some(711), None] {
+        app.world_mut().resource_mut::<UiState>().mission_hover = hover;
+        app.update();
+        assert_eq!(flags.iter(app.world()).count(), 0);
+    }
+
+    app.world_mut().resource_mut::<UiState>().mission_hover = Some(710);
+    app.update();
+    let (entity, mesh, material, pose) = flags.single(app.world()).unwrap();
+    assert_eq!(pose.translation.truncate(), center);
+    let expected_color = app.world().resource::<MultiplayerSession>().player_color(1).color();
+    assert_eq!(
+        app.world().resource::<Assets<ColorMaterial>>().get(&material.0).unwrap().color,
+        expected_color
+    );
+    let cloth = |world: &World, mesh: &Mesh2d| {
+        world
+            .resource::<Assets<Mesh>>()
+            .get(&mesh.0)
+            .unwrap()
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .unwrap()
+            .as_float3()
+            .unwrap()
+            .to_vec()
+    };
+    let original_cloth = cloth(app.world(), mesh);
+    app.update();
+    let (_, mesh, _, pose) = flags.get(app.world(), entity).unwrap();
+    assert_eq!(pose.translation.truncate(), center);
+    let moved_cloth = cloth(app.world(), mesh);
+    assert_eq!(moved_cloth[..2], original_cloth[..2], "cloth stays attached to the pole");
+    assert_ne!(moved_cloth.last(), original_cloth.last(), "the free edge waves");
+
+    app.world_mut().resource_mut::<UiState>().mission_hover = None;
+    app.update();
+    assert_eq!(flags.iter(app.world()).count(), 0);
+    app.world_mut().resource_mut::<UiState>().mission_hover = Some(710);
+    app.update();
+    assert_eq!(flags.iter(app.world()).count(), 1);
+    app.world_mut().resource_scope(|world, mut missions: Mut<Missions>| {
+        missions.0[0].return_expedition(world.resource::<Map>(), 2);
+    });
+    app.update();
+    assert_eq!(flags.iter(app.world()).count(), 0);
+    let world = app.world_mut();
+    let mut arrows = world.query_filtered::<&Transform, With<MissionRouteArrowCmp>>();
+    let homeward = (home_position - center).normalize();
+    assert!(arrows.iter(world).count() > 1);
+    for pose in arrows.iter(world) {
+        assert!((pose.rotation * Vec3::X).truncate().dot(homeward) > 0.999);
+    }
+}
+
+#[test]
+fn patrol_hover_shows_a_destination_flag_only_while_outbound() {
+    let mut model = GameModel::new([73; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = model.players[0].clone();
+    let home = model.map.get(player.home_planet);
+    let center = home.position + Vec2::new(800.0, 300.0);
+    let patrol = Mission::new_patrol(
+        720,
+        1,
+        player.id,
+        home,
+        center,
+        Army::from([(Unit::Ship(Ship::Cruiser), 3)]),
+        None,
+    );
+    assert_ne!(patrol.position, center);
+    let mut foreign = patrol.clone();
+    foreign.id = 721;
+    foreign.owner = 2;
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<MultiplayerSession>()
+        .init_resource::<UiState>()
+        .insert_resource(model.map)
+        .insert_resource(player)
+        .insert_resource(Missions(vec![patrol.clone(), foreign]))
+        .add_systems(Update, update_mission_hover_flag);
+    let mut flags = app.world_mut().query_filtered::<&Transform, With<MissionSiteFlag>>();
+
+    for hover in [None, Some(721)] {
+        app.world_mut().resource_mut::<UiState>().mission_hover = hover;
+        app.update();
+        assert_eq!(flags.iter(app.world()).count(), 0);
+    }
+    for from_ui in [false, true] {
+        app.world_mut().resource_mut::<Missions>().0[0] = patrol.clone();
+        app.insert_resource(UiState {
+            mission_hover: Some(720),
+            mission_hover_from_ui: from_ui,
+            ..default()
+        });
+        app.update();
+        let pose = flags.single(app.world()).unwrap();
+        assert_eq!(pose.translation.truncate(), center);
+
+        app.world_mut().resource_mut::<UiState>().mission_hover = None;
+        app.update();
+        assert_eq!(flags.iter(app.world()).count(), 0);
+        app.world_mut().resource_mut::<UiState>().mission_hover = Some(720);
+        app.update();
+        assert_eq!(flags.iter(app.world()).count(), 1);
+
+        {
+            let mut missions = app.world_mut().resource_mut::<Missions>();
+            let mission = &mut missions.0[0];
+            mission.patrol.as_mut().unwrap().phase = PatrolPhase::OnStation;
+            mission.position = center;
+        }
+        app.update();
+        assert_eq!(flags.iter(app.world()).count(), 0, "arrival removes the destination flag");
+
+        for hover in [None, Some(720)] {
+            app.world_mut().resource_mut::<UiState>().mission_hover = hover;
+            app.update();
+            assert_eq!(flags.iter(app.world()).count(), 0, "stationed patrols have no flag");
+        }
+    }
+
+    app.world_mut().resource_mut::<Missions>().0[0] = patrol;
+    app.world_mut().resource_mut::<UiState>().mission_hover = Some(720);
+    app.update();
+    assert_eq!(flags.iter(app.world()).count(), 1);
+    app.world_mut().resource_scope(|world, mut missions: Mut<Missions>| {
+        missions.0[0].return_patrol(world.resource::<Map>(), 2);
+    });
+    app.update();
+    assert_eq!(flags.iter(app.world()).count(), 0);
+}
 
 #[test]
 fn joint_hover_groups_only_visible_contingents_from_the_same_attack() {
@@ -305,9 +488,9 @@ fn mission_colors_and_clicks_follow_current_owners_and_viewers() {
         let patrol = &mut missions.0[0];
         patrol.objective = Icon::Patrol;
         patrol.jump_gate = false;
-        patrol.patrol = Some(crate::core::patrols::Patrol {
+        patrol.patrol = Some(Patrol {
             center: patrol.position,
-            phase: crate::core::patrols::PatrolPhase::OnStation,
+            phase: PatrolPhase::OnStation,
             remaining_turns: None,
             friendly_players: default(),
         });
@@ -351,9 +534,7 @@ fn mission_colors_and_clicks_follow_current_owners_and_viewers() {
         .map(|(x, y)| {
             model.map.rect.min + model.map.rect.size() * Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
         })
-        .find(|point| {
-            crate::core::patrols::valid_patrol_target(&model.map, player.home_planet, *point, None)
-        })
+        .find(|point| valid_patrol_target(&model.map, player.home_planet, *point, None))
         .unwrap();
     app.insert_resource(player.clone());
     {
@@ -400,23 +581,65 @@ fn mission_colors_and_clicks_follow_current_owners_and_viewers() {
         assert!(!state.selecting_patrol_zone);
         assert_eq!(state.planet_selected, None);
     }
+    // Expedition placement must ignore both own and detected enemy operating patrol sprites.
+    for owner in [player.id, model.players[1].id] {
+        app.world_mut().resource_mut::<Missions>().0[0].owner = owner;
+        for button in [PointerButton::Primary, PointerButton::Secondary] {
+            let mut state = UiState::default();
+            state.mission_info.origin = player.home_planet;
+            state.begin_space_selection(Icon::Expedition);
+            app.insert_resource(state);
+            app.update();
+            let hit =
+                HitData::new(camera, 0.0, Some((center + Vec2::splat(40.0)).extend(0.0)), None);
+            app.world_mut().trigger(Pointer::new(
+                PointerId::Mouse,
+                location.clone(),
+                Over {
+                    hit: hit.clone(),
+                },
+                mission_entities[&player.id],
+            ));
+            app.world_mut().flush();
+            assert_eq!(
+                app.world().get::<CursorIcon>(window),
+                Some(&CursorIcon::System(SystemCursorIcon::NotAllowed))
+            );
+            app.world_mut().trigger(Pointer::new(
+                PointerId::Mouse,
+                location.clone(),
+                Click {
+                    button,
+                    hit,
+                    duration: Duration::from_millis(50),
+                    count: 1,
+                },
+                mission_entities[&player.id],
+            ));
+            let state = app.world().resource::<UiState>();
+            assert!(state.selecting_patrol_zone);
+            assert!(!state.mission);
+            assert_eq!(state.mission_info.objective, Icon::Expedition);
+            assert!(state.mission_info.expedition.is_none());
+        }
+    }
     // The map observer opens an interception draft on right-click and mission details on left-click.
     let home_position = app.world().resource::<Map>().get(player.home_planet).position;
     app.world_mut()
         .resource_mut::<Map>()
         .get_mut(player.home_planet)
         .army
-        .insert(Unit::Building(crate::core::units::buildings::Building::SensorPhalanx), 20);
+        .insert(Unit::Building(Building::SensorPhalanx), 20);
     {
         let mut missions = app.world_mut().resource_mut::<Missions>();
         let target = &mut missions.0[0];
         target.owner = model.players[1].id;
         target.origin = model.players[1].home_planet;
         target.destination = player.home_planet;
-        target.position = home_position + Vec2::X * crate::core::map::planet::Planet::SIZE * 6.0;
+        target.position = home_position + Vec2::X * Planet::SIZE * 6.0;
         target.objective = Icon::Attack;
         target.patrol = None;
-        target.army = Army::from([(Unit::Ship(crate::core::units::ships::Ship::LightFighter), 3)]);
+        target.army = Army::from([(Unit::Ship(Ship::LightFighter), 3)]);
     }
     for button in [PointerButton::Secondary, PointerButton::Primary] {
         app.insert_resource(UiState {

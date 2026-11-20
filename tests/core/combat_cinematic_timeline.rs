@@ -1,14 +1,18 @@
 use super::*;
+use bevy::prelude::Vec2;
+
 use crate::core::combat::report::{CombatReport, DefenderRetreat, RetreatingFleet};
 use crate::core::combat::resolution::{resolve_combat_with_rng, CombatUnit};
 use crate::core::map::icon::Icon;
 use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::random::DeterministicRngState;
-use crate::core::units::{
-    buildings::Building, defense::Defense, ships::Ship, Amount, Army, Combat,
-};
-use bevy::prelude::Vec2;
+use crate::core::units::buildings::Building;
+use crate::core::units::defense::Defense;
+use crate::core::units::fauna::SpaceFauna;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Amount, Army, Combat};
+use crate::test_support::empty_report;
 
 fn record(id: u64, owner: PlayerId, unit: Unit) -> CombatUnit {
     CombatUnit {
@@ -30,7 +34,7 @@ fn report(rounds: Vec<RoundReport>) -> MissionReport {
     // Synthetic reports specify their entire visible garrison explicitly. Colonization's
     // starter mines belong in the real-resolver fixtures, not these combatant-only scenarios.
     planet.army = Army::new().into();
-    let mut report = crate::test_support::empty_report(Mission::default(), planet);
+    let mut report = empty_report(Mission::default(), planet);
     report.combat_report = Some(CombatReport {
         rounds,
         defender_retreat: None,
@@ -524,7 +528,7 @@ fn stalemate_flies_the_attacker_away_and_keeps_the_defender() {
 #[test]
 fn fauna_stalemate_flies_both_surviving_sides_away() {
     let fighter = Unit::Ship(Ship::LightFighter);
-    let fauna = Unit::Fauna(crate::core::units::fauna::SpaceFauna::VoidManta);
+    let fauna = Unit::Fauna(SpaceFauna::VoidManta);
     let mut battle = report(vec![RoundReport {
         attacker: vec![record(1, 1, fighter)],
         defender: vec![record(2, 0, fauna)],

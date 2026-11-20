@@ -1,5 +1,6 @@
 //! Shared battle-plan controls for fleet dispatch and standing orders.
 
+pub(super) use super::battle_plan_controls::{draw_battle_plan_editor, draw_mission_plan_button};
 use super::*;
 use crate::core::combat::plan::BattlePlan;
 
@@ -15,8 +16,6 @@ pub(super) fn initialize_mission_plan(
         *initialized_origin = Some(origin.id);
     }
 }
-
-pub(super) use super::battle_plan_controls::{draw_battle_plan_editor, draw_mission_plan_button};
 
 /// Limits a standing order to the local commander's force, including protection fleets.
 pub(super) fn commandable_garrison<'a>(planet: &'a Planet, player: &Player) -> Option<&'a Army> {

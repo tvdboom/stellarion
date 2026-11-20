@@ -1,6 +1,8 @@
 use super::*;
 use strum::IntoEnumIterator;
 
+use crate::core::units::ships::Ship;
+
 fn creature(fauna: SpaceFauna, slot: usize, count: usize) -> Creature {
     Creature {
         fauna,
@@ -12,8 +14,6 @@ fn creature(fauna: SpaceFauna, slot: usize, count: usize) -> Creature {
 
 #[test]
 fn creature_sizes_show_strength_without_dwarfing_the_mission() {
-    use SpaceFauna::*;
-
     let size = |fauna| creature(fauna, 0, 1).size();
     assert!((48.0..60.0).contains(&size(AetherRay)), "weak fauna should be slightly smaller");
     assert!(
@@ -156,7 +156,6 @@ fn creature_weapons_stay_attached_to_the_rotated_mouth_and_reuse_combat_colors()
 #[ignore = "renders map fauna encounter clips with a local GPU"]
 #[cfg(target_os = "windows")]
 fn render_fauna_map_preview() {
-    use crate::core::units::ships::Ship;
     use bevy::camera::RenderTarget;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::render::{

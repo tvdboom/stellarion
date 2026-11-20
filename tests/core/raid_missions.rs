@@ -136,7 +136,9 @@ fn raid_victory_transfers_resources_preserves_colony_and_returns_all_survivors_o
         .iter()
         .map(|player| player.resource_production(&model.map))
         .collect::<Vec<_>>();
-    arrive(&mut model, target, 90_001, Icon::Raid, raiders());
+    let mut fleet = raiders();
+    fleet.insert(Unit::colony_ship(), 1);
+    arrive(&mut model, target, 90_001, Icon::Raid, fleet);
     let mut replay = model.clone();
     empty_turn(&mut model);
     empty_turn(&mut replay);
@@ -154,6 +156,7 @@ fn raid_victory_transfers_resources_preserves_colony_and_returns_all_survivors_o
     let available = start[1] + production[1];
     assert!(available.contains(report.raid_loot));
     let mut carriers = report.surviving_attacker.clone();
+    assert_eq!(carriers.amount(&Unit::colony_ship()), 1);
     *carriers.get_mut(&Unit::probe()).unwrap() -= report.scout_probes;
     assert_eq!(report.raid_loot.total(), cargo_capacity(&carriers).min(available.total()));
     assert_eq!(

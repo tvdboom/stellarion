@@ -1,5 +1,9 @@
 use super::*;
 
+use crate::core::units::defense::Defense;
+use crate::core::units::ships::Ship;
+use crate::core::units::{orbitals, Unit};
+
 #[test]
 fn cinematic_firing_sheets_have_eight_transparent_frames_for_animated_hulls() {
     assert_eq!(CINEMATIC_FIRING_IMAGE_NAMES.len(), 14);
@@ -82,10 +86,6 @@ fn runtime_categories_are_ktx2() {
 fn cinematic_roster_has_registered_source_artwork() {
     use std::collections::BTreeSet;
 
-    use crate::core::units::defense::Defense;
-    use crate::core::units::ships::Ship;
-    use crate::core::units::{orbitals, Unit};
-
     let expected: BTreeSet<_> = Ship::iter()
         .map(Unit::Ship)
         .chain(Defense::iter().map(Unit::Defense))
@@ -131,9 +131,9 @@ fn cinematic_planets_and_gas_buildings_have_large_transparent_source_art() {
             (1..=2).map(move |variant| format!("planet {} {variant}", kind.to_lowername()))
         })
         .chain(
-            crate::core::units::Unit::resource_buildings()
+            Unit::resource_buildings()
                 .into_iter()
-                .chain(crate::core::units::Unit::industrial_buildings())
+                .chain(Unit::industrial_buildings())
                 .map(|unit| format!("cinematic gas {}", unit.to_lowername())),
         )
         .collect();

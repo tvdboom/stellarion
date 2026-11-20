@@ -3,15 +3,21 @@ use std::time::Duration;
 use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
-use crate::core::combat::report::CombatReport;
+
+use crate::core::combat::report::{CombatReport, RoundReport};
+use crate::core::combat::resolution::{CombatUnit, ShotReport};
 use crate::core::map::fauna::{
     FaunaPart, FAUNA_ACTION_SECONDS, FAUNA_AFTERMATH_SECONDS, FAUNA_RESULT_LABEL_Y,
 };
-use crate::core::missions::{BombingRaid, Mission};
+use crate::core::map::AFTERMATH_LABEL_EXTENSION_SECONDS;
+use crate::core::missions::{BombingRaid, JointAttackMission, Mission};
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{GameModel, GameRules};
+use crate::core::units::fauna::SpaceFauna;
+use crate::core::units::fauna::SpaceFauna::{AetherRay, IonWisp, RiftSerpent, StarKraken};
 use crate::core::units::ships::Ship;
 use crate::core::units::{Army, Unit};
+use crate::test_support::empty_report;
 
 fn battle_report(id: ReportId, planet: &Planet, outcome: Outcome) -> MissionReport {
     let mut defender = planet.clone();
@@ -33,7 +39,7 @@ fn battle_report(id: ReportId, planet: &Planet, outcome: Outcome) -> MissionRepo
         destination_owned: Some(2),
         destination_controlled: Some(2),
         combat_report: Some(CombatReport::default()),
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission::new_with_id(
                 id,
                 1,
@@ -173,8 +179,6 @@ fn battle_outcomes_follow_the_local_side_while_territory_headlines_take_priority
 #[test]
 fn joint_attack_supporters_get_the_attacking_sides_map_result() {
     use std::collections::BTreeMap;
-
-    use crate::core::missions::JointAttackMission;
 
     let (_app, planet) = presentation_app();
     let mut report = battle_report(21, &planet, Outcome::Victory);
@@ -723,7 +727,7 @@ fn conquest_ripples_expand_fade_and_finish_before_the_result_label() {
     let mut previous_label_y = app.world().get::<Transform>(label).unwrap().translation.y;
     app.world_mut()
         .resource_mut::<Time>()
-        .advance_by(Duration::from_secs_f32(crate::core::map::AFTERMATH_LABEL_EXTENSION_SECONDS));
+        .advance_by(Duration::from_secs_f32(AFTERMATH_LABEL_EXTENSION_SECONDS));
     app.update();
     assert!(app.world().get_entity(entity).is_ok());
     assert!(app.world().get::<TextColor>(label).unwrap().0.alpha() > 0.9);
@@ -790,10 +794,7 @@ fn fauna_aftermath_uses_the_viewing_players_color_for_wins_and_losses() {
         let mut report = battle_report(id, &planet, outcome);
         report.planet.name = "Rift Serpent".into();
         report.planet.army.clear();
-        report
-            .planet
-            .army
-            .insert(Unit::Fauna(crate::core::units::fauna::SpaceFauna::RiftSerpent), 1);
+        report.planet.army.insert(Unit::Fauna(SpaceFauna::RiftSerpent), 1);
         app.world_mut().resource_mut::<Player>().reports.push(report);
         app.update();
         app.update();
@@ -838,8 +839,7 @@ fn fauna_aftermath_replaces_the_original_map_mission_until_it_finishes() {
     let (mut app, planet) = presentation_app();
     let mut report = battle_report(1, &planet, Outcome::Victory);
     report.planet.name = "Rift Serpent".into();
-    report.planet.army =
-        Army::from([(Unit::Fauna(crate::core::units::fauna::SpaceFauna::RiftSerpent), 1)]).into();
+    report.planet.army = Army::from([(Unit::Fauna(SpaceFauna::RiftSerpent), 1)]).into();
     let mission = report.mission.clone();
     let mission_id = mission.id;
     app.world_mut().resource_mut::<Missions>().0.push(mission);
@@ -868,8 +868,6 @@ fn fauna_aftermath_replaces_the_original_map_mission_until_it_finishes() {
 
 #[test]
 fn fauna_map_miniatures_follow_the_actual_formation_size_and_variety() {
-    use crate::core::units::fauna::SpaceFauna::{AetherRay, RiftSerpent, StarKraken};
-
     let (app, planet) = presentation_app();
     let mut report = battle_report(1, &planet, Outcome::Victory);
     report.planet.army.clear();
@@ -895,8 +893,6 @@ fn fauna_map_miniatures_follow_the_actual_formation_size_and_variety() {
 
 #[test]
 fn fauna_outcomes_show_recorded_survivors_and_only_recorded_return_fire() {
-    use crate::core::combat::report::RoundReport;
-    use crate::core::combat::resolution::{CombatUnit, ShotReport};
     let (app, planet) = presentation_app();
     let mut report = battle_report(1, &planet, Outcome::Victory);
     let fauna = Unit::Fauna(SpaceFauna::AetherRay);
@@ -1073,9 +1069,7 @@ fn fauna_rings_open_every_outcome_then_stay_hidden_for_the_rest_of_the_encounter
             "rings must not return when the outcome is revealed"
         );
         app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(
-            FAUNA_ACTION_SECONDS * 0.20
-                + crate::core::map::AFTERMATH_LABEL_EXTENSION_SECONDS
-                + 0.01,
+            FAUNA_ACTION_SECONDS * 0.20 + AFTERMATH_LABEL_EXTENSION_SECONDS + 0.01,
         ));
         app.update();
         assert!(rings.iter().all(|ring| app.world().get_entity(*ring).is_err()));
@@ -1085,13 +1079,8 @@ fn fauna_rings_open_every_outcome_then_stay_hidden_for_the_rest_of_the_encounter
 
 #[test]
 fn fauna_group_animation_deforms_all_creatures_then_removes_them_and_releases_the_mission() {
-    use crate::core::map::fauna::FaunaPart;
-    use crate::core::units::fauna::SpaceFauna::{AetherRay, IonWisp, RiftSerpent};
     assert!((7.0..=8.0).contains(&FAUNA_ACTION_SECONDS));
-    assert_eq!(
-        FAUNA_AFTERMATH_SECONDS,
-        FAUNA_ACTION_SECONDS + crate::core::map::AFTERMATH_LABEL_EXTENSION_SECONDS
-    );
+    assert_eq!(FAUNA_AFTERMATH_SECONDS, FAUNA_ACTION_SECONDS + AFTERMATH_LABEL_EXTENSION_SECONDS);
     let (mut app, planet) = presentation_app();
     let mut report = battle_report(1, &planet, Outcome::Victory);
     report.planet.army = Army::from([
@@ -1208,7 +1197,7 @@ fn fauna_group_animation_deforms_all_creatures_then_removes_them_and_releases_th
     assert!(app.world().get::<TextColor>(label).unwrap().0.alpha() > 0.9);
     app.world_mut()
         .resource_mut::<Time>()
-        .advance_by(Duration::from_secs_f32(crate::core::map::AFTERMATH_LABEL_EXTENSION_SECONDS));
+        .advance_by(Duration::from_secs_f32(AFTERMATH_LABEL_EXTENSION_SECONDS));
     app.update();
     assert!(app.world().get_entity(root).is_err());
     assert!(children.iter().all(|child| app.world().get_entity(*child).is_err()));

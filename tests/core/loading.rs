@@ -1,24 +1,23 @@
 use super::*;
 
+use crate::core::audio::PlayAudioMsg;
 use crate::core::combat::report::{CombatReport, MissionReport};
+use crate::core::identity::{GameId, UserId};
 use crate::core::map::icon::Icon;
 use crate::core::messages::MessageLevel;
 use crate::core::missions::Mission;
-use crate::core::simulation::{GameModel, GameRules, OrbitalStrike};
+use crate::core::player::Player;
+use crate::core::simulation::{GameModel, GameRules, MatchStatus, OrbitalStrike};
+use crate::core::turns::start_turn;
 use crate::core::units::buildings::Building;
-use crate::multiplayer::client::PendingTurnCommands;
+use crate::multiplayer::client::tests::{local_practice_app_with_players, settle_local_practice};
+use crate::multiplayer::client::{MultiplayerRequest, PendingTurnCommands};
+use crate::multiplayer::model::GameMembership;
+use crate::test_support::empty_report;
 
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 #[test]
 fn local_practice_switches_center_home_world_even_on_first_view_of_a_turn() {
-    use crate::core::audio::PlayAudioMsg;
-    use crate::core::player::Player;
-    use crate::core::turns::start_turn;
-    use crate::multiplayer::client::tests::{
-        local_practice_app_with_players, settle_local_practice,
-    };
-    use crate::multiplayer::client::MultiplayerRequest;
-
     let mut app = local_practice_app_with_players(2);
     app.add_plugins(AssetPlugin::default())
         .init_asset::<Image>()
@@ -183,10 +182,6 @@ fn newly_resolved_railgun_strike_warns_every_player_without_spoiling_the_outcome
 
 #[test]
 fn newly_eliminated_player_is_announced_to_the_remaining_opponents_once() {
-    use crate::core::identity::{GameId, UserId};
-    use crate::core::simulation::MatchStatus;
-    use crate::multiplayer::model::GameMembership;
-
     let mut model = GameModel::new(
         [47; 32],
         GameRules {
@@ -404,7 +399,7 @@ fn battle_destruction_notifies_only_nonparticipants_for_each_public_structure() 
         destination_owned: model.map.get(target).owned,
         destination_controlled: model.map.get(target).controlled,
         combat_report: Some(CombatReport::default()),
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission {
                 owner: attacker,
                 destination: target,

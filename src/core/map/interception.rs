@@ -43,7 +43,7 @@ impl ShipArt {
         let mut art = Self::from_image(mission.image(player));
         art.size = mission_size(mission, false) * 0.8;
         art.rotation_offset = mission_world_rotation(mission, 0.0);
-        art.upright = mission.return_objective == Some(Icon::Spy);
+        art.upright = mission.return_objective.is_some_and(Icon::is_probe_mission);
         art.flip_x = mission_map_flip_x(mission);
         art
     }

@@ -2,8 +2,12 @@ use bevy::ecs::system::SystemState;
 use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
 use super::*;
+
 use crate::core::identity::{GameCode, GameId, UserId};
+use crate::core::loading_screen::{begin_loading_screen, draw_loading_screen, LoadingScreen};
 use crate::core::simulation::{GameModel, PersistedGame};
+use crate::core::ui::systems::set_ui_style;
+use crate::multiplayer::client::ConnectionStatus;
 use crate::multiplayer::model::GameMembership;
 
 #[test]
@@ -377,7 +381,7 @@ fn menu_app() -> (App, egui::Context) {
         .insert_resource(State::new(AppState::Boot))
         .add_message::<MultiplayerRequest>()
         .add_message::<ChangeAudioMsg>()
-        .add_systems(Update, (crate::core::ui::systems::set_ui_style, draw_menu).chain());
+        .add_systems(Update, (set_ui_style, draw_menu).chain());
     app.world_mut().spawn((Window::default(), PrimaryWindow));
     let mut context = EguiContext::default();
     let egui = context.get_mut().clone();
@@ -481,9 +485,9 @@ fn gameplay_asset_failure_keeps_loading_diagnostics_and_escape_action_visible() 
         .init_asset::<TextureAtlasLayout>()
         .init_asset::<bevy_kira_audio::AudioSource>()
         .init_resource::<WorldAssets>()
-        .init_resource::<crate::core::loading_screen::LoadingScreen>()
-        .add_systems(Startup, crate::core::loading_screen::begin_loading_screen)
-        .add_systems(Update, crate::core::loading_screen::draw_loading_screen.after(draw_menu));
+        .init_resource::<LoadingScreen>()
+        .add_systems(Startup, begin_loading_screen)
+        .add_systems(Update, draw_loading_screen.after(draw_menu));
     app.world_mut().resource_mut::<MultiplayerSession>().menu_error =
         Some("Could not load gameplay asset `missing.ktx2`.".to_string());
     let viewport = egui::vec2(900.0, 700.0);
@@ -543,8 +547,7 @@ fn main_menu_error_keeps_all_actions_visible_and_sits_above_offline_status() {
         "backend protocol error: Supabase returned 400 Bad Request: Refresh token is not valid"
             .to_string(),
     );
-    app.world_mut().resource_mut::<ConnectionIndicator>().status =
-        crate::multiplayer::client::ConnectionStatus::Offline;
+    app.world_mut().resource_mut::<ConnectionIndicator>().status = ConnectionStatus::Offline;
 
     for _ in 0..3 {
         menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
@@ -596,8 +599,7 @@ fn main_menu_error_keeps_all_actions_visible_and_sits_above_offline_status() {
     assert!(toast.left() > last_button.right());
     assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport).contains_rect(toast));
 
-    app.world_mut().resource_mut::<ConnectionIndicator>().status =
-        crate::multiplayer::client::ConnectionStatus::Connected;
+    app.world_mut().resource_mut::<ConnectionIndicator>().status = ConnectionStatus::Connected;
     for _ in 0..3 {
         menu_app_frame(&mut app, &context, viewport, AppState::MainMenu, vec![]);
     }
@@ -662,7 +664,7 @@ fn every_menu_error_uses_the_right_hand_message_rail() {
             app.world_mut().resource_mut::<MultiplayerSession>().menu_error =
                 Some(error.to_string());
             app.world_mut().resource_mut::<ConnectionIndicator>().status =
-                crate::multiplayer::client::ConnectionStatus::Connected;
+                ConnectionStatus::Connected;
             for _ in 0..3 {
                 menu_app_frame(&mut app, &context, viewport, state, vec![]);
             }
@@ -1050,10 +1052,7 @@ fn finished_overlay_uses_local_result_copy_blocks_map_and_allows_spectating() {
             .insert_resource(session)
             .add_message::<MultiplayerRequest>()
             .add_message::<ChangeAudioMsg>()
-            .add_systems(
-                Update,
-                (crate::core::ui::systems::set_ui_style, draw_game_overlay).chain(),
-            );
+            .add_systems(Update, (set_ui_style, draw_game_overlay).chain());
         app.world_mut().spawn((Window::default(), PrimaryWindow));
         let mut context = EguiContext::default();
         let egui = context.get_mut().clone();
@@ -1184,7 +1183,7 @@ fn finished_overlay_shows_draw_for_both_players_after_mutual_home_destruction() 
         .insert_resource(session)
         .add_message::<MultiplayerRequest>()
         .add_message::<ChangeAudioMsg>()
-        .add_systems(Update, (crate::core::ui::systems::set_ui_style, draw_game_overlay).chain());
+        .add_systems(Update, (set_ui_style, draw_game_overlay).chain());
     app.world_mut().spawn((Window::default(), PrimaryWindow));
     let mut context = EguiContext::default();
     let egui = context.get_mut().clone();

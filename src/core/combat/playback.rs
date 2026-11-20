@@ -12,6 +12,7 @@ use super::systems::{
     restore_combat_camera, setup_combat, BackgroundImageCmp, CombatCmp, CombatUnitCmp, FireState,
     IndividualCombatUnitCmp, SpawnShotMsg,
 };
+
 use crate::core::assets::WorldAssets;
 use crate::core::audio::{MuteAudioMsg, PlayAudioMsg};
 use crate::core::map::icon::Icon;
@@ -19,6 +20,7 @@ use crate::core::player::Player;
 use crate::core::settings::Settings;
 use crate::core::states::CombatState;
 use crate::core::ui::systems::UiState;
+use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Unit};
 
 #[derive(Component)]
@@ -252,7 +254,7 @@ fn seek(
                 || (card.side == Side::Attacker
                     && ((ending_phase == CombatState::DeathRay && card.unit == Unit::war_sun())
                         || (ending_phase == CombatState::Bomb
-                            && card.unit == Unit::Ship(crate::core::units::ships::Ship::Bomber))))
+                            && card.unit == Unit::Ship(Ship::Bomber))))
             {
                 card.fire = FireState::Select;
             }
@@ -441,7 +443,7 @@ pub fn control_combat_playback(world: &mut World) {
                 .any(|unit| unit.unit == Unit::war_sun() && unit.hull > 0);
         let bombing = alive[0]
             && combat.rounds[last].attacker.iter().any(|unit| {
-                unit.unit == Unit::Ship(crate::core::units::ships::Ship::Bomber)
+                unit.unit == Unit::Ship(Ship::Bomber)
                     && unit.hull > 0
                     && unit.shots.iter().any(|shot| shot.is_bombing())
             });

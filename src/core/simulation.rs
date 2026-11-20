@@ -7,6 +7,8 @@ use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use crate::core::constants::MAX_ACTIVE_MISSIONS;
+
 use crate::core::combat::plan::BattlePlan;
 use crate::core::combat::report::MissionReport;
 use crate::core::combat::resolution::{
@@ -18,25 +20,35 @@ use crate::core::constants::{
     ORBITAL_RAILGUN_FIRE_ENERGY_COST,
     ORBITAL_RAILGUN_OVERLOADED_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL,
     ORBITAL_RAILGUN_RANGE_PER_LEVEL, ORBITAL_RAILGUN_SHIELD_REDUCTION_BASIS_POINTS_PER_LEVEL,
+    TRADE_RESOURCES_PER_LEVEL,
 };
-use crate::core::energy::EnergyGrid;
+use crate::core::energy::{jump_gate_energy_demand, EnergyGrid};
+use crate::core::expeditions::resolve_arrivals;
 use crate::core::identity::PlayerId;
+use crate::core::interception::{resolve_interceptions, target_available, InterceptPhase};
 use crate::core::map::icon::Icon;
 use crate::core::map::model::Map;
 use crate::core::map::planet::{
-    Garrison, IndependentPopulation, Planet, PlanetId, ShieldOverloadState,
+    Garrison, IndependentPopulation, Planet, PlanetId, ShieldOverloadState, SolarBand,
 };
 use crate::core::missions::{
     BombingRaid, FleetCombatOrders, JointAttackMission, Mission, MissionId,
 };
-use crate::core::orders::{conversion_output, purchase_limit, validate_mission};
+use crate::core::orders::{
+    conversion_output, purchase_limit, validate_mission, validate_mission_with_patrols,
+};
+use crate::core::patrols::{
+    can_return_to, merge_arrivals, reserve_upkeep, resolve_encounters, PatrolPhase,
+};
 use crate::core::player::{Player, MAX_REPORTS_PER_PLAYER};
+use crate::core::raids::{cargo_capacity, independent_cache, plunder, surviving_cargo};
 use crate::core::random::DeterministicRngState;
 use crate::core::recycling::recycler_production;
 use crate::core::resources::{ResourceName, Resources};
+use crate::core::sabotage::SabotageTarget;
 use crate::core::trading::{
     trading_post_capacity, trading_posts_are_adjacent, ResourceLoan, ResourceLoanTerm,
-    TradeAgreement, TRADE_RESOURCES_PER_LEVEL,
+    TradeAgreement,
 };
 use crate::core::units::buildings::{Building, FleetWithdrawal};
 use crate::core::units::defense::Defense;
@@ -44,6 +56,7 @@ use crate::core::units::fauna::encounter_formation;
 use crate::core::units::operations::{mine_building, MineMode, SenatePolicy, SpaceDockMode};
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Price, Unit};
+use crate::serialization::required_option;
 use crate::utils::NameFromEnum;
 
 /// Supported number of players in a multiplayer game.
@@ -54,9 +67,6 @@ pub const MAX_MULTIPLAYER_PLAYERS: u8 = 4;
 
 /// Maximum number of intentional commands accepted from one player for one turn.
 pub const MAX_COMMANDS_PER_SUBMISSION: usize = 1024;
-
-/// Maximum number of simultaneous in-flight missions retained in persisted state.
-pub const MAX_ACTIVE_MISSIONS: usize = 4096;
 
 /// Maximum number of bilateral player pairs in a four-player turn.
 pub const MAX_TRADES_PER_TURN: usize = 6;
@@ -593,7 +603,9 @@ impl GameModel {
                     || !mission.has_valid_return_objective()
                     || !mission.valid_patrol(&self.map)
                     || !mission.valid_intercept(&self.map)
-                    || (mission.deep_cover && mission.objective != Icon::Spy)
+                    || !mission.valid_expedition(&self.map)
+                    || !mission.valid_sabotage()
+                    || (mission.deep_cover && !mission.objective.is_probe_mission())
                     || !mission.position.is_finite()
                     || mission.send > report.turn
                     || !u64::try_from(report.turn).is_ok_and(|turn| turn <= self.turn)
@@ -606,7 +618,7 @@ impl GameModel {
                             || report.is_space_fauna_encounter()
                             || report.winner() != Some(mission.owner)
                             || report.raid_loot.total()
-                                > crate::core::raids::cargo_capacity(&report.surviving_attacker)))
+                                > cargo_capacity(&report.surviving_attacker)))
                 {
                     return Err(GameError::MalformedState(format!(
                         "player {} report {} contains invalid or unbounded history",
@@ -747,14 +759,19 @@ impl GameModel {
                 || !planet_ids.contains(&mission.destination)
                 || (mission.origin == mission.destination
                     && mission.patrol.is_none()
-                    && mission.intercept.is_none())
+                    && mission.intercept.is_none()
+                    && mission.expedition.is_none())
                 || !mission.valid_patrol(&self.map)
                 || !mission.valid_intercept(&self.map)
+                || !mission.valid_expedition(&self.map)
+                || !mission.valid_sabotage()
+                || (mission.objective == Icon::Sabotage
+                    && mission.sabotage.is_some_and(|sabotage| sabotage.succeeded))
                 || !mission.objective.is_mission()
                 || (mission.objective.on_planet_only()
                     && self.map.try_get(mission.destination).is_some_and(Planet::is_moon))
                 || !mission.has_valid_return_objective()
-                || (mission.deep_cover && mission.objective != Icon::Spy)
+                || (mission.deep_cover && !mission.objective.is_probe_mission())
                 || mission.id == 0
                 || !mission_ids.insert(mission.id)
                 || mission
@@ -958,8 +975,21 @@ pub enum TurnCommand {
         /// Ships committed to the patrol.
         army: Army,
         /// Complete operating turns, or no deadline until recalled.
-        #[serde(deserialize_with = "crate::serialization::required_option")]
+        #[serde(deserialize_with = "required_option")]
         turns: Option<usize>,
+    },
+    /// Sends Colony Ships and optional escorts to a landmark and back with discoveries.
+    SendExpedition {
+        /// Client-selected stable mission identity.
+        mission_id: u64,
+        /// World supplying the fleet and its default return port.
+        origin: PlanetId,
+        /// Selected empty-space exploration coordinate.
+        center: bevy::prelude::Vec2,
+        /// Fleet including at least one Colony Ship.
+        army: Army,
+        /// Combat orders for the exploration fleet.
+        battle_plan: BattlePlan,
     },
     /// Borrows one bundle through an owned completed Trading Post.
     BorrowResources {
@@ -1111,10 +1141,27 @@ pub enum TurnCommand {
         combat_probes: bool,
         /// Initial combat orders for the dispatched fleet.
         battle_plan: BattlePlan,
-        /// Whether the Spy mission attempts to avoid combat using the origin's Command Relay.
+        /// Whether the probe mission attempts to avoid combat using the origin's Command Relay.
         deep_cover: bool,
         /// Whether to use a jump gate.
         jump_gate: bool,
+    },
+    /// Sends probes to disable one known orbital structure for the next planning turn.
+    SendSabotage {
+        /// Stable client-selected mission identity.
+        mission_id: u64,
+        /// World supplying the probes.
+        origin: PlanetId,
+        /// Enemy planet whose structure is targeted.
+        destination: PlanetId,
+        /// Known infrastructure selected before dispatch.
+        target: SabotageTarget,
+        /// Probe-only fleet, with the same minimum as Spy.
+        army: Army,
+        /// Whether to pay for the origin Relay's normal Deep Cover attempt.
+        deep_cover: bool,
+        /// Probe fleet's combat orders.
+        battle_plan: BattlePlan,
     },
     /// Launches every explicitly accepted contribution as one synchronized hostile mission.
     SendJointMission {
@@ -1201,7 +1248,7 @@ pub struct TurnResult {
     /// Whether the match ended during this resolution.
     pub finished: bool,
     /// Sole remaining player when the match ended, if any.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub winner: Option<PlayerId>,
 }
 
@@ -1529,7 +1576,7 @@ fn apply_commands<'a>(
 ) -> Result<(), GameError> {
     let commands = commands.into_iter().collect::<Vec<_>>();
     let turn = command_turn(model, player_id)?;
-    crate::core::patrols::reserve_upkeep(model, player_id, turn, &commands);
+    reserve_upkeep(model, player_id, turn, &commands);
     let mut launch_permissions = BTreeMap::<u64, BTreeSet<PlayerId>>::new();
     let mut launch_protector_plans = BTreeMap::<u64, Option<BattlePlan>>::new();
     for command in commands {
@@ -1606,9 +1653,7 @@ fn choose_home_planets<R: Rng + ?Sized>(
     let temperate = all_planets
         .iter()
         .copied()
-        .filter(|planet| {
-            map.solar_band(planet.id) == Some(crate::core::map::planet::SolarBand::Temperate)
-        })
+        .filter(|planet| map.solar_band(planet.id) == Some(SolarBand::Temperate))
         .collect::<Vec<_>>();
     let planets = if temperate.len() >= count {
         temperate
@@ -1673,7 +1718,38 @@ fn apply_command(
             center,
             army,
             turns,
-        } => apply_patrol(model, player_id, *mission_id, *origin, *center, army, *turns),
+        } => apply_space_mission(
+            model,
+            player_id,
+            *mission_id,
+            *origin,
+            *center,
+            army,
+            *turns,
+            Icon::Patrol,
+        ),
+        TurnCommand::SendExpedition {
+            mission_id,
+            origin,
+            center,
+            army,
+            battle_plan,
+        } => {
+            apply_space_mission(
+                model,
+                player_id,
+                *mission_id,
+                *origin,
+                *center,
+                army,
+                None,
+                Icon::Expedition,
+            )?;
+            if let Some(mission) = model.missions.last_mut() {
+                mission.battle_plan = *battle_plan;
+            }
+            Ok(())
+        },
         TurnCommand::BorrowResources {
             planet_id,
             resources,
@@ -1773,6 +1849,30 @@ fn apply_command(
             *battle_plan,
             *deep_cover,
             *jump_gate,
+            None,
+        ),
+        TurnCommand::SendSabotage {
+            mission_id,
+            origin,
+            destination,
+            target,
+            army,
+            deep_cover,
+            battle_plan,
+        } => apply_mission(
+            model,
+            player_id,
+            *mission_id,
+            *origin,
+            *destination,
+            Icon::Sabotage,
+            army,
+            BombingRaid::None,
+            false,
+            *battle_plan,
+            *deep_cover,
+            false,
+            Some(*target),
         ),
         TurnCommand::SendJointMission {
             attack_id,
@@ -2170,7 +2270,7 @@ fn apply_testing_boost(model: &mut GameModel, player_id: PlayerId) -> Result<(),
             let amount = planet.army.entry(unit).or_default();
             match unit {
                 Unit::Building(Building::Senate) => *amount = senate_level_limit,
-                Unit::Defense(crate::core::units::defense::Defense::SpaceDock) => *amount = 1,
+                Unit::Defense(Defense::SpaceDock) => *amount = 1,
                 Unit::Building(_) => *amount = Building::MAX_LEVEL,
                 Unit::Ship(_) | Unit::Defense(_) => *amount = amount.saturating_add(3),
                 Unit::Fauna(_) => {},
@@ -2465,6 +2565,7 @@ pub fn orbital_railgun_can_target(
     level: usize,
 ) -> bool {
     level > 0
+        && !origin.sabotage.orbital_railgun
         && origin.id != target.id
         && !origin.is_destroyed
         && !target.is_destroyed
@@ -2822,9 +2923,7 @@ fn apply_intercept(
         .missions
         .iter()
         .find(|mission| mission.id == target_id)
-        .filter(|mission| {
-            crate::core::interception::target_available(mission, &planning.map, observing_player)
-        })
+        .filter(|mission| target_available(mission, &planning.map, observing_player))
         .ok_or_else(|| {
             invalid_error(player_id, "interception requires a visible travelling enemy mission")
         })?;
@@ -2871,7 +2970,8 @@ fn apply_intercept(
     Ok(())
 }
 
-fn apply_patrol(
+#[allow(clippy::too_many_arguments)]
+fn apply_space_mission(
     model: &mut GameModel,
     player_id: PlayerId,
     mission_id: u64,
@@ -2879,6 +2979,7 @@ fn apply_patrol(
     center: bevy::prelude::Vec2,
     army: &Army,
     turns: Option<usize>,
+    objective: Icon,
 ) -> Result<(), GameError> {
     ensure_mission_capacity(model, player_id, 1)?;
     if mission_id == 0
@@ -2895,16 +2996,27 @@ fn apply_patrol(
         .ok_or_else(|| invalid_error(player_id, "patrol origin does not exist"))?;
     let army =
         army.iter().filter(|(_, count)| **count > 0).map(|(unit, count)| (*unit, *count)).collect();
-    let mission = Mission::new_patrol(
-        mission_id,
-        command_turn(model, player_id)?,
-        player_id,
-        origin,
-        center,
-        army,
-        turns,
-    );
-    crate::core::orders::validate_mission_with_patrols(
+    let mission = if objective == Icon::Expedition {
+        Mission::new_expedition(
+            mission_id,
+            command_turn(model, player_id)?,
+            player_id,
+            origin,
+            center,
+            army,
+        )
+    } else {
+        Mission::new_patrol(
+            mission_id,
+            command_turn(model, player_id)?,
+            player_id,
+            origin,
+            center,
+            army,
+            turns,
+        )
+    };
+    validate_mission_with_patrols(
         model.player(player_id)?,
         &model.map,
         origin,
@@ -2950,8 +3062,9 @@ fn apply_mission(
     battle_plan: BattlePlan,
     deep_cover: bool,
     jump_gate: bool,
+    sabotage_target: Option<SabotageTarget>,
 ) -> Result<(), GameError> {
-    if matches!(objective, Icon::Patrol | Icon::Intercept) {
+    if matches!(objective, Icon::Patrol | Icon::Intercept | Icon::Expedition) {
         return invalid(player_id, "patrols require a space destination");
     }
     ensure_mission_capacity(model, player_id, 1)?;
@@ -2999,9 +3112,17 @@ fn apply_mission(
         None,
     )
     .with_deep_cover(deep_cover)
+    .with_sabotage_target(sabotage_target)
     .with_battle_plan(battle_plan);
-    validate_mission(model.player(player_id)?, &model.map, origin, destination, &mission)
-        .map_err(|error| invalid_error(player_id, error.to_string()))?;
+    validate_mission_with_patrols(
+        model.player(player_id)?,
+        &model.map,
+        origin,
+        destination,
+        &mission,
+        &model.missions,
+    )
+    .map_err(|error| invalid_error(player_id, error.to_string()))?;
     let fuel = mission.dispatch_fuel_consumption(&model.map, model.player(player_id)?);
     let player_index = model
         .players
@@ -3237,7 +3358,7 @@ fn reveal_independent_population<R: Rng + ?Sized>(
     planet.independent_population = IndependentPopulation::Inhabited;
     planet.record_surface_building(Building::MetalMine);
     planet.army = independent_population_garrison(turn, rng).into();
-    planet.raid_cache = crate::core::raids::independent_cache(planet.army.controller());
+    planet.raid_cache = independent_cache(planet.army.controller());
 }
 
 /// Generates bounded neutral formations. Five-turn tiers improve the mix until turn 21, while
@@ -3370,7 +3491,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     let mut action_energy_demand = action_energy_demand;
     for player in &model.players {
         let demand = action_energy_demand.entry(player.id).or_default();
-        *demand = demand.saturating_add(crate::core::energy::jump_gate_energy_demand(
+        *demand = demand.saturating_add(jump_gate_energy_demand(
             &model.missions,
             player.id,
             recycling_turn,
@@ -3382,6 +3503,9 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     resolve_orbital_railgun_strikes(model, &mut rng);
 
     for planet in &mut model.map.planets {
+        // Orders for the disabled planning turn have already been validated. New arrivals
+        // below may disable the system again; draft previews never advance this lifetime.
+        planet.sabotage = Default::default();
         planet.produce();
         planet.jump_gate = 0;
     }
@@ -3436,19 +3560,16 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
 
     check_missions(model, turn)?;
     let mut engaged = resolve_space_fauna_encounters(model, turn, &mut rng);
-    let mut intercepted =
-        crate::core::patrols::resolve_encounters(model, turn, &mut rng, &mut engaged);
-    let interception_arrivals = crate::core::interception::resolve_interceptions(
-        model,
-        turn,
-        &mut rng,
-        &mut engaged,
-        &mut intercepted,
-    );
+    let mut intercepted = resolve_encounters(model, turn, &mut rng, &mut engaged);
+    let interception_arrivals =
+        resolve_interceptions(model, turn, &mut rng, &mut engaged, &mut intercepted);
     // Targeted contacts spend movement without delaying the target. A survivor whose
     // original step landed this turn must still enter the ordinary arrival phases.
     let blocked_arrivals =
         intercepted.difference(&interception_arrivals).copied().collect::<HashSet<_>>();
+    let mut expedition_blocked = blocked_arrivals.clone();
+    resolve_arrivals(model, turn, &mut expedition_blocked, &mut rng);
+    intercepted.extend(expedition_blocked);
     recall_unpermitted_protecting_fleets(
         model,
         turn,
@@ -3467,13 +3588,11 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                     .iter()
                     .filter(|mission| {
                         mission.owner == player_id
+                            && mission.expedition.is_none()
                             && !matches!(mission.objective, Icon::Patrol | Icon::Intercept)
                             && !blocked_arrivals.contains(&mission.id)
                             && ((mission.patrol.is_none() && mission.intercept.is_none())
-                                || crate::core::patrols::can_return_to(
-                                    model.map.get(mission.destination),
-                                    mission.owner,
-                                ))
+                                || can_return_to(model.map.get(mission.destination), mission.owner))
                             && mission.destination == *planet_id
                             && mission.turns_to_destination(&model.map) < 2
                     })
@@ -3566,7 +3685,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                     let adopt_battle_plan =
                         destination.controlled.or(destination.owned) != Some(mission.owner);
                     reveal_independent_population(turn, mission.objective, destination, &mut rng);
-                    let deep_cover_succeeds = mission.objective == Icon::Spy
+                    let deep_cover_succeeds = mission.objective.is_probe_mission()
                         && mission.deep_cover
                         && origin_relay
                             > destination.army.amount(&Unit::Building(Building::CommandRelay));
@@ -3649,6 +3768,27 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                         ));
                     }
 
+                    if mission.objective == Icon::Sabotage {
+                        if let Some(sabotage) = &mut report.mission.sabotage {
+                            sabotage.succeeded = report.scout_probes > 0
+                                && !destination.is_moon()
+                                && !destination.is_destroyed
+                                && destination.has(&Unit::Building(sabotage.target.building()));
+                            if sabotage.succeeded {
+                                destination.sabotage.disable(sabotage.target);
+                            }
+                            report.mission.logs.push_str(&format!(
+                                "\n- ({turn}) Sabotage of {} {}.",
+                                sabotage.target.name(),
+                                if sabotage.succeeded {
+                                    "succeeded; disabled for the next planning turn"
+                                } else {
+                                    "failed; no structure disabled"
+                                },
+                            ));
+                        }
+                    }
+
                     if report.scout_probes > 0 {
                         if let Some(attack) = report.mission.joint_attack.as_ref() {
                             if mission.objective != Icon::Destroy
@@ -3676,7 +3816,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                     }
                                 }
                             }
-                        } else if mission.objective == Icon::Spy {
+                        } else if mission.objective.is_probe_mission() {
                             report.mission.logs.push_str(&format!(
                                 "\n- ({turn}) Spied on planet {}.",
                                 destination.name
@@ -3689,7 +3829,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                                 &new_origin,
                                 report.surviving_attacker.clone(),
                                 &report.mission.logs,
-                                Icon::Spy,
+                                mission.objective,
                                 mission.battle_plan,
                             ));
                         } else if mission.objective != Icon::Raid
@@ -3795,12 +3935,8 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                     }
 
                     if mission.objective == Icon::Raid {
-                        report.raid_loot = crate::core::raids::plunder(
-                            &report,
-                            destination,
-                            &mut model.players,
-                            &mut rng,
-                        );
+                        report.raid_loot =
+                            plunder(&report, destination, &mut model.players, &mut rng);
                         report.mission.logs.push_str(&format!(
                             "\n- ({turn}) Raid seized {} metal, {} crystal, and {} deuterium; no territory claimed.",
                             report.raid_loot.metal, report.raid_loot.crystal, report.raid_loot.deuterium,
@@ -3821,7 +3957,9 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                             returning.raid_cargo = report.raid_loot;
                             new_missions.push(returning);
                         }
-                    } else if report.winner() == Some(mission.owner) {
+                    } else if !mission.objective.is_probe_mission()
+                        && report.winner() == Some(mission.owner)
+                    {
                         // Friendly reinforcements join the existing garrison without removing
                         // allied protection fleets or their independently chosen standing orders.
                         if adopt_battle_plan {
@@ -3982,6 +4120,9 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
                     report.destination_controlled = destination.controlled;
                     for returning in &mut new_missions[return_start..] {
                         if returning.owner == mission.owner && returning.origin == destination.id {
+                            if returning.return_objective == Some(Icon::Sabotage) {
+                                returning.sabotage = report.mission.sabotage;
+                            }
                             returning.battle_fleets =
                                 report.retained_battle_fleets(&returning.army);
                         }
@@ -4035,7 +4176,7 @@ fn advance_simulation(model: &mut GameModel) -> Result<(), GameError> {
     }
     // Merge after all movement and encounters: new ships supply coverage and owe upkeep
     // starting next turn, and an intercepted reinforcement cannot join ahead of its arrival.
-    crate::core::patrols::merge_arrivals(&mut model.missions, &patrol_arrivals, &model.map, turn);
+    merge_arrivals(&mut model.missions, &patrol_arrivals, &model.map, turn);
     // Withdrawal launches one turn before this battle's snapshot. Give it that completed
     // movement step, so a pursuer launched after the battle starts a turn behind.
     for mut mission in fleeing_missions {
@@ -4213,6 +4354,7 @@ fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
         fauna_site.operations = Default::default();
         fauna_site.terraformer_focus = None;
         fauna_site.command_relay_active = true;
+        fauna_site.sabotage = Default::default();
         fauna_site.shield_overload = ShieldOverloadState::Ready;
         fauna_site.fleet_withdrawal = FleetWithdrawal::Off;
         fauna_site.battle_plan = BattlePlan::default();
@@ -4227,7 +4369,7 @@ fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
         fauna_site.buy.clear();
         fauna_site.surface_build_order = [None; 4];
 
-        let spying = original.objective == Icon::Spy;
+        let spying = original.objective.is_probe_mission();
         let defenseless_colony = original.objective == Icon::Colonize
             && !original.army.iter().any(|(unit, count)| *count > 0 && unit.is_combat_ship());
         let mut battle_mission = original.clone();
@@ -4294,8 +4436,7 @@ fn resolve_space_fauna_encounters<R: Rng + ?Sized>(
         }
         if player_survived {
             original.army = report.surviving_attacker;
-            original.raid_cargo =
-                crate::core::raids::surviving_cargo(original.raid_cargo, &original.army, rng);
+            original.raid_cargo = surviving_cargo(original.raid_cargo, &original.army, rng);
             original.logs = report.mission.logs;
             model.missions[index] = original;
         } else {
@@ -4426,7 +4567,7 @@ fn resolve_protect_arrivals<R: Rng + ?Sized>(
     rng: &mut R,
     blocked: &HashSet<MissionId>,
 ) {
-    let mut groups = BTreeMap::<(PlanetId, PlayerId, bool), Mission>::new();
+    let mut groups = BTreeMap::<(PlanetId, PlayerId, Option<MissionId>), Mission>::new();
     let mut arrived_ids = HashSet::new();
     for mission in model.missions.iter().filter(|mission| {
         !blocked.contains(&mission.id)
@@ -4438,7 +4579,8 @@ fn resolve_protect_arrivals<R: Rng + ?Sized>(
             .entry((
                 mission.destination,
                 mission.owner,
-                mission.return_objective == Some(Icon::Raid),
+                // Returning fleets keep their own report, even when docking together.
+                mission.is_returning().then_some(mission.id),
             ))
             .and_modify(|grouped| grouped.merge(mission))
             .or_insert_with(|| mission.clone());
@@ -4605,6 +4747,7 @@ fn spoof_spy_report_as_empty(report: &mut MissionReport) {
     report.planet.operations = Default::default();
 
     report.planet.command_relay_active = true;
+    report.planet.sabotage = Default::default();
     report.planet.shield_overload = ShieldOverloadState::Ready;
     report.planet.fleet_withdrawal = FleetWithdrawal::Off;
     report.planet.battle_plan = BattlePlan::default();
@@ -4621,7 +4764,7 @@ fn regroup_missions(missions: &[Mission]) -> Vec<Mission> {
     // Each cover attempt must retain its own origin relay and secrecy outcome.
     let mut deep_cover = Vec::new();
     for mission in missions {
-        if mission.objective == Icon::Spy && mission.deep_cover {
+        if mission.objective.is_probe_mission() && mission.deep_cover {
             deep_cover.push(mission.clone());
             continue;
         }
@@ -4629,20 +4772,24 @@ fn regroup_missions(missions: &[Mission]) -> Vec<Mission> {
             Icon::Protect => 0,
             Icon::Deploy => 1,
             Icon::MissileStrike => 2,
-            Icon::Spy => 3,
+            Icon::Spy | Icon::Sabotage => 3,
             Icon::Raid => 4,
             _ => 5,
         };
-        // Same-owner arrivals share the strongest source's plan. Coordinated attacks
-        // keep their allied contingents and never enter an ordinary same-owner group.
+        // Same-owner arrivals share the strongest source's plan. Returning missions keep
+        // their individual reports and original objectives; joint attacks retain their allies.
         if let Some(grouped) = groups[index].iter_mut().find(|grouped| {
             grouped.owner == mission.owner
+                && (grouped.objective == mission.objective
+                    || (!grouped.objective.is_probe_mission()
+                        && !mission.objective.is_probe_mission()))
+                && grouped.sabotage == mission.sabotage
                 && grouped.patrol.is_none()
                 && grouped.intercept.is_none()
                 && mission.patrol.is_none()
                 && mission.intercept.is_none()
-                && (grouped.return_objective == Some(Icon::Raid))
-                    == (mission.return_objective == Some(Icon::Raid))
+                && !grouped.is_returning()
+                && !mission.is_returning()
                 && grouped.joint_attack.is_none()
                 && mission.joint_attack.is_none()
         }) {
@@ -4690,18 +4837,24 @@ fn check_mission(
     max_owned: usize,
     home_planet: Option<PlanetId>,
 ) {
+    if mission.expedition.is_some() {
+        if mission.is_returning() && !can_return_to(map.get(mission.destination), mission.owner) {
+            mission.return_expedition(map, turn);
+        }
+        return;
+    }
     if let Some(intercept) = &mission.intercept {
-        if intercept.phase == crate::core::interception::InterceptPhase::Returning
-            && !crate::core::patrols::can_return_to(map.get(mission.destination), mission.owner)
+        if intercept.phase == InterceptPhase::Returning
+            && !can_return_to(map.get(mission.destination), mission.owner)
         {
             mission.return_intercept(map, turn);
         }
         return;
     }
     if let Some(patrol) = &mission.patrol {
-        if patrol.phase == crate::core::patrols::PatrolPhase::Returning {
+        if patrol.phase == PatrolPhase::Returning {
             let destination = map.get(mission.destination);
-            if !crate::core::patrols::can_return_to(destination, mission.owner) {
+            if !can_return_to(destination, mission.owner) {
                 mission.return_patrol(map, turn);
             }
         }
@@ -4834,6 +4987,9 @@ fn check_mission(
             "\n- ({turn}) Destination changed to planet {}.",
             map.get(mission.destination).name
         ));
+    }
+    if mission.objective != Icon::Sabotage && mission.return_objective != Some(Icon::Sabotage) {
+        mission.sabotage = None;
     }
     if old_objective != mission.objective {
         mission.deep_cover = false;

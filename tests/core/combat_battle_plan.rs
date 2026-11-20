@@ -1,7 +1,9 @@
 use rand::SeedableRng;
 
 use super::*;
+
 use crate::core::combat::plan::{CombatTactic, ProtectionPosture};
+use crate::core::missions::{FleetCombatOrders, JointAttackMission};
 use crate::core::units::defense::Defense;
 
 fn combatant(id: u64, owner: u64, unit: Unit) -> CombatUnit {
@@ -835,7 +837,6 @@ fn merged_automatic_attack_freezes_the_combined_tactic_for_every_source_ship() {
 
 #[test]
 fn allied_attackers_and_protectors_keep_a_separate_plan_per_player_in_combat() {
-    use crate::core::missions::{FleetCombatOrders, JointAttackMission};
     let fighters = Army::from([(Unit::Ship(Ship::LightFighter), 4)]);
     let bombers = Army::from([(Unit::Ship(Ship::Bomber), 1)]);
     let swarm = plan(CombatTactic::Swarm, ProtectionPosture::Standard);

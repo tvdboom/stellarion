@@ -55,8 +55,20 @@ enum TextureKind {
 
 fn pixel(kind: TextureKind, point: Vec2, phase: f32) -> [u8; 4] {
     let radius = point.length();
+    let mut rgb = [255; 3];
     let alpha = match kind {
-        TextureKind::Rim => (-((radius - 0.89) / 0.035).powi(2)).exp(),
+        TextureKind::Rim => {
+            // Circling the noise field makes soft patches travel around a stable limb.
+            let drift = noise(Vec3::new(
+                point.x * 3.6 + phase.cos() * 0.8,
+                point.y * 3.6 + phase.sin() * 0.8,
+                11.0,
+            ));
+            let width = 0.029 + drift * 0.016;
+            (-((radius - 0.89) / width).powi(2)).exp()
+                * (0.64 + drift * 0.36)
+                * smooth((1.0 - radius) / 0.05)
+        },
         TextureKind::Flash => (1.0 - radius).max(0.0).powi(3),
         TextureKind::Clouds | TextureKind::Bands => {
             if radius >= 0.99 {
@@ -81,16 +93,43 @@ fn pixel(kind: TextureKind, point: Vec2, phase: f32) -> [u8; 4] {
             density * smooth((0.99 - radius) / 0.13) * (0.42 + depth * 0.58)
         },
         TextureKind::Aurora => {
-            let wave = (point.x * 12.0 + phase).sin() * 0.035
-                + (point.x * 23.0 - phase * 2.0).sin() * 0.016;
-            let curtain = (-((point.y.abs() - 0.71 - wave) / 0.045).powi(2)).exp();
-            curtain * smooth((0.94 - radius) / 0.12) * smooth((0.72 - point.x.abs()) / 0.3)
+            // Each pole has its own flowing folds, rather than mirrored latitude stripes.
+            let (along, offset) = if point.y >= 0.0 {
+                (point.x, 0.9)
+            } else {
+                (-point.x, 3.7)
+            };
+            let drift = phase + offset;
+            let field = noise(Vec3::new(
+                along * 4.8 + 19.0,
+                drift.cos() * 0.9 + 7.0,
+                drift.sin() * 0.9 + 3.0,
+            ));
+            let wave = (along * 8.0 + drift).sin() * 0.047
+                + (along * 19.0 - phase * 2.0 + offset).sin() * 0.021
+                + (field - 0.5) * 0.06;
+            let distance = point.y.abs() - (0.68 + wave - point.x * point.x * 0.11);
+            let width = 0.012 + field * 0.022;
+            let folds =
+                (along * 41.0 + (along * 11.0 + drift).sin() * 2.0 + phase * 2.0).sin() * 0.5 + 0.5;
+            let ribbon = (-(distance / width).powi(2)).exp();
+            let veil = (-((distance - 0.024) / 0.055).powi(2)).exp() * 0.28;
+            let strand = (-((distance + 0.047 + (along * 17.0 + drift).sin() * 0.009) / 0.013)
+                .powi(2))
+            .exp()
+                * 0.33;
+            let cyan = (field * 0.65 + folds * 0.2 + distance * 3.0).clamp(0.0, 1.0);
+            rgb = [
+                (98.0 - cyan * 18.0) as u8,
+                (248.0 - cyan * 54.0) as u8,
+                (167.0 + cyan * 88.0) as u8,
+            ];
+            (ribbon + veil + strand)
+                * (0.38 + field * 0.62)
+                * (0.58 + folds * 0.42)
+                * smooth((0.94 - radius) / 0.12)
+                * smooth((0.80 - point.x.abs()) / 0.32)
         },
-    };
-    let rgb = if matches!(kind, TextureKind::Aurora) {
-        [92, 255, 202]
-    } else {
-        [255; 3]
     };
     [rgb[0], rgb[1], rgb[2], (alpha.clamp(0.0, 1.0) * 255.0).round() as u8]
 }
@@ -156,7 +195,7 @@ impl FromWorld for WeatherTextures {
     fn from_world(world: &mut World) -> Self {
         let mut images = world.resource_mut::<Assets<Image>>();
         Self {
-            rim: images.add(texture(TextureKind::Rim, false)),
+            rim: images.add(texture(TextureKind::Rim, true)),
             clouds: images.add(texture(TextureKind::Clouds, true)),
             bands: images.add(texture(TextureKind::Bands, true)),
             aurora: images.add(texture(TextureKind::Aurora, true)),
@@ -167,7 +206,7 @@ impl FromWorld for WeatherTextures {
 
 #[derive(Component, Clone, Copy)]
 enum WeatherLayer {
-    Rim,
+    Rim(usize),
     Clouds(usize),
     Aurora(usize),
     Lightning,
@@ -203,7 +242,10 @@ fn spawn_weather(commands: &mut Commands, map: &Map, textures: &WeatherTextures)
         let Some(color) = atmosphere_color(planet.kind).filter(|_| !planet.is_destroyed) else {
             continue;
         };
-        let mut layers = vec![(WeatherLayer::Rim, textures.rim.clone(), color, 0.20, 1.12)];
+        let mut layers = Vec::new();
+        for layer in 0..2 {
+            layers.push((WeatherLayer::Rim(layer), textures.rim.clone(), color, 0.25, 1.12));
+        }
         let (clouds, tint, opacity) = match planet.kind {
             PlanetKind::Gas => (&textures.bands, Color::srgb(1.0, 0.91, 0.78), 0.18),
             PlanetKind::Dry => (&textures.clouds, Color::srgb(1.0, 0.82, 0.64), 0.10),
@@ -217,7 +259,7 @@ fn spawn_weather(commands: &mut Commands, map: &Map, textures: &WeatherTextures)
                     WeatherLayer::Aurora(layer),
                     textures.aurora.clone(),
                     Color::WHITE,
-                    0.32,
+                    0.48,
                     1.0,
                 ));
             }
@@ -304,23 +346,22 @@ fn animate_weather(
         };
         let seconds = elapsed.0 as f32;
         let zoom = match layer {
-            WeatherLayer::Rim => smooth((5.0 - scale) / 2.0),
+            WeatherLayer::Rim(_) => smooth((5.0 - scale) / 2.0),
             WeatherLayer::Clouds(_) => smooth((2.6 - scale) / 1.6),
             WeatherLayer::Aurora(_) | WeatherLayer::Lightning => smooth((1.8 - scale) / 0.9),
         };
         let aurora = matches!(*layer, WeatherLayer::Aurora(_));
         let brightness = match *layer {
-            WeatherLayer::Rim => 1.0,
-            WeatherLayer::Clouds(frame_layer) | WeatherLayer::Aurora(frame_layer) => {
-                let cycle = (elapsed.0
-                    / if aurora {
-                        24.0
-                    } else {
-                        180.0 + weather.phase as f64 * 60.0
-                    }
-                    + weather.phase as f64)
-                    .fract() as f32
-                    * FRAMES as f32;
+            WeatherLayer::Rim(frame_layer)
+            | WeatherLayer::Clouds(frame_layer)
+            | WeatherLayer::Aurora(frame_layer) => {
+                let duration = match *layer {
+                    WeatherLayer::Rim(_) => 32.0 + weather.phase as f64 * 12.0,
+                    WeatherLayer::Aurora(_) => 18.0 + weather.phase as f64 * 6.0,
+                    _ => 180.0 + weather.phase as f64 * 60.0,
+                };
+                let cycle =
+                    (elapsed.0 / duration + weather.phase as f64).fract() as f32 * FRAMES as f32;
                 sprite.rect = Some(atlas_frame(cycle.floor() as usize + frame_layer));
                 let blend = smooth(cycle.fract());
                 let weight = if frame_layer == 0 {

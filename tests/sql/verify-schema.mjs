@@ -240,6 +240,107 @@ for (const corrupt of [
   await assert.rejects(db.query("select * from public.stellarion_submission_ids($1)", [malformed]), /STLR_INVALID_DATA:intercept_command/);
 }
 console.log("Targeted interception snapshots, reports, return phases and malformed orders passed.");
+const expeditionSnapshot = fixtures.expedition_game.turns.find(({resolved}) => resolved.state.missions.some(mission => mission.objective === "Expedition")).resolved;
+for (const snapshot of fixtures.expedition_game.turns.map(turn => turn.resolved)) {
+  await db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [snapshot, snapshot.state.turn]);
+}
+const fullExpedition = structuredClone(fixtures.expedition_game.turns.find(({resolved}) =>
+  resolved.state.missions.some(mission => mission.expedition?.phase === "Returning")).resolved);
+const fullExpeditionMission = fullExpedition.state.missions.find(mission => mission.expedition?.phase === "Returning");
+fullExpeditionMission.army = { "Ship(ColonyShip)": 9, "Ship(HeavyFighter)": 9, "Ship(Cruiser)": 1 };
+fullExpeditionMission.expedition.resources = { metal: 1830, crystal: 0, deuterium: 0 };
+fullExpeditionMission.expedition.ships = { "Ship(WarSun)": 1, "Ship(Dreadnought)": 2 };
+await db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [fullExpedition, fullExpedition.state.turn]);
+for (const ships of [
+  { "Ship(WarSun)": 2 },
+  { "Ship(Probe)": 1 },
+  { "Ship(ColonyShip)": 1 },
+  { "Ship(Dreadnought)": 0 },
+  { "Ship(Dreadnought)": 10001 },
+]) {
+  const malformed = structuredClone(fullExpedition);
+  malformed.state.missions.find(mission => mission.expedition?.phase === "Returning").expedition.ships = ships;
+  await assert.rejects(db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [malformed, malformed.state.turn]), /STLR_INVALID_DATA:mission_expedition/);
+}
+fullExpeditionMission.expedition.resources.metal++;
+await assert.rejects(db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [fullExpedition, fullExpedition.state.turn]), /STLR_INVALID_DATA:mission_expedition/);
+for (const corrupt of [
+  mission => { delete mission.expedition; },
+  mission => { mission.expedition = null; },
+  mission => { mission.expedition.phase = null; },
+  mission => { mission.expedition.phase = "Unknown"; },
+  mission => { mission.expedition.center = ["NaN", 0]; },
+  mission => { mission.expedition.resources.metal = 1; },
+  mission => { mission.expedition.ships = { "Ship(WarSun)": 1 }; },
+  mission => { mission.expedition.extra = true; },
+  mission => { mission.army["Ship(ColonyShip)"] = 0; },
+  mission => { mission.objective = "Attack"; },
+  mission => { mission.jump_gate = true; },
+]) {
+  const malformed = structuredClone(expeditionSnapshot);
+  corrupt(malformed.state.missions[0]);
+  await assert.rejects(db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [malformed, malformed.state.turn]), /STLR_INVALID_DATA:mission_expedition/);
+}
+const expeditionSubmission = { player_id: 1, turn: 1, generation: 0, commands: [fixtures.expedition_game.launch] };
+await db.query("select * from public.stellarion_submission_ids($1)", [expeditionSubmission]);
+for (const corrupt of [
+  command => { delete command.center; },
+  command => { command.center = [null, 0]; },
+  command => { command.mission_id = 0; },
+  command => { command.origin = -1; },
+  command => { command.army = {}; },
+  command => { command.army["Ship(ColonyShip)"] = 1.5; },
+  command => { command.army["Building(Shipyard)"] = 1; },
+  command => { delete command.battle_plan; },
+  command => { command.extra = true; },
+]) {
+  const malformed = structuredClone(expeditionSubmission);
+  corrupt(malformed.commands[0]);
+  await assert.rejects(db.query("select * from public.stellarion_submission_ids($1)", [malformed]), /STLR_INVALID_DATA:expedition_command/);
+}
+console.log("Expedition phases, resource/ship cargo, required Colony Ships and malformed order rejection passed.");
+const sabotageSnapshot = fixtures.sabotage_game.turns.find(({resolved}) => resolved.state.missions.some(mission => mission.objective === "Sabotage")).resolved;
+for (const snapshot of fixtures.sabotage_game.turns.map(turn => turn.resolved)) {
+  await db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [snapshot, snapshot.state.turn]);
+}
+for (const corrupt of [
+  mission => { delete mission.sabotage; },
+  mission => { mission.sabotage = null; },
+  mission => { mission.sabotage.target = "Shipyard"; },
+  mission => { mission.sabotage.succeeded = true; },
+  mission => { mission.sabotage.succeeded = "yes"; },
+  mission => { mission.army["Ship(LightFighter)"] = 1; },
+  mission => { mission.sabotage.extra = true; },
+]) {
+  const malformed=structuredClone(sabotageSnapshot);
+  corrupt(malformed.state.missions.find(mission => mission.objective === "Sabotage"));
+  await assert.rejects(db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [malformed,malformed.state.turn]), /STLR_INVALID_DATA:mission_sabotage/);
+}
+for (const invalid of [null, {}, {sensor_phalanx:true,orbital_railgun:false,jump_gate:"yes"}]) {
+  const malformed=structuredClone(sabotageSnapshot);
+  malformed.state.map.planets[0].sabotage=invalid;
+  await assert.rejects(db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [malformed,malformed.state.turn]), /STLR_INVALID_DATA:planet_sabotage/);
+}
+const sabotageSubmission={player_id:1,turn:1,generation:0,commands:[fixtures.sabotage_game.commands[0]]};
+await db.query("select * from public.stellarion_submission_ids($1)",[sabotageSubmission]);
+const sabotageWithZeroEntries=structuredClone(sabotageSubmission);
+sabotageWithZeroEntries.commands[0].army["Ship(ColonyShip)"]=0;
+await db.query("select * from public.stellarion_submission_ids($1)",[sabotageWithZeroEntries]);
+for (const corrupt of [
+  command => { delete command.target; },
+  command => { command.target="Shipyard"; },
+  command => { command.army={"Ship(Probe)":4}; },
+  command => { command.army={"Ship(Probe)":5.5}; },
+  command => { command.army["Ship(LightFighter)"]=1; },
+  command => { command.deep_cover=null; },
+  command => { command.mission_id=0; },
+  command => { command.extra=true; },
+]) {
+  const malformed=structuredClone(sabotageSubmission);
+  corrupt(malformed.commands[0]);
+  await assert.rejects(db.query("select * from public.stellarion_submission_ids($1)",[malformed]),/STLR_INVALID_DATA:sabotage_command/);
+}
+console.log("Sabotage target types, probe-only orders, outcome metadata and one-turn outage snapshots passed.");
 const patrolSnapshot = fixtures.patrol_game.turns.find(({resolved}) => resolved.state.missions.length).resolved;
 await db.query("select public.stellarion_validate_persisted($1, 2::smallint, 'active', $2)", [patrolSnapshot, patrolSnapshot.state.turn]);
 for (const corrupt of [
@@ -1408,6 +1509,56 @@ for (const { submissions, resolved } of fixtures.patrol_game.turns) {
 assert(patrolPhases.has("OnStation") && patrolPhases.has("Returning"));
 assert.equal(patrolGame.persisted.state.missions.length, 0);
 console.log("Patrol dispatch, operating duration, upkeep, return and docking passed through authenticated SQL RPCs.");
+const expeditionLobbyState = structuredClone(fixtures.lobby);
+expeditionLobbyState.state.rules.space_fauna_percent = 0;
+expeditionLobbyState.state.rules.independent_populations = false;
+const expeditionLobby = await create(host, "EXPX01", "authenticated", expeditionLobbyState);
+const expeditionJoined = await rpc(guest, "select public.stellarion_join_game($1, $2, $3) as result", [expeditionLobby.game.code, "Guest", guestRecovery]);
+let expeditionGame = await snapshotWrite(host, "select public.stellarion_start_game($1, $2, $3) as result", [expeditionLobby.game.id, expeditionJoined.game.revision, fixtures.expedition_game.initial]);
+const expeditionPhases = new Set();
+for (const {submissions, resolved} of fixtures.expedition_game.turns) {
+  const turn = expeditionGame.persisted.state.turn;
+  for (const [index, actor] of [host, guest].entries()) {
+    await rpc(actor, "select public.stellarion_save_game($1, $2, $3) as result", [expeditionGame.id, expeditionGame.revision, submissions[index]]);
+    const saved = await rpc(actor, "select public.stellarion_load_turn_submissions($1, $2, 'mine') as result", [expeditionGame.id, turn]);
+    assert.deepEqual(saved[0].submission, submissions[index]);
+    for (const disposition of ["inserted", "duplicate"]) {
+      assert.equal((await rpc(actor, "select public.stellarion_submit_turn($1, $2) as result", [expeditionGame.id, submissions[index]])).disposition, disposition);
+    }
+  }
+  expeditionGame = await snapshotWrite(host, "select public.stellarion_publish_resolution($1, $2, $3, $4) as result", [expeditionGame.id, expeditionGame.revision, turn, resolved]);
+  for (const mission of resolved.state.missions) expeditionPhases.add(mission.expedition.phase);
+  assert.deepEqual((await rpc(guest, "select public.stellarion_load_game($1) as result", [expeditionGame.id])).persisted, resolved);
+}
+assert(expeditionPhases.has("Outbound") && expeditionPhases.has("Returning"));
+assert.equal(expeditionGame.persisted.state.missions.length, 0);
+assert(expeditionGame.persisted.state.players[0].reports.some(report => report.mission.return_objective === "Expedition"));
+console.log("Expedition drafts, retry-safe submissions, discovery cargo, return and docking passed through authenticated SQL RPCs.");
+const sabotageLobbyState=structuredClone(fixtures.lobby);
+sabotageLobbyState.state.rules.space_fauna_percent=0;
+sabotageLobbyState.state.rules.independent_populations=false;
+const sabotageLobby=await create(host,"SABX01","authenticated",sabotageLobbyState);
+const sabotageJoined=await rpc(guest,"select public.stellarion_join_game($1, $2, $3) as result",[sabotageLobby.game.code,"Guest",guestRecovery]);
+let sabotageGame=await snapshotWrite(host,"select public.stellarion_start_game($1, $2, $3) as result",[sabotageLobby.game.id,sabotageJoined.game.revision,fixtures.sabotage_game.initial]);
+let disabledTurns=0;
+for (const {submissions,resolved} of fixtures.sabotage_game.turns) {
+  const turn=sabotageGame.persisted.state.turn;
+  for (const [index,actor] of [host,guest].entries()) {
+    await rpc(actor,"select public.stellarion_save_game($1, $2, $3) as result",[sabotageGame.id,sabotageGame.revision,submissions[index]]);
+    assert.deepEqual((await rpc(actor,"select public.stellarion_load_turn_submissions($1, $2, 'mine') as result",[sabotageGame.id,turn]))[0].submission,submissions[index]);
+    for (const disposition of ["inserted","duplicate"]) {
+      assert.equal((await rpc(actor,"select public.stellarion_submit_turn($1, $2) as result",[sabotageGame.id,submissions[index]])).disposition,disposition);
+    }
+  }
+  sabotageGame=await snapshotWrite(host,"select public.stellarion_publish_resolution($1, $2, $3, $4) as result",[sabotageGame.id,sabotageGame.revision,turn,resolved]);
+  assert.deepEqual((await rpc(guest,"select public.stellarion_load_game($1) as result",[sabotageGame.id])).persisted,resolved);
+  const outage=resolved.state.map.planets[fixtures.sabotage_game.target].sabotage;
+  if (outage.jump_gate) { disabledTurns++; assert(outage.sensor_phalanx && outage.orbital_railgun); }
+}
+assert.equal(disabledTurns,1);
+assert.equal(sabotageGame.persisted.state.missions.length,0);
+assert.equal(sabotageGame.persisted.state.players[0].reports.filter(report => report.mission.objective==="Sabotage" && report.mission.sabotage.succeeded).length,3);
+console.log("Intelligence-gated sabotage drafts, retries, all three outages, one-turn restoration and returning probes passed through authenticated SQL RPCs.");
 const interceptLobbyState = structuredClone(fixtures.lobby);
 interceptLobbyState.state.rules.space_fauna_percent = 0;
 interceptLobbyState.state.rules.independent_populations = false;

@@ -7,6 +7,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::IntoEnumIterator;
 
 use crate::core::combat::stats::CombatStats;
+use crate::core::constants::{
+    ORBITAL_RAILGUN_RANGE_PER_LEVEL, PHALANX_DISTANCE, PROBES_PER_PRODUCTION_LEVEL, RADAR_DISTANCE,
+    TRADING_POST_RANGE_PER_LEVEL,
+};
 use crate::core::resources::Resources;
 use crate::core::units::buildings::Building;
 use crate::core::units::defense::Defense;
@@ -454,13 +458,8 @@ impl Unit {
 
     /// Returns the range contributed by one completed building level, in AU.
     pub fn range_per_level(&self) -> Option<f32> {
-        use crate::core::constants::{
-            ORBITAL_RAILGUN_RANGE_PER_LEVEL, PHALANX_DISTANCE, RADAR_DISTANCE,
-        };
         match self {
-            Unit::Building(Building::TradingPost) => {
-                Some(crate::core::trading::TRADING_POST_RANGE_PER_LEVEL)
-            },
+            Unit::Building(Building::TradingPost) => Some(TRADING_POST_RANGE_PER_LEVEL),
             Unit::Building(Building::SensorPhalanx) => Some(PHALANX_DISTANCE),
             Unit::Building(Building::OrbitalRailgun) => Some(ORBITAL_RAILGUN_RANGE_PER_LEVEL),
             Unit::Building(Building::OrbitalRadar) => Some(RADAR_DISTANCE),
@@ -476,10 +475,7 @@ impl Unit {
     /// Returns whether Spy probes reveal this unit on a planet or moon.
     pub fn revealed_by_probes_on_world(&self, returning_probes: usize, is_moon: bool) -> bool {
         self.intelligence_level_on_world(is_moon).is_none_or(|level| {
-            returning_probes
-                > level
-                    .saturating_sub(1)
-                    .saturating_mul(crate::core::constants::PROBES_PER_PRODUCTION_LEVEL)
+            returning_probes > level.saturating_sub(1).saturating_mul(PROBES_PER_PRODUCTION_LEVEL)
         })
     }
 
@@ -526,7 +522,7 @@ impl Unit {
             Unit::Building(b) => b.to_name(),
             Unit::Ship(s) => s.to_name(),
             Unit::Defense(d) => d.to_name(),
-            Unit::Fauna(fauna) => fauna.to_name(),
+            Unit::Fauna(fauna) => fauna.name().to_owned(),
         }
     }
 

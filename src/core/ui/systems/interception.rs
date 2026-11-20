@@ -1,6 +1,7 @@
 //! Moving-target selection and validation inside the shared mission panel.
 
 use super::*;
+use crate::core::constants::INTERCEPTION_TARGET_LABEL_WIDTH;
 use crate::core::interception::target_available;
 
 pub(super) fn visible_contact(target: &Mission, map: &Map, player: &Player) -> bool {
@@ -13,6 +14,10 @@ pub(super) fn visible_contact(target: &Mission, map: &Map, player: &Player) -> b
 impl UiState {
     /// Switches an interception draft back to planet objectives when a world is targeted.
     pub(crate) fn set_planet_mission_destination(&mut self, destination: PlanetId) {
+        if self.mission_info.objective == Icon::Expedition {
+            self.mission_info.expedition = None;
+            self.mission_info.objective = Icon::Attack;
+        }
         if self.mission_info.objective == Icon::Intercept {
             self.intercept_target = None;
             self.mission_info.intercept = None;
@@ -78,8 +83,6 @@ impl UiState {
     }
 }
 
-pub(super) const TARGET_LABEL_WIDTH: f32 = 160.0;
-
 fn contact_label(target: &Mission, session: &MultiplayerSession) -> RichText {
     let name = session
         .player_name(target.owner)
@@ -109,12 +112,14 @@ pub(super) fn draw_target_label(
         TextStyle::Button.into(),
         Align::Center,
     ));
-    job.wrap.max_width = TARGET_LABEL_WIDTH;
+    job.wrap.max_width = INTERCEPTION_TARGET_LABEL_WIDTH;
     job.halign = Align::Center;
     let label = ui.fonts_mut(|fonts| fonts.layout_job(job));
     let height = label.size().y;
-    let (rect, _) = ui
-        .allocate_exact_size(egui::vec2(TARGET_LABEL_WIDTH, 70.0_f32.max(height)), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(INTERCEPTION_TARGET_LABEL_WIDTH, 70.0_f32.max(height)),
+        Sense::hover(),
+    );
     ui.put(
         egui::Rect::from_center_size(
             egui::pos2(rect.center().x, center_y.max(rect.top() + height * 0.5)),
@@ -192,8 +197,8 @@ pub(super) fn unavailable_reason(
     if target.duration(map) == 0 {
         return Some("This enemy mission has already reached its destination.");
     }
-    if !Icon::Intercept.accepts_army(&state.mission_info.army) {
-        return Some("Select at least one combat ship for interception.");
+    if let Some(reason) = Icon::Intercept.fleet_unavailable_reason(&state.mission_info.army) {
+        return Some(reason);
     }
     if state.mission_info.intercept.is_none() {
         return Some("The selected fleet cannot reach a meeting point along the enemy's flight path before landing. Choose a closer launch world or a faster fleet.");

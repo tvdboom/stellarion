@@ -703,7 +703,11 @@ fn draw_plan_hover(
 }
 
 pub(super) fn mission_plan_visible(mission: &Mission, viewer: PlayerId) -> bool {
-    mission.objective != Icon::MissileStrike && mission.commanded_army(viewer).is_some()
+    // Probe fleets travel home as Deploy missions but still have no battle-plan controls.
+    let objective = mission.return_objective.unwrap_or(mission.objective);
+    objective != Icon::MissileStrike
+        && !objective.is_probe_mission()
+        && mission.commanded_army(viewer).is_some()
 }
 
 /// Paints the affinity and returns its measured bounds for the header's hover target.

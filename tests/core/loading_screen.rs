@@ -1,4 +1,13 @@
+use std::time::Duration;
+
+use bevy::ecs::system::RunSystemOnce;
+use bevy_egui::{EguiContext, EguiPrimaryContextPass, EguiUserTextures, PrimaryEguiContext};
+
 use super::*;
+
+use crate::core::audio::PlayAudioMsg;
+use crate::core::messages::{MessageMsg, MessagesPlugin};
+use crate::core::states::GameState;
 
 #[test]
 fn progress_never_invents_completed_work_or_moves_backwards() {
@@ -55,9 +64,6 @@ fn startup_completion_does_not_wait_for_a_minimum_display_or_progress_animation(
 
 #[test]
 fn startup_uses_only_menu_art_and_loading_copy_through_the_menu_reveal() {
-    use bevy::ecs::system::RunSystemOnce;
-    use bevy_egui::{EguiContext, EguiPrimaryContextPass, EguiUserTextures, PrimaryEguiContext};
-
     for size in [egui::vec2(1600.0, 900.0), egui::vec2(320.0, 480.0)] {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -148,15 +154,109 @@ fn startup_uses_only_menu_art_and_loading_copy_through_the_menu_reveal() {
 }
 
 #[test]
+fn start_game_fades_before_the_backend_handoff_and_keeps_the_same_slide() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+        .init_asset::<Image>()
+        .init_asset::<Font>()
+        .init_asset::<TextureAtlasLayout>()
+        .init_asset::<bevy_kira_audio::AudioSource>()
+        .init_resource::<WorldAssets>()
+        .init_resource::<MultiplayerSession>()
+        .init_resource::<EguiUserTextures>()
+        .insert_resource(State::new(AppState::Lobby))
+        .insert_resource(LoadingScreen {
+            reveal_elapsed: Some(REVEAL),
+            ..default()
+        })
+        .add_message::<MultiplayerRequest>()
+        .add_systems(EguiPrimaryContextPass, (preview_game_start, draw_loading_screen).chain());
+    let menu = app.world_mut().resource_mut::<Assets<Image>>().add(Image::default());
+    app.world_mut().resource_mut::<WorldAssets>().images.insert("menu".into(), menu);
+    let mut context = EguiContext::default();
+    let egui = context.get_mut().clone();
+    app.world_mut().spawn((context, PrimaryEguiContext));
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 480.0));
+    let frame = |app: &mut App| {
+        let mut output = egui.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                ..default()
+            },
+            |_| app.world_mut().run_schedule(EguiPrimaryContextPass),
+        );
+        output.textures_delta.clear();
+        output.shapes
+    };
+
+    app.world_mut().write_message(MultiplayerRequest::StartGame);
+    frame(&mut app);
+    let screen = app.world().resource::<LoadingScreen>();
+    assert!(screen.visible() && screen.starting_game);
+    assert_eq!(screen.current, None);
+    let menu_texture = screen.menu_texture.unwrap();
+    let shapes = frame(&mut app);
+    assert!(shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == menu_texture)
+    }));
+    assert!(shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Text(text)
+            if text.galley.job.text == "Leave Lobby" && viewport.contains_rect(text.visual_bounding_rect()))
+    }));
+
+    let wallpaper = app.world_mut().resource_mut::<Assets<Image>>().add(Image::default());
+    app.world_mut().resource_mut::<LoadingScreen>().images[0] = Some(wallpaper.clone());
+    app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(100));
+    app.world_mut().run_system_once(advance_loading_screen).unwrap();
+    let shapes = frame(&mut app);
+    let screen = app.world().resource::<LoadingScreen>();
+    assert_eq!(screen.current, Some(0));
+    let match_texture = screen.textures[0].unwrap();
+    assert!(shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Mesh(mesh)
+            if mesh.texture_id == match_texture && (1..255).contains(&mesh.vertices[0].color.a()))
+    }));
+    let fade_elapsed = screen.artwork_elapsed;
+    assert_eq!(screen.progress, 0.0);
+
+    app.insert_resource(State::new(AppState::LoadingGame));
+    app.world_mut().run_system_once(begin_loading_screen).unwrap();
+    let screen = app.world().resource::<LoadingScreen>();
+    assert!(screen.visible() && !screen.starting_game);
+    assert_eq!(screen.current, Some(0));
+    assert_eq!(screen.images[0].as_ref(), Some(&wallpaper));
+    assert_eq!(screen.artwork_elapsed, fade_elapsed);
+}
+
+#[test]
+fn failed_start_returns_control_to_the_lobby_and_allows_a_retry() {
+    let mut app = App::new();
+    app.init_resource::<Assets<Image>>()
+        .init_resource::<MultiplayerSession>()
+        .init_resource::<LoadingScreen>()
+        .insert_resource(State::new(AppState::Lobby))
+        .add_message::<MultiplayerRequest>()
+        .add_systems(PreUpdate, dismiss_game_start_preview)
+        .add_systems(Update, preview_game_start);
+
+    app.world_mut().write_message(MultiplayerRequest::StartGame);
+    app.update();
+    assert!(app.world().resource::<LoadingScreen>().starting_game);
+    app.world_mut().resource_mut::<MultiplayerSession>().menu_error = Some("Start failed".into());
+    app.update();
+    assert!(!app.world().resource::<LoadingScreen>().visible());
+
+    let wallpaper = app.world_mut().resource_mut::<Assets<Image>>().add(Image::default());
+    app.world_mut().resource_mut::<LoadingScreen>().images[0] = Some(wallpaper);
+    app.world_mut().write_message(MultiplayerRequest::StartGame);
+    app.update();
+    let screen = app.world().resource::<LoadingScreen>();
+    assert!(screen.starting_game);
+    assert_eq!(screen.current, Some(0));
+}
+
+#[test]
 fn turn_start_notification_and_sound_wait_for_the_reveal_without_expiring() {
-    use std::time::Duration;
-
-    use bevy_egui::{EguiContext, EguiPrimaryContextPass, EguiUserTextures, PrimaryEguiContext};
-
-    use crate::core::audio::PlayAudioMsg;
-    use crate::core::messages::{MessageMsg, MessagesPlugin};
-    use crate::core::states::GameState;
-
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
         .init_asset::<Image>()

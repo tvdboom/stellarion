@@ -3,13 +3,16 @@ use std::time::Duration;
 use bevy::ecs::system::RunSystemOnce;
 
 use super::*;
+
 use crate::core::combat::report::MissionReport;
+use crate::core::map::aftermath_label_y;
 use crate::core::map::icon::Icon;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::player::PlayerColor;
 use crate::core::simulation::{GameModel, GameRules, TurnCommand};
 use crate::core::units::buildings::Building;
 use crate::core::units::{Army, Unit};
+use crate::test_support::empty_report;
 
 fn presentation_app() -> (App, PlanetId, PlanetId) {
     let mut model = GameModel::new(
@@ -95,7 +98,7 @@ fn successful_colony_mission_flies_in_and_lands_before_conquest_celebrates() {
         planet_colonized: true,
         destination_owned: Some(player_id),
         destination_controlled: Some(player_id),
-        ..crate::test_support::empty_report(mission, before)
+        ..empty_report(mission, before)
     });
     app.world_mut().resource_mut::<Map>().get_mut(planet_id).colonize(player_id);
 
@@ -335,7 +338,7 @@ fn colony_result_label_uses_the_shared_above_planet_lane() {
         unreachable!();
     };
 
-    assert_eq!(*y, crate::core::map::aftermath_label_y(planet_size, 0));
+    assert_eq!(*y, aftermath_label_y(planet_size, 0));
     assert!(*y > planet_size * 0.7, "the result belongs above the planet name");
     assert!(app.world().get::<Transform>(label).unwrap().translation.y >= *y);
 }

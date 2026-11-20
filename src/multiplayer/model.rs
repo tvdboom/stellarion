@@ -2,16 +2,17 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::core::settings::{CombatView, GamePreferences};
-
 use crate::core::identity::{GameCode, GameId, PlayerId, UserId};
 use crate::core::map::icon::Icon;
 use crate::core::missions::BombingRaid;
 use crate::core::player::PlayerColor;
+use crate::core::resources::Resources;
+pub use crate::core::settings::{CombatView, GamePreferences};
 use crate::core::simulation::{
     JointAttackContribution, MatchStatus, PersistedGame, TurnSubmission,
 };
 use crate::core::trading::TradeParty;
+use crate::serialization::required_option;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,7 +36,7 @@ pub struct TradeParticipant {
     /// Owned world whose Trading Post supplies the player's capacity.
     pub planet_id: usize,
     /// Resources offered to the other participant.
-    pub resources: crate::core::resources::Resources,
+    pub resources: Resources,
     /// Confirmation state for the latest two-sided draft.
     pub response: TradeResponse,
 }
@@ -100,7 +101,7 @@ pub struct JointAttackParticipant {
     /// Current decision shown in the shared invitation panel.
     pub response: JointAttackResponse,
     /// Latest draft or accepted fleet; absent before choosing and after rejection.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub contribution: Option<JointAttackContribution>,
 }
 
@@ -146,7 +147,7 @@ pub struct AuthSession {
     /// Refresh token persisted in client-local storage.
     pub refresh_token: String,
     /// Unix timestamp at which the access token expires, when known.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub expires_at: Option<u64>,
 }
 
@@ -368,13 +369,13 @@ pub struct BackendEvent {
     /// Semantic event category.
     pub kind: BackendEventKind,
     /// Revision current after the event, when applicable.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub revision: Option<u64>,
     /// Turn associated with the event, when applicable.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub turn: Option<u64>,
     /// Player associated with the event, when applicable.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub player_id: Option<PlayerId>,
 }
 
@@ -432,7 +433,7 @@ pub struct GameSync {
     /// Durable events after the caller's cursor.
     pub batch: EventBatch,
     /// Current roster, omitted when its token has not changed.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub members: Option<Vec<GameMembership>>,
     /// Opaque roster fingerprint, scoped to this backend and game.
     pub roster_token: String,

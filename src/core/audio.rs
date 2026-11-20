@@ -18,7 +18,7 @@ use crate::core::missions::Missions;
 use crate::core::settings::Settings;
 use crate::core::states::{AppState, AudioState, GameState};
 use crate::core::ui::systems::{viewport_ui_scale, UiState};
-use crate::core::ui::utils::{sized_image_tile_button, CustomResponse, ImageIds};
+use crate::core::ui::utils::{sized_image_tile_button, toggle, CustomResponse, ImageIds};
 use crate::core::units::Unit;
 
 /// Short feedback cues balanced for repeated menu and gameplay actions.
@@ -625,8 +625,7 @@ fn combat_settings_popover(
                     if label.clicked() {
                         settings.combat_volley_fire = !settings.combat_volley_fire;
                     }
-                    let toggle =
-                        ui.add(crate::core::ui::utils::toggle(&mut settings.combat_volley_fire));
+                    let toggle = ui.add(toggle(&mut settings.combat_volley_fire));
                     label.clicked() || toggle.changed()
                 })
                 .inner;
@@ -647,8 +646,7 @@ fn combat_settings_popover(
                     if label.clicked() {
                         settings.combat_individual_units = !settings.combat_individual_units;
                     }
-                    let toggle = ui
-                        .add(crate::core::ui::utils::toggle(&mut settings.combat_individual_units));
+                    let toggle = ui.add(toggle(&mut settings.combat_individual_units));
                     label.clicked() || toggle.changed()
                 })
                 .inner;

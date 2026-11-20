@@ -1,11 +1,23 @@
 //! Missions panels for the game interface.
 
+use std::cmp::Ordering;
+
 use super::*;
+
 use crate::core::combat::plan::BattlePlan;
+use crate::core::combat::report::combat_fleet_strength;
+use crate::core::constants::{
+    COLONY_SHIP_CARGO, DEEP_COVER_DEUTERIUM_PER_PROBE, INTERCEPTION_TARGET_LABEL_WIDTH,
+    JUMP_GATE_HELIX_ANGULAR_SPEED,
+};
+use crate::core::expeditions::outlook;
 use crate::core::identity::PlayerId;
-use crate::core::map::systems::JUMP_GATE_HELIX_ANGULAR_SPEED;
 use crate::core::messages::show_notification_area;
-use crate::core::missions::MissionRouteStyle;
+use crate::core::missions::{FleetCombatOrders, MissionRouteStyle};
+use crate::core::orders::validate_mission_with_patrols;
+use crate::core::patrols::detection_probability;
+use crate::core::raids::{cargo_capacity, cargo_capacity_at_production_level};
+use crate::core::sabotage::{known_targets, Sabotage, SabotageTarget};
 
 /// Shows the launch-only Energy charge while the draft uses a Jump Gate.
 pub(super) fn draw_jump_energy_cost(ui: &mut Ui, mission: &Mission, images: &ImageIds) {
@@ -32,6 +44,8 @@ const MISSION_INVITE_ICON_SIZE: f32 = 40.0;
 const MISSION_OBJECTIVE_BUTTON_SIZE: egui::Vec2 = egui::vec2(44.0, 48.0);
 const MISSION_OBJECTIVE_BUTTON_GAP: f32 = 3.0;
 const MISSION_OBJECTIVE_ACCENT: Color32 = Color32::from_rgb(231, 184, 89);
+const MISSION_OPTION_WIDTH: f32 = 125.0;
+const MISSION_OPTION_FONT_SIZE: f32 = 18.0;
 const MISSION_PLAYERS_SUMMARY_WIDTH: f32 = 86.0;
 const MISSION_ROUTE_FIXED_CONTENT_WIDTH: f32 = 122.0;
 const MISSION_LOG_BADGE_SIZE: f32 = 20.0;
@@ -99,11 +113,11 @@ const PATROL_REINFORCEMENT_TOOLTIP: &str = "Ships merge into your patrol on arri
 /// Keeps the cover option tied to a completed origin relay without revealing target levels.
 fn draw_deep_cover_option(ui: &mut Ui, mission: &mut Mission, origin: &Planet) {
     let available =
-        mission.objective == Icon::Spy && origin.has(&Unit::Building(Building::CommandRelay));
+        mission.objective.is_probe_mission() && origin.has(&Unit::Building(Building::CommandRelay));
     if !available {
         mission.deep_cover = false;
     }
-    if mission.objective != Icon::Spy {
+    if !mission.objective.is_probe_mission() {
         return;
     }
     let response = ui
@@ -111,7 +125,7 @@ fn draw_deep_cover_option(ui: &mut Ui, mission: &mut Mission, origin: &Planet) {
             ui.horizontal(|ui| {
                 let label = ui
                     .add(
-                        egui::Label::new(RichText::new("Deep Cover:").small())
+                        egui::Label::new(RichText::new("🕶 Deep Cover:").small())
                             .sense(Sense::click())
                             .selectable(false),
                     )
@@ -129,11 +143,90 @@ fn draw_deep_cover_option(ui: &mut Ui, mission: &mut Mission, origin: &Planet) {
         .on_hover_small(format!(
             "Costs {} extra deuterium per Probe. If the origin's completed Command Relay level is \
         higher than the destination's when the mission arrives, all Probes scan and return \
-        without combat or alerting the defender. Otherwise, the Probes face normal Spy combat. \
+        without combat or alerting the defender. Otherwise, the Probes face normal combat. \
         Deep Cover missions never encounter space fauna.",
-            crate::core::constants::DEEP_COVER_DEUTERIUM_PER_PROBE,
+            DEEP_COVER_DEUTERIUM_PER_PROBE,
         ))
         .on_disabled_hover_small("Build a Command Relay at the origin to enable Deep Cover.");
+}
+
+fn mission_option_combo_box(
+    ui: &mut Ui,
+    id_salt: &'static str,
+    selected_text: impl Into<egui::WidgetText>,
+    width: f32,
+    options: impl FnOnce(&mut Ui),
+) -> Response {
+    ui.scope(|ui| {
+        style_selection_boxes(ui, None);
+        let vertical_padding = 1.5;
+        ui.spacing_mut().button_padding.y = vertical_padding;
+        if let Some(font) = ui.style_mut().text_styles.get_mut(&TextStyle::Button) {
+            font.size = MISSION_OPTION_FONT_SIZE;
+        }
+        // ComboBox::width sets a minimum. Constrain the available width for long labels.
+        ui.set_max_width(width);
+        ComboBox::from_id_salt(id_salt)
+            .width(width)
+            .truncate()
+            .selected_text(selected_text)
+            .show_ui(ui, |ui| {
+                // The popup starts with the global style, including its taller button padding.
+                let spacing = ui.spacing_mut();
+                spacing.button_padding.y = vertical_padding;
+                spacing.item_spacing.y = 5.0;
+                options(ui);
+            })
+            .response
+            .on_hover_cursor(CursorIcon::PointingHand)
+    })
+    .inner
+}
+
+fn draw_sabotage_target(ui: &mut Ui, mission: &mut Mission, targets: Vec<SabotageTarget>) {
+    let mut selected = mission
+        .sabotage
+        .map(|sabotage| sabotage.target)
+        .filter(|target| targets.contains(target))
+        .or_else(|| targets.first().copied());
+    let selected_name = selected.map_or("No known target", SabotageTarget::name);
+    ui.horizontal(|ui| {
+        ui.small("⌖ Sabotage target:");
+        let mut font = TextStyle::Button.resolve(ui.style());
+        font.size = MISSION_OPTION_FONT_SIZE;
+        let text_width = ui.fonts_mut(|fonts| {
+            targets
+                .iter()
+                .map(|target| target.name())
+                .chain([selected_name])
+                .map(|name| {
+                    fonts.layout_no_wrap(name.to_owned(), font.clone(), Color32::WHITE).size().x
+                })
+                .fold(0.0, f32::max)
+        });
+        let spacing = ui.spacing();
+        let width = (text_width
+            + 2.0 * spacing.button_padding.x
+            + spacing.icon_width
+            + spacing.icon_spacing)
+            .ceil()
+            .max(MISSION_OPTION_WIDTH);
+        mission_option_combo_box(ui, "sabotage target", selected_name, width, |ui| {
+            for target in targets {
+                ui.selectable_value(
+                    &mut selected,
+                    Some(target),
+                    RichText::new(target.name()).small(),
+                )
+                .on_hover_cursor(CursorIcon::PointingHand);
+            }
+        })
+        .on_hover_small(selected_name);
+    });
+    mission.sabotage = selected.map(|target| Sabotage {
+        target,
+        succeeded: false,
+    });
 }
 
 /// Keeps mission-planning and active-mission movement explanations in agreement.
@@ -885,8 +978,8 @@ fn jump_gate_route_available(
             || (mission.objective == Icon::Protect
                 && mission.protected_player == destination.controlled
                 && destination.allows_protection(player.id)))
-        && origin.has(&Unit::Building(Building::JumpGate))
-        && destination.has(&Unit::Building(Building::JumpGate))
+        && origin.operational_level(Building::JumpGate) > 0
+        && destination.operational_level(Building::JumpGate) > 0
         && mission.jump_cost() <= origin.max_jump_capacity().saturating_sub(origin.jump_gate)
 }
 
@@ -1204,7 +1297,7 @@ fn draft_planet_destination(state: &UiState, map: &Map, player: &Player) -> Plan
     if state.mission_info.objective == Icon::Intercept {
         return state.mission_info.origin;
     }
-    if state.mission_info.objective == Icon::Patrol {
+    if matches!(state.mission_info.objective, Icon::Patrol | Icon::Expedition) {
         state
             .patrol_previous_destination
             .and_then(|id| map.try_get(id))
@@ -1230,7 +1323,9 @@ fn draft_planet_destination(state: &UiState, map: &Map, player: &Player) -> Plan
 fn draft_objectives(player: &Player, destination: &Planet, objective: Icon) -> Vec<Icon> {
     match objective {
         Icon::Intercept => return vec![Icon::Intercept],
-        Icon::Patrol => return vec![Icon::Deploy, Icon::Patrol],
+        Icon::Patrol | Icon::Expedition => {
+            return vec![Icon::Deploy, Icon::Patrol, Icon::Expedition]
+        },
         _ => {},
     }
     let mut objectives = Icon::objectives(
@@ -1241,6 +1336,7 @@ fn draft_objectives(player: &Player, destination: &Planet, objective: Icon) -> V
     );
     if let Some(index) = objectives.iter().position(|icon| *icon == Icon::Deploy) {
         objectives.insert(index + 1, Icon::Patrol);
+        objectives.insert(index + 2, Icon::Expedition);
     }
     objectives
 }
@@ -1319,7 +1415,7 @@ fn draw_new_mission(
     {
         state.mission_info.origin = player.home_planet;
     }
-    if !matches!(state.mission_info.objective, Icon::Patrol | Icon::Intercept)
+    if !matches!(state.mission_info.objective, Icon::Patrol | Icon::Intercept | Icon::Expedition)
         && state.mission_info.origin == state.mission_info.destination
     {
         if let Some(destination) = map.planets.iter().find(|planet| {
@@ -1377,8 +1473,10 @@ fn draw_new_mission(
         destination,
         n_owned,
         n_max_owned,
-    ) && !matches!(state.mission_info.objective, Icon::Protect | Icon::Patrol | Icon::Intercept)
-    {
+    ) && !matches!(
+        state.mission_info.objective,
+        Icon::Protect | Icon::Patrol | Icon::Intercept | Icon::Expedition
+    ) {
         state.mission_info.objective = objectives
             .iter()
             .copied()
@@ -1407,7 +1505,7 @@ fn draw_new_mission(
 
     let army = match state.mission_info.objective {
         Icon::MissileStrike => vec![Unit::interplanetary_missile()],
-        Icon::Spy => vec![Unit::probe()],
+        Icon::Spy | Icon::Sabotage => vec![Unit::probe()],
         _ => Unit::ships(),
     };
 
@@ -1462,9 +1560,9 @@ fn draw_new_mission(
                     if let Some(response) = response {
                         match (index, state.mission_info.objective) {
                             (1, Icon::Intercept) => {},
-                            (1, Icon::Patrol) => {
+                            (1, Icon::Patrol | Icon::Expedition) => {
                                 if response.clicked() {
-                                    state.begin_patrol_selection();
+                                    state.begin_space_selection(state.mission_info.objective);
                                 }
                             },
                             _ => action(response, planet, &mut changed_hover, state),
@@ -1528,7 +1626,7 @@ fn draw_new_mission(
         let badges_width = mission_badges_width(
             ui,
             &state.mission_info.army,
-            (state.mission_info.objective != Icon::MissileStrike)
+            super::battle_plan_controls::mission_plan_visible(&state.mission_info, player.id)
                 .then_some(state.mission_info.battle_plan),
         );
         let footer = mission_footer_layout(
@@ -1578,12 +1676,14 @@ fn draw_new_mission(
 
                             let on_hover =
                                 |ui: &mut Ui, icon: &Icon, disabled_reason: Option<&str>| {
+                                let cover = match icon {
+                                    Icon::Colonize => images.get("expedition cover"),
+                                    Icon::Expedition => images.get("colonize cover"),
+                                    _ => images.get(format!("{} cover", icon.asset_key())),
+                                };
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
-                                        ui.add_image(
-                                            images.get(format!("{} cover", icon.asset_key())),
-                                            [150., 150.],
-                                        );
+                                        ui.add_image(cover, [150., 150.]);
                                     });
                                     ui.vertical(|ui| {
                                         ui.label(icon.to_name());
@@ -1623,6 +1723,11 @@ fn draw_new_mission(
                                 let unavailable_reason = if icon == Icon::Patrol && origin_army.amount(&Unit::probe()) > 0 && state.mission_info.reinforces_patrol(missions) {
                                     None
                                 } else { unavailable_reason };
+                                let unavailable_reason = if icon == Icon::Sabotage
+                                    && known_targets(player, destination, missions).is_empty()
+                                {
+                                    Some("No known orbital to sabotage on this planet.")
+                                } else { unavailable_reason };
                                 let available = unavailable_reason.is_none();
                                 let allied_compatible = !allied_objectives_only
                                     || mission_objective_supports_allied_attack(icon);
@@ -1651,7 +1756,7 @@ fn draw_new_mission(
 
                                         if button.clicked() {
                                             match icon {
-                                                Icon::Spy => {
+                                                Icon::Spy | Icon::Sabotage => {
                                                     state.mission_info.army.retain(|u, _| {
                                                         matches!(u, Unit::Ship(Ship::Probe))
                                                     })
@@ -1673,13 +1778,15 @@ fn draw_new_mission(
                                                 },
                                             }
 
-                                            if icon == Icon::Patrol {
-                                                state.begin_patrol_selection();
+                                            if matches!(icon, Icon::Patrol | Icon::Expedition) {
+                                                state.select_space_objective(map, player, settings.turn, icon);
                                             } else {
                                                 state.mission_info.patrol = None;
+                                                state.mission_info.expedition = None;
                                                 state.mission_info.intercept = None;
                                                 state.mission_info.destination = destination.id;
                                                 state.mission_info.objective = icon;
+                                                if icon != Icon::Sabotage { state.mission_info.sabotage = None; }
                                             }
                                         }
                                     },
@@ -1699,6 +1806,13 @@ fn draw_new_mission(
                             images,
                             active_invitation.as_ref(),
                         );
+                        if state.mission_info.objective == Icon::Sabotage {
+                            draw_sabotage_target(
+                                ui,
+                                &mut state.mission_info,
+                                known_targets(player, destination, missions),
+                            );
+                        }
 
                         if matches!(state.mission_info.objective, Icon::Deploy | Icon::Protect) {
                             if player.owns(origin)
@@ -1729,7 +1843,7 @@ fn draw_new_mission(
                                     ui.small(format!(
                                         "🌀 Jump Gate ({}/{}):",
                                         jump_cost,
-                                        origin.max_jump_capacity() - origin.jump_gate
+                                        origin.max_jump_capacity().saturating_sub(origin.jump_gate)
                                     ));
                                     if ui
                                         .add_enabled(
@@ -1821,13 +1935,11 @@ fn draw_new_mission(
         ui.scope(|ui| {
 
             let intercept_reason = interception::unavailable_reason(state, missions, map, player);
-            let army_check = state.mission_info.army.has_army();
             let fuel_check = player.resources.deuterium
                 >= state.mission_info.dispatch_fuel_consumption(map, player);
-            let validation = crate::core::orders::validate_mission_with_patrols(
+            let validation = validate_mission_with_patrols(
                 player, map, origin, destination, &state.mission_info, missions,
             );
-            let objective_check = validation.is_ok();
             let proposal_fleet_check =
                 !state.allied_mission || proposal_fleet_valid(&state.mission_info, &origin_army);
             // A guest's revised fleet marks the owner pending, but sending the mission is the
@@ -1843,9 +1955,8 @@ fn draw_new_mission(
             ui.scope_builder(UiBuilder::new().max_rect(footer.send), |ui| {
                 ui.add_enabled_ui(
                     intercept_reason.is_none()
-                        && army_check
                         && fuel_check
-                        && objective_check
+                        && validation.is_ok()
                         && proposal_fleet_check
                         && (active_invitation.is_none() || shareable_objective)
                         && (active_invitation.is_none() || !session.joint_attack_update_pending)
@@ -1856,12 +1967,10 @@ fn draw_new_mission(
                             .on_disabled_hover_ui(|ui| {
                                 if let Some(reason) = intercept_reason {
                                     ui.small(reason);
-                                } else if !army_check {
-                                    ui.small("No ships selected for the mission.");
-                                } else if !fuel_check {
-                                    ui.small("Not enough fuel (deuterium) for the mission.");
                                 } else if let Err(error) = &validation {
                                     ui.small(error.to_string());
+                                } else if !fuel_check {
+                                    ui.small("Not enough fuel (deuterium) for the mission.");
                                 } else if !proposal_fleet_check {
                                     ui.small("Select ships available at this origin for the allied mission.");
                                 } else if !shareable_objective {
@@ -1959,7 +2068,7 @@ fn draw_new_mission(
                                         .map(|item| {
                                             (
                                                 item.player_id,
-                                                crate::core::missions::FleetCombatOrders {
+                                                FleetCombatOrders {
                                                     bombing: item.bombing.clone(),
                                                     combat_probes: item.combat_probes,
                                                     battle_plan: item.battle_plan,
@@ -2038,7 +2147,7 @@ fn draw_new_mission(
                 footer.badges.center().y,
                 footer.badges.right(),
             );
-            if state.mission_info.objective != Icon::MissileStrike {
+            if super::battle_plan_controls::mission_plan_visible(&state.mission_info, player.id) {
                 draw_mission_plan_badge(
                     ui,
                     images,
@@ -2175,7 +2284,7 @@ fn draw_mission_route(
     let mut destination_response = None;
     let mut origin_selector_rect = egui::Rect::NOTHING;
     let destination_width = if mission.objective == Icon::Intercept {
-        interception::TARGET_LABEL_WIDTH
+        INTERCEPTION_TARGET_LABEL_WIDTH
     } else {
         100.0
     };
@@ -2290,7 +2399,7 @@ fn draw_mission_route(
                         );
                         return;
                     }
-                    if mission.objective == Icon::Patrol {
+                    if matches!(mission.objective, Icon::Patrol | Icon::Expedition) {
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(100.0, 70.0), Sense::hover());
                         // Match the origin's actual text center, including selector padding.
@@ -2308,6 +2417,8 @@ fn draw_mission_route(
                         )
                         .on_hover_small(if reinforcing {
                             PATROL_REINFORCEMENT_TOOLTIP
+                        } else if mission.objective == Icon::Expedition {
+                            "Choose a point on the map for exploration. Sites far from your controlled worlds offer better hauls."
                         } else {
                             "Choose a space destination, or select your active patrol to reinforce it."
                         });
@@ -2366,7 +2477,7 @@ fn draw_mission_route(
                         .on_hover_small("Right-click an enemy mission on the map to intercept it.");
                 }
                 let image = ui.add_image(
-                    images.get(if mission.objective == Icon::Patrol {
+                    images.get(if matches!(mission.objective, Icon::Patrol | Icon::Expedition) {
                         "deep space".to_owned()
                     } else {
                         destination.image()
@@ -2682,6 +2793,15 @@ fn joint_mission_preview(
     preview
 }
 
+fn draw_mission_cargo_capacity(ui: &mut Ui, capacity: usize) {
+    ui.small(format!("📦 Cargo capacity: {capacity}")).on_hover_ui(|ui| {
+        let [one, two, three, four, five] = [1, 2, 3, 4, 5].map(cargo_capacity_at_production_level);
+        ui.small(format!(
+            "Each Colony Ship carries {COLONY_SHIP_CARGO} resources. Other ships at production levels 1–5 carry {one}, {two}, {three}, {four}, and {five} resources respectively."
+        ));
+    });
+}
+
 /// Route facts and combat options use the same spacing, labels, and tooltips in both panels.
 fn draw_mission_details(
     ui: &mut Ui,
@@ -2705,6 +2825,8 @@ fn draw_mission_details(
             .intercept
             .as_ref()
             .map(|intercept| origin.position.distance(intercept.point) / Planet::SIZE)
+    } else if let Some(expedition) = &mission.expedition {
+        Some(origin.position.distance(expedition.center) / Planet::SIZE)
     } else {
         Some(mission.distance(map))
     };
@@ -2731,6 +2853,8 @@ fn draw_mission_details(
         distance.map_or_else(|| "---".to_owned(), |distance| format!("{distance:.1} AU")),
     )).on_hover_small(if is_intercept {
         "Distance from the origin world to the interception point. Select a fleet that can reach a meeting point to calculate the route."
+    } else if mission.objective == Icon::Expedition {
+        "Distance from the launch world to the expedition site. Travel time and fuel depend on this route."
     } else {
         "AU means astronomical unit, the distance scale used on the galaxy map. \
         Target distance is the length of the route from the origin world to the \
@@ -2792,11 +2916,14 @@ fn draw_mission_details(
     } else {
         format!("⛽ Fuel consumption: {fuel}")
     };
-    let fuel_response = if fuel_check {
-        ui.small(fuel_text)
+    let fuel_label = RichText::new(fuel_text).small();
+    let fuel_label = if fuel_check {
+        fuel_label
     } else {
-        ui.colored_label(Color32::RED, RichText::new(fuel_text).small())
+        fuel_label.color(Color32::RED)
     };
+    // The scroll area can give the fuel label more room than the details column.
+    let fuel_response = ui.add(egui::Label::new(fuel_label).extend());
     fuel_response.on_hover_small(if !has_route {
         "Select a fleet that can reach an interception point to calculate its deuterium cost."
     } else if is_patrol {
@@ -2805,10 +2932,7 @@ fn draw_mission_details(
         "Amount of deuterium it costs to send this mission."
     });
     if is_patrol {
-        let probability = crate::core::patrols::detection_probability(
-            1.0,
-            crate::core::combat::report::combat_fleet_strength(&mission.army),
-        );
+        let probability = detection_probability(1.0, combat_fleet_strength(&mission.army));
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let icon = draw_patrol_detection_icon(ui);
@@ -2818,14 +2942,34 @@ fn draw_mission_details(
         .on_hover_small(PATROL_DETECTION_TOOLTIP);
         return;
     }
+    if mission.objective == Icon::Expedition {
+        if mission.expedition.is_some() {
+            let capacity = cargo_capacity(&mission.army);
+            let (_, outlook) = outlook(map, mission, arrival_turn, fuel);
+            let color = match outlook.cmp(&50) {
+                Ordering::Less => ui.visuals().error_fg_color,
+                Ordering::Equal => ui.visuals().text_color(),
+                Ordering::Greater => Color32::from_rgb(163, 190, 140),
+            };
+            ui.colored_label(
+                color,
+                RichText::new(format!("⚖ Expedition outlook: {outlook}/100")).small(),
+            )
+            .on_hover_small(
+                "Compares the expected haul with launch fuel, before combat. 50 is break-even. \
+                Sites farther from your controlled worlds are more likely to yield a large haul \
+                or recovered ships. Higher fleet production and later game turns improve ship \
+                recoveries, including rare capital ships. Rewards have recovery limits; \
+                larger fleets also cost more fuel.",
+            );
+            draw_mission_cargo_capacity(ui, capacity);
+        }
+        return;
+    }
     draw_deep_cover_option(ui, mission, origin);
 
     if mission.objective == Icon::Raid {
-        ui.small(format!(
-            "📦 Cargo capacity: {}",
-            crate::core::raids::cargo_capacity(&mission.army)
-        ))
-        .on_hover_small("Per ship, production levels 1-5 carry 0, 10, 30, 70, and 150 resources respectively. Loot is credited when the fleet returns.");
+        draw_mission_cargo_capacity(ui, cargo_capacity(&mission.army));
     }
 
     if mission.objective == Icon::Destroy {
@@ -2883,20 +3027,13 @@ fn draw_mission_details(
                 ui.horizontal(|ui| {
                     ui.small("💣 Bombing raid:");
 
-                    style_selection_boxes(ui, None);
-                    ui.style_mut().spacing.button_padding.y = 1.5;
-                    if let Some(style) = ui.style_mut().text_styles.get_mut(&TextStyle::Button) {
-                        style.size = 18.;
-                    }
-
-                    ComboBox::from_id_salt("bombing")
-                        .width(125.)
-                        .selected_text(mission.bombing.to_name())
-                        .show_ui(ui, |ui| {
+                    mission_option_combo_box(
+                        ui,
+                        "bombing",
+                        mission.bombing.to_name(),
+                        MISSION_OPTION_WIDTH,
+                        |ui| {
                             for item in BombingRaid::iter() {
-                                ui.style_mut().spacing.button_padding.y = 1.5;
-                                ui.style_mut().spacing.item_spacing.y = 5.;
-
                                 ui.selectable_value(
                                     &mut mission.bombing,
                                     item.clone(),
@@ -2905,9 +3042,8 @@ fn draw_mission_details(
                                 .on_hover_cursor(CursorIcon::PointingHand)
                                 .on_hover_small(item.description());
                             }
-                        })
-                        .response
-                        .on_hover_cursor(CursorIcon::PointingHand);
+                        },
+                    );
                 });
             },
         )
@@ -3061,15 +3197,14 @@ fn draw_active_missions(
                             let preview = route_ui.horizontal_centered(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.;
 
-                                let objective = if mission.patrol.is_some()
-                                    && mission.owner == player.id
-                                {
-                                    Icon::Patrol
+                                let objective = mission.displayed_objective(player.id);
+                                let icon = draw_mission_route_icon(ui, images.get(objective.asset_key()));
+                                let icon = if returning && objective != Icon::EnemyFleet {
+                                    draw_mission_return_badge(ui, icon, images)
                                 } else {
-                                    mission.displayed_objective(player.id)
+                                    icon
                                 };
-                                draw_mission_route_icon(ui, images.get(objective.asset_key()))
-                                    .on_hover_small(mission_objective_label(objective));
+                                icon.on_hover_small(mission_objective_label(objective));
 
                                 let has_plan = super::battle_plan_controls::mission_plan_visible(mission, player.id);
                                 let turns = RichText::new(format!(
@@ -3186,6 +3321,10 @@ fn draw_active_missions(
                             if let Some(intercept) = mission.intercept.as_ref().filter(|_| mission.objective == Icon::Intercept || mission.owner != player.id) {
                                 let (image, name) = draw_mission_planet_link(ui, images.get("deep space"), "Deep space", Sense::click());
                                 let point = if mission.owner == player.id { intercept.point } else { mission.position };
+                                handle_space_location_link(image | name, point, state);
+                            } else if let Some(expedition) = mission.expedition.as_ref() {
+                                let (image, name) = draw_mission_planet_link(ui, images.get("deep space"), "Deep space", Sense::click());
+                                let point = if mission.owner == player.id { expedition.center } else { mission.position };
                                 handle_space_location_link(image | name, point, state);
                             } else if let Some(patrol) = &mission.patrol {
                                 let can_focus_zone = !foreign_patrol || mission.is_patrolling();
@@ -3463,10 +3602,7 @@ fn draw_mission_reports(
 
                             ui.add_space(7.);
 
-                            ui.add_image(
-                                images.get(report.mission.objective.asset_key()),
-                                [25.; 2],
-                            );
+                            draw_mission_report_objective(ui, report, images);
 
                             let size = mission_report_image_base_size(
                                 state.mission_report == Some(report.id),
@@ -3553,10 +3689,13 @@ fn draw_mission_reports(
                 let origin = map.get(report.mission.origin);
                 let destination = map.get(report.mission.destination);
                 let sender_known = mission_report_sender_is_known(report, player.id);
-                let origin_image = if sender_known {
-                    origin.image()
-                } else {
+                let space_origin = mission_report_space_origin(report);
+                let origin_image = if !sender_known {
                     "unknown".to_owned()
+                } else if space_origin.is_some() {
+                    "deep space".to_owned()
+                } else {
+                    origin.image()
                 };
                 let mut origin_ui = ui.new_child(
                     UiBuilder::new().id_salt("report origin").max_rect(route_rects.origin),
@@ -3565,10 +3704,12 @@ fn draw_mission_reports(
                     &mut origin_ui,
                     images.get(origin_image),
                     egui::CornerRadius::ZERO,
-                    if sender_known {
-                        &origin.name
-                    } else {
+                    if !sender_known {
                         ""
+                    } else if space_origin.is_some() {
+                        "Deep space"
+                    } else {
+                        &origin.name
                     },
                     if sender_known {
                         Sense::click()
@@ -3589,15 +3730,19 @@ fn draw_mission_reports(
                             ));
                         });
                     }
-                    handle_mission_planet_link(
-                        &resp1,
-                        &resp2,
-                        origin,
-                        &mut changed_hover,
-                        state,
-                        map,
-                        player,
-                    );
+                    if let Some(position) = space_origin {
+                        handle_space_location_link(resp1 | resp2, position, state);
+                    } else {
+                        handle_mission_planet_link(
+                            &resp1,
+                            &resp2,
+                            origin,
+                            &mut changed_hover,
+                            state,
+                            map,
+                            player,
+                        );
+                    }
                 }
 
                 let mut attacker_ui = ui.new_child(
@@ -3623,9 +3768,7 @@ fn draw_mission_reports(
                 );
                 route_ui.spacing_mut().item_spacing.x = 4.0;
 
-                route_ui
-                    .add_image(images.get(report.mission.objective.asset_key()), [25.; 2])
-                    .on_hover_small(report.mission.objective.to_name());
+                draw_mission_report_objective(&mut route_ui, report, images);
 
                 let mission_image = report.mission.image(player);
                 draw_mission_image(
@@ -3669,8 +3812,8 @@ fn draw_mission_reports(
                     ui.add_icon_on_image(images.get(report.image(player)), resp4.rect);
                 }
 
-                if report.is_space_encounter() {
-                    handle_space_location_link(resp4 | resp3, report.planet.position, state);
+                if let Some(position) = mission_report_space_destination(report) {
+                    handle_space_location_link(resp4 | resp3, position, state);
                 } else {
                     handle_mission_planet_link(
                         &resp3,
@@ -3709,7 +3852,7 @@ fn draw_mission_reports(
 
                     let army = match report.mission.objective {
                         Icon::MissileStrike => vec![Unit::interplanetary_missile()],
-                        Icon::Spy => vec![Unit::probe()],
+                        Icon::Spy | Icon::Sabotage => vec![Unit::probe()],
                         _ => Unit::ships(),
                     };
 
@@ -3736,8 +3879,10 @@ fn draw_mission_reports(
                                 player,
                                 images,
                             );
-                        } else if matches!(report.mission.objective, Icon::Patrol | Icon::Intercept)
-                        {
+                        } else if matches!(
+                            report.mission.objective,
+                            Icon::Patrol | Icon::Intercept | Icon::Expedition
+                        ) {
                             draw_army_grid(
                                 ui,
                                 "intercepted_fleet",
@@ -3830,41 +3975,39 @@ fn draw_mission_reports(
             let show_combat_details = report.combat_report.is_some()
                 && report.can_see(&Side::Attacker, player.id)
                 && report.can_see(&Side::Defender, player.id);
-            let show_raid_loot =
-                report.mission.objective == Icon::Raid && !report.is_space_fauna_encounter();
-            let mut scouts_top = army_row.bottom() + 8.0;
-            if show_raid_loot {
-                let mut loot_ui = ui.new_child(
-                    UiBuilder::new()
-                        .id_salt("raid loot")
-                        .max_rect(egui::Rect::from_min_size(
-                            army_row.left_bottom() + egui::vec2(0.0, MISSION_REPORT_LOOT_TOP_GAP),
-                            egui::vec2(ui.available_width(), CRAWLER_SALVAGE_ICON_SIZE[1]),
-                        ))
-                        .layout(Layout::top_down(Align::Min)),
-                );
-                draw_raid_loot(&mut loot_ui, report.raid_loot, images);
-                scouts_top = loot_ui.min_rect().bottom() + 8.0;
-            }
+            let mut loot_top = army_row.bottom() + MISSION_REPORT_LOOT_TOP_GAP;
             if report.scout_probes > 0 && report.can_see(&Side::Attacker, player.id) {
-                // Keep scout notes below the loot instead of pushing it into the details button.
                 let mut scouts_ui = ui.new_child(
                     UiBuilder::new()
                         .id_salt("report scouts")
                         .max_rect(egui::Rect::from_min_size(
-                            egui::pos2(army_row.left(), scouts_top),
-                            egui::vec2(140.0, 18.0),
+                            army_row.left_bottom() + egui::vec2(0.0, 8.0),
+                            egui::vec2(ui.available_width(), 18.0),
                         ))
-                        .layout(Layout::left_to_right(Align::Center)),
+                        .layout(Layout::top_down(Align::Min)),
                 );
-                scouts_ui.spacing_mut().item_spacing.x = 4.0;
-                let icon = scouts_ui.add_image(images.get(Icon::Spy.to_lowername()), [15.0; 2]);
-                let label = scouts_ui.small(format!("Scouts: {}", report.scout_probes));
-                (icon | label).on_hover_small_ext(
-                    "Number of attacking Probes that left combat after the first round.",
-                );
+                scouts_ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                scouts_ui.horizontal(|ui| {
+                    let icon = ui.add_image(images.get(Icon::Spy.asset_key()), [15.0; 2]);
+                    let label = ui.small(format!("Scouts: {}", report.scout_probes));
+                    (icon | label).on_hover_small_ext(
+                        "Number of attacking Probes that left combat after the first round.",
+                    );
+                });
+                if let Some(sabotage) = report.mission.sabotage.filter(|sabotage| {
+                    sabotage.succeeded
+                        && report.mission.objective == Icon::Sabotage
+                        && !report.is_space_fauna_encounter()
+                }) {
+                    scouts_ui.horizontal(|ui| {
+                        ui.add_image(images.get(Icon::Sabotage.asset_key()), [15.0; 2]);
+                        ui.small(sabotage.target.name());
+                    });
+                }
+                // Resource cargo follows the complete scout notes, including sabotage results.
+                loot_top = scouts_ui.min_rect().bottom() + MISSION_REPORT_LOOT_TOP_GAP;
             }
-            if show_combat_details {
+            let combat_button = if show_combat_details {
                 // Keep the details button anchored to the panel below the report content.
                 let footer = egui::Rect::from_min_max(
                     egui::pos2(
@@ -3884,6 +4027,28 @@ fn draw_mission_reports(
                     state.combat_report = Some(report.id);
                     state.combat_report_round = 1;
                 }
+                Some(button.rect)
+            } else {
+                None
+            };
+            if let Some(cargo) = mission_report_resource_cargo(report) {
+                let mut width = ui.available_width();
+                if let Some(button) = combat_button.filter(|button| {
+                    loot_top < button.bottom()
+                        && loot_top + CRAWLER_SALVAGE_ICON_SIZE[1] > button.top()
+                }) {
+                    width = width.min(button.left() - army_row.left() - 8.0);
+                }
+                let mut loot_ui = ui.new_child(
+                    UiBuilder::new()
+                        .id_salt("report resource cargo")
+                        .max_rect(egui::Rect::from_min_size(
+                            egui::pos2(army_row.left(), loot_top),
+                            egui::vec2(width, CRAWLER_SALVAGE_ICON_SIZE[1]),
+                        ))
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                draw_raid_loot(&mut loot_ui, cargo, images);
             }
         });
     });
@@ -3891,11 +4056,36 @@ fn draw_mission_reports(
 
 const JOINT_ATTACK_TOAST_ACCENT: Color32 = Color32::from_rgb(112, 190, 255);
 
-/// Keeps raid resources on one row with the top resource panel's border and named hovers.
+fn mission_report_resource_cargo(report: &MissionReport) -> Option<Resources> {
+    if report.mission.objective == Icon::Raid && !report.is_space_encounter() {
+        Some(report.raid_loot)
+    } else if mission_report_is_return_arrival(report) {
+        report.mission.expedition.as_ref().map(|expedition| expedition.resources)
+    } else {
+        None
+    }
+}
+
+/// Keeps cargo resources on one row with the top resource panel's border and named hovers.
 fn draw_raid_loot(ui: &mut Ui, loot: Resources, images: &ImageIds) {
+    let amounts =
+        CRAWLER_SALVAGE_RESOURCE_ORDER.map(|resource| format_thousands(loot.get(&resource)));
+    let mut font = TextStyle::Body.resolve(ui.style());
+    let text_width = amounts
+        .iter()
+        .map(|amount| {
+            ui.painter().layout_no_wrap(amount.clone(), font.clone(), Color32::WHITE).size().x
+        })
+        .sum::<f32>();
+    let fixed_width = 3.0 * (CRAWLER_SALVAGE_ICON_SIZE[0] + CRAWLER_SALVAGE_ICON_VALUE_GAP)
+        + 2.0 * CRAWLER_SALVAGE_RESOURCE_GAP;
+    // Keep full totals readable beside the footer button, without shrinking ordinary amounts.
+    font.size *= ((ui.available_width() - fixed_width - 4.0).max(1.0) / text_width).min(1.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = CRAWLER_SALVAGE_ICON_VALUE_GAP;
-        for (index, resource) in CRAWLER_SALVAGE_RESOURCE_ORDER.into_iter().enumerate() {
+        for (index, (resource, amount)) in
+            CRAWLER_SALVAGE_RESOURCE_ORDER.into_iter().zip(amounts).enumerate()
+        {
             if index > 0 {
                 ui.add_space(CRAWLER_SALVAGE_RESOURCE_GAP - CRAWLER_SALVAGE_ICON_VALUE_GAP);
             }
@@ -3903,7 +4093,7 @@ fn draw_raid_loot(ui: &mut Ui, loot: Resources, images: &ImageIds) {
                 ui.allocate_exact_size(CRAWLER_SALVAGE_ICON_SIZE.into(), Sense::hover());
             paint_bordered_resource_image(ui, images.get(resource.to_lowername()), rect, 2.0);
             response.on_hover_small(resource.to_name());
-            ui.add(egui::Label::new(format_thousands(loot.get(&resource))).extend());
+            ui.add(egui::Label::new(RichText::new(amount).font(font.clone())).extend());
         }
     });
 }
@@ -5101,3 +5291,11 @@ mod joint_tests;
 #[cfg(test)]
 #[path = "../../../../tests/core/ui_patrols.rs"]
 mod patrol_tests;
+
+#[cfg(test)]
+#[path = "../../../../tests/core/ui_expeditions.rs"]
+mod expedition_tests;
+
+#[cfg(test)]
+#[path = "../../../../tests/core/ui_sabotage.rs"]
+mod sabotage_tests;

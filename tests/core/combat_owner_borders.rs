@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::core::map::model::SolarCorner;
+
 #[test]
 fn schematic_owner_borders_follow_individual_owners_and_mixed_group_counts() {
     let mut unresolved = report(5, 0, true, 91);
@@ -21,7 +23,7 @@ fn schematic_owner_borders_follow_individual_owners_and_mixed_group_counts() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
     let map = Map {
         rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);

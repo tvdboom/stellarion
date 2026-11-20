@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::constants::SOLAR_STAR_SIZE;
 use crate::core::patrols::PatrolPhase;
 use crate::core::simulation::{GameModel, GameRules};
 use crate::core::units::ships::Ship;
@@ -258,7 +259,7 @@ fn zone_effects_reuse_geometry_and_entities_and_show_detected_stationed_enemy_co
 }
 
 #[test]
-fn placement_preview_hides_at_invalid_locations_over_ui_and_owned_operating_patrols() {
+fn placement_preview_hides_at_invalid_locations_over_ui_and_unselectable_patrols() {
     use bevy::camera::{CameraProjection, ComputedCameraValues, RenderTargetInfo};
 
     let (model, mission) = scene();
@@ -306,19 +307,30 @@ fn placement_preview_hides_at_invalid_locations_over_ui_and_owned_operating_patr
     window.set_cursor_position(Some(Vec2::new(400.0, 300.0)));
     app.world_mut().spawn(window);
     let mut query = app.world_mut().query::<&PatrolZone>();
-    for (hover, preview) in [
-        (None, true),
-        (Some(700), false),
-        (None, true),
-        (Some(701), true),
-        (Some(702), true),
-        (Some(703), true),
-        (Some(700), false),
+    for (objective, hover, preview) in [
+        (Icon::Patrol, None, true),
+        (Icon::Patrol, Some(700), false),
+        (Icon::Patrol, None, true),
+        (Icon::Patrol, Some(701), true),
+        (Icon::Patrol, Some(702), true),
+        (Icon::Patrol, Some(703), true),
+        (Icon::Patrol, Some(700), false),
+        (Icon::Expedition, None, true),
+        (Icon::Expedition, Some(700), false),
+        (Icon::Expedition, None, true),
+        (Icon::Expedition, Some(701), false),
+        (Icon::Expedition, Some(702), true),
+        (Icon::Expedition, Some(703), true),
+        (Icon::Expedition, Some(700), false),
     ] {
-        app.world_mut().resource_mut::<UiState>().mission_hover = hover;
+        {
+            let mut state = app.world_mut().resource_mut::<UiState>();
+            state.mission_info.objective = objective;
+            state.mission_hover = hover;
+        }
         app.update();
         let ids = query.iter(app.world()).map(|zone| zone.id).collect::<BTreeSet<_>>();
-        assert_eq!(ids.contains(&0), preview, "hover {hover:?}");
+        assert_eq!(ids.contains(&0), preview, "{objective:?} hover {hover:?}");
         assert!(ids.contains(&700), "the existing patrol circle must remain visible");
         assert!(ids.contains(&701));
     }
@@ -327,22 +339,30 @@ fn placement_preview_hides_at_invalid_locations_over_ui_and_owned_operating_patr
     let map = app.world().resource::<Map>();
     let planet = map.planets.iter().find(|planet| !planet.is_moon()).unwrap().position;
     let moon = map.planets.iter().find(|planet| planet.is_moon()).unwrap().position;
+    let sun = map.solar_star_position();
+    let direction = -map.solar_corner().x * Vec2::X;
+    let solar_radius = SOLAR_STAR_SIZE * 0.5;
     let outside = map.rect.max + Vec2::ONE;
-    for (center, preview) in [
-        (Vec2::ZERO, true),
-        (planet, false),
-        (Vec2::ZERO, true),
-        (moon, false),
-        (outside, false),
-        (Vec2::ZERO, true),
+    for (objective, center, preview) in [
+        (Icon::Patrol, Vec2::ZERO, true),
+        (Icon::Patrol, planet, false),
+        (Icon::Patrol, Vec2::ZERO, true),
+        (Icon::Patrol, moon, false),
+        (Icon::Patrol, sun, false),
+        (Icon::Patrol, outside, false),
+        (Icon::Expedition, sun + direction * (solar_radius - 20.0), true),
+        (Icon::Expedition, sun + direction * (solar_radius + 20.0), true),
+        (Icon::Expedition, outside, false),
+        (Icon::Patrol, Vec2::ZERO, true),
     ] {
+        app.world_mut().resource_mut::<UiState>().mission_info.objective = objective;
         *app.world_mut()
             .query_filtered::<&mut GlobalTransform, With<MainCamera>>()
             .single_mut(app.world_mut())
             .unwrap() = GlobalTransform::from_translation(center.extend(0.0));
         app.update();
         let ids = query.iter(app.world()).map(|zone| zone.id).collect::<BTreeSet<_>>();
-        assert_eq!(ids.contains(&0), preview, "placement at {center:?}");
+        assert_eq!(ids.contains(&0), preview, "{objective:?} placement at {center:?}");
         assert!(ids.contains(&700) && ids.contains(&701), "existing coverage remains visible");
         assert!(app.world().resource::<UiState>().selecting_patrol_zone);
     }

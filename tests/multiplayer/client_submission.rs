@@ -1,4 +1,8 @@
+use super::super::*;
 use super::*;
+
+use crate::core::simulation::TurnCommand;
+use crate::core::units::Unit;
 
 #[test]
 fn end_turn_label_is_stable_during_delivery_and_recovery() {
@@ -40,11 +44,9 @@ fn ambiguous_delivery_freezes_and_retries_the_original_draft() {
 
 #[test]
 fn failed_delivery_and_same_turn_reload_preserve_the_locked_payload() {
-    use super::super::*;
-    use crate::core::units::Unit;
     let mut pending = PendingTurnCommands::default();
     pending.reset(1);
-    let command = crate::core::simulation::TurnCommand::BuyUnits {
+    let command = TurnCommand::BuyUnits {
         planet_id: 0,
         unit: Unit::probe(),
         count: 1,
@@ -142,7 +144,7 @@ fn gameplay_actions_withdraw_readiness_without_mutating_in_flight_orders() {
         assert!(!pending.resume_requested, "viewing controls must not clear readiness");
         assert!(pending.push(TurnCommand::BuyUnits {
             planet_id: 0,
-            unit: crate::core::units::Unit::probe(),
+            unit: Unit::probe(),
             count: 1,
         }));
         assert!(pending.resume_requested);
@@ -158,7 +160,7 @@ fn gameplay_actions_withdraw_readiness_without_mutating_in_flight_orders() {
 fn rejected_commands_do_not_withdraw_readiness() {
     let command = TurnCommand::BuyUnits {
         planet_id: 0,
-        unit: crate::core::units::Unit::probe(),
+        unit: Unit::probe(),
         count: 1,
     };
     let mut pending = PendingTurnCommands {

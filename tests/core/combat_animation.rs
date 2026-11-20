@@ -1,5 +1,24 @@
 //! Headless playback checks run the real Bevy combat systems against resolver reports.
 
+use crate::core::combat::effects::CombatReadout;
+use crate::core::combat::plan::{BattlePlan, CombatTactic, TargetPriority};
+use crate::core::combat::report::MissionReport;
+use crate::core::combat::resolution::{
+    resolve_combat_with_retreat_with_rng, resolve_combat_with_rng, CombatUnit,
+};
+use crate::core::energy::EnergyGrid;
+use crate::core::map::model::SolarCorner;
+use crate::core::map::planet::Planet;
+use crate::core::missions::{JointAttackMission, Mission};
+use crate::core::raids::ship_cargo_capacity;
+use crate::core::random::DeterministicRngState;
+use crate::core::resources::Resources;
+use crate::core::units::buildings::{Building, FleetWithdrawal};
+use crate::core::units::defense::Defense;
+use crate::core::units::fauna::SpaceFauna;
+use crate::core::units::Army;
+use crate::test_support::empty_report;
+
 #[path = "combat_owner_borders.rs"]
 mod owner_borders;
 
@@ -8,13 +27,6 @@ use bevy_tweening::CycleCompletedEvent;
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::core::combat::report::MissionReport;
-use crate::core::combat::resolution::resolve_combat_with_rng;
-use crate::core::map::planet::Planet;
-use crate::core::missions::{JointAttackMission, Mission};
-use crate::core::random::DeterministicRngState;
-use crate::core::units::defense::Defense;
-use crate::core::units::Army;
 
 fn report(bombers: usize, shield: usize, guarded: bool, seed: u64) -> MissionReport {
     let mut rng = DeterministicRngState::from_u64(seed).next_rng();
@@ -161,7 +173,7 @@ fn combat_identity_line_uses_the_same_player_strength_segments_as_details() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
@@ -608,7 +620,7 @@ fn individual_mode_spawns_one_visible_card_for_every_recorded_combatant() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
     let map = Map {
         rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
@@ -664,7 +676,7 @@ fn individual_fleets_keep_the_center_clear_and_straddle_the_planetary_shield() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
     let map = Map {
         rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
@@ -782,7 +794,7 @@ fn undefended_fleets_and_space_fauna_use_the_low_defender_row() {
         let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
         let map = Map {
             rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets: vec![origin, report.planet.clone()],
         };
         let mut app = playback_app(report, 0, CombatState::Fire);
@@ -943,9 +955,6 @@ fn individual_fire_uses_each_shooter_and_updates_the_recorded_target() {
 
 #[test]
 fn colonial_withdrawal_hides_colony_ships_and_flies_combat_ships_to_an_upper_corner() {
-    use crate::core::combat::resolution::resolve_combat_with_retreat_with_rng;
-    use crate::core::energy::EnergyGrid;
-    use crate::core::units::buildings::{Building, FleetWithdrawal};
     for level in [4, 5] {
         let mut source = report(1, 0, false, 17);
         source.mission.bombing = BombingRaid::None;
@@ -1027,7 +1036,7 @@ fn combat_setup_never_spawns_colony_ship_cards() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
@@ -1054,7 +1063,7 @@ fn defender_cards_show_spaced_equally_sized_counts_in_each_players_color() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
@@ -1327,8 +1336,6 @@ fn repair_keeps_its_deliberate_highlight_when_volley_fire_is_enabled() {
 
 #[test]
 fn intercepted_missile_cards_leave_before_surviving_missiles_are_highlighted() {
-    use crate::core::combat::resolution::CombatUnit;
-
     let missile = Unit::interplanetary_missile();
     let interceptor = Unit::antiballistic_missile();
     let target = Unit::Defense(Defense::GaussCannon);
@@ -1446,7 +1453,7 @@ fn combat_cards_show_empty_shield_slots_for_probes_and_support_units() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::AntiBallistic);
@@ -1531,7 +1538,7 @@ fn space_battles_use_nebula_art_and_planetary_battles_keep_their_world_art() {
         let mut rng = DeterministicRngState::from_u64(43).next_rng();
         let map = Map {
             rect: Rect::new(-100., -100., 100., 100.),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets: vec![
                 Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng),
                 report.planet.clone(),
@@ -1583,7 +1590,7 @@ fn shieldless_fauna_put_their_hull_bar_directly_below_the_image() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
@@ -1640,7 +1647,7 @@ fn planetary_shield_uses_the_full_width_bar_with_its_icon_and_level_count() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
@@ -1734,7 +1741,7 @@ fn defense_cards_clear_combat_controls_and_bombing_targets() {
     let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1., &mut rng);
     let map = Map {
         rect: Rect::new(-100., -100., 100., 100.),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin, report.planet.clone()],
     };
     let mut app = playback_app(report, 0, CombatState::Fire);
@@ -1977,7 +1984,7 @@ fn round_and_pause_banners_share_the_viewport_center_across_formation_changes() 
         let origin = Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng);
         let map = Map {
             rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets: vec![origin, report.planet.clone()],
         };
         let mut app = playback_app(report, 1, CombatState::DisplayRound);
@@ -2111,7 +2118,7 @@ fn surviving_probes_play_one_flyaway_cue_when_their_retreat_begins() {
 fn probes_do_not_fly_away_during_space_fauna_playback() {
     let mut report = report(12, 5, true, 2);
     assert!(report.combat_report.as_ref().unwrap().rounds.len() > 1);
-    report.planet.army.insert(Unit::Fauna(crate::core::units::fauna::SpaceFauna::VoidManta), 1);
+    report.planet.army.insert(Unit::Fauna(SpaceFauna::VoidManta), 1);
     let mut app = playback_app(report, 0, CombatState::Fire);
     let probe = spawn_unit(&mut app, Unit::probe(), 3, Side::Attacker, FireState::Fired);
 
@@ -2126,7 +2133,7 @@ fn probes_do_not_fly_away_during_space_fauna_playback() {
 fn final_stalemate_round_flies_the_attacker_away_and_keeps_the_defender() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let planet = Planet::new(1, "Target".into(), Vec2::ZERO, false, 1.0);
-    let mut battle = crate::test_support::empty_report(Mission::default(), planet);
+    let mut battle = empty_report(Mission::default(), planet);
     battle.mission.objective = Icon::Attack;
     battle.surviving_attacker = Army::from([(fighter, 1)]);
     battle.surviving_defender = Army::from([(fighter, 1)]).into();
@@ -2152,7 +2159,7 @@ fn final_fauna_stalemate_round_flies_both_sides_away() {
     let fauna = Unit::Fauna(SpaceFauna::VoidManta);
     let mut planet = Planet::new(1, "Encounter".into(), Vec2::ZERO, false, 1.0);
     planet.army.insert(fauna, 1);
-    let mut battle = crate::test_support::empty_report(Mission::default(), planet);
+    let mut battle = empty_report(Mission::default(), planet);
     battle.mission.objective = Icon::Attack;
     battle.surviving_attacker = Army::from([(fighter, 1)]);
     battle.surviving_defender = Army::from([(fauna, 1)]).into();
@@ -2724,13 +2731,7 @@ fn repair_truck_replays_real_resolver_repairs_and_restores_exact_recorded_hull()
     for (_, entity, _, final_hull, _) in targets {
         assert_eq!(app.world().get::<CombatUnitCmp>(entity).unwrap().hull, final_hull);
     }
-    assert!(
-        app.world_mut()
-            .query::<&crate::core::combat::effects::CombatReadout>()
-            .iter(app.world())
-            .count()
-            > 0
-    );
+    assert!(app.world_mut().query::<&CombatReadout>().iter(app.world()).count() > 0);
 }
 
 #[test]
@@ -2741,7 +2742,7 @@ fn crawler_pulses_in_place_and_only_non_zero_salvage_pickups_float_up() {
     report.surviving_attacker.clear();
     report.surviving_defender =
         Army::from([(Unit::crawler(), 2), (Unit::Defense(Defense::RocketLauncher), 3)]).into();
-    assert_eq!(report.defender_salvage(), crate::core::resources::Resources::new(2, 0, 0));
+    assert_eq!(report.defender_salvage(), Resources::new(2, 0, 0));
 
     let mut app = playback_app(report, 0, CombatState::Salvage);
     app.add_plugins(bevy_tweening::TweeningPlugin);
@@ -2909,7 +2910,7 @@ fn raid_pickups_render_above_victory_below_pause_and_disappear_afterwards() {
     let mut rng = DeterministicRngState::from_u64(19).next_rng();
     let map = Map {
         rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![
             Planet::new_with_rng(0, "Origin".into(), Vec2::ZERO, false, 1.0, &mut rng),
             raid.planet.clone(),
@@ -3034,7 +3035,7 @@ fn raid_loot_is_shown_on_surviving_cargo_carriers_in_both_formations() {
         assert!(app.world().get::<SalvageCrawlerCmp>(dead).is_none());
         assert!(app.world().get::<SalvageCrawlerCmp>(enemy).is_none());
         for (entity, unit, count) in &carriers {
-            let capacity = crate::core::raids::ship_cargo_capacity(*unit) * count;
+            let capacity = ship_cargo_capacity(*unit) * count;
             if capacity == 0 {
                 assert!(app.world().get::<SalvageCrawlerCmp>(*entity).is_none());
                 continue;
@@ -3052,16 +3053,11 @@ fn raid_loot_is_shown_on_surviving_cargo_carriers_in_both_formations() {
             sources.insert(pickup.source);
         }
         assert_eq!(total, loot);
-        let expected_sources = carriers
-            .iter()
-            .filter(|(_, unit, _)| crate::core::raids::ship_cargo_capacity(*unit) > 0)
-            .count();
+        let expected_sources =
+            carriers.iter().filter(|(_, unit, _)| ship_cargo_capacity(*unit) > 0).count();
         assert_eq!(sources.len(), expected_sources);
         for (entity, unit, _) in &carriers {
-            assert_eq!(
-                sources.contains(entity),
-                crate::core::raids::ship_cargo_capacity(*unit) > 0
-            );
+            assert_eq!(sources.contains(entity), ship_cargo_capacity(*unit) > 0);
         }
         TweenAnim::step_all(app.world_mut(), Duration::from_millis(SALVAGE_PICKUP_TIME_MS));
         app.world_mut().run_system_once(animate_combat).unwrap();
@@ -3074,7 +3070,6 @@ fn raid_loot_is_shown_on_surviving_cargo_carriers_in_both_formations() {
 
 #[test]
 fn schematic_identity_hover_uses_the_whole_panel_at_each_display_scale() {
-    use crate::core::combat::plan::{BattlePlan, CombatTactic, TargetPriority};
     use bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
     for scale in [1.0, 2.0] {

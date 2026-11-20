@@ -17,10 +17,12 @@ use crate::core::constants::{
 };
 use crate::core::identity::PlayerId;
 use crate::core::resources::{ResourceName, Resources};
+use crate::core::sabotage::SabotageState;
 use crate::core::units::buildings::{Building, FleetWithdrawal};
 use crate::core::units::defense::Defense;
 use crate::core::units::operations::{BuildingOperations, SpaceDockMode};
 use crate::core::units::{Amount, Army, Combat, Unit};
+use crate::serialization::required_option;
 
 /// Stable index identifying a planet inside one persisted map.
 pub type PlanetId = usize;
@@ -439,6 +441,8 @@ pub struct Planet {
     pub raid_cache: Resources,
     /// Jump-gate capacity consumed during the current turn.
     pub jump_gate: usize,
+    /// One-turn outages from successful probe sabotage; structure levels are retained.
+    pub sabotage: SabotageState,
 
     /// Persistent extraction, recovery, and Space Dock choices.
     pub operations: BuildingOperations,
@@ -459,10 +463,10 @@ pub struct Planet {
 
     // Ownership and units
     /// Owning player when colonized, or an ownership flag in presentation state.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub owned: Option<PlayerId>,
     /// Player with current military control, if any.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub controlled: Option<PlayerId>,
     /// First-contact state of this unclaimed planet's optional independent population.
     #[serde(default)]
@@ -583,6 +587,7 @@ impl Planet {
             resources,
             raid_cache: Resources::default(),
             jump_gate: 0,
+            sabotage: Default::default(),
 
             operations: BuildingOperations::default(),
             terraformer_focus: None,
@@ -965,7 +970,7 @@ impl Planet {
 
     /// Returns the maximum jump capacity allowed by current upgrades.
     pub fn max_jump_capacity(&self) -> usize {
-        let gate = self.army.amount(&Unit::Building(Building::JumpGate));
+        let gate = self.operational_level(Building::JumpGate);
         JUMP_GATE_CAPACITY_PER_LEVEL.saturating_mul(gate)
     }
 
@@ -1144,6 +1149,7 @@ impl Planet {
         self.is_destroyed = true;
         self.terraformer_focus = None;
         self.command_relay_active = true;
+        self.sabotage = Default::default();
         self.shield_overload = ShieldOverloadState::Ready;
         self.operations = BuildingOperations::default();
 

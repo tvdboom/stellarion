@@ -14,6 +14,7 @@ use crate::core::map::systems::PublicStructure;
 use crate::core::messages::{MessageAction, MessageMsg};
 use crate::core::missions::Missions;
 use crate::core::settings::Settings;
+use crate::core::simulation::{GameModel, MatchStatus};
 use crate::core::states::{AppState, GameState};
 use crate::core::turns::{filter_missions, PublicPlanetDestructions, StartTurnMsg};
 use crate::core::ui::systems::UiState;
@@ -22,6 +23,7 @@ use crate::multiplayer::client::{
     ConnectionStatus, MultiplayerSession, PendingTurnCommands, RefreshGameplayProjection,
     RefreshTurnDraft,
 };
+use crate::multiplayer::model::GameMembership;
 
 impl PublicStructure {
     fn label(self) -> &'static str {
@@ -269,14 +271,13 @@ pub fn refresh_gameplay_projection(
 /// Announces opponents who lost their home world during an otherwise continuing match.
 fn player_elimination_notifications(
     previous: Option<&Map>,
-    current: &crate::core::simulation::GameModel,
-    members: &[crate::multiplayer::model::GameMembership],
+    current: &GameModel,
+    members: &[GameMembership],
     local_player_id: PlayerId,
 ) -> Vec<MessageMsg> {
-    let Some(previous) = previous.filter(|_| {
-        current.status == crate::core::simulation::MatchStatus::Active
-            && current.rules.player_count > 2
-    }) else {
+    let Some(previous) = previous
+        .filter(|_| current.status == MatchStatus::Active && current.rules.player_count > 2)
+    else {
         return Vec::new();
     };
 
@@ -298,7 +299,7 @@ fn player_elimination_notifications(
 /// Warns every player about a newly resolved Railgun attack without revealing its outcome.
 fn orbital_strike_notifications(
     previous: Option<&Map>,
-    current: &crate::core::simulation::GameModel,
+    current: &GameModel,
     previously_displayed_turn: u64,
 ) -> Vec<MessageMsg> {
     if previous.is_none() || current.turn <= previously_displayed_turn {
@@ -329,7 +330,7 @@ fn orbital_strike_notifications(
 /// Finds every world newly destroyed in the canonical turn being installed.
 fn newly_destroyed_planets(
     previous: Option<&Map>,
-    current: &crate::core::simulation::GameModel,
+    current: &GameModel,
     previously_displayed_turn: u64,
 ) -> Vec<PlanetId> {
     let Some(previous) = previous.filter(|_| current.turn > previously_displayed_turn) else {
@@ -349,7 +350,7 @@ fn newly_destroyed_planets(
 
 /// Creates the same public, focusable destruction toast for every local player.
 fn planet_destruction_notifications(
-    current: &crate::core::simulation::GameModel,
+    current: &GameModel,
     destroyed_planets: &[PlanetId],
 ) -> Vec<MessageMsg> {
     destroyed_planets
@@ -364,7 +365,7 @@ fn planet_destruction_notifications(
 
 /// Leaves Railgun targets to the synchronized strike effect and returns combat destructions.
 fn combat_planet_destructions(
-    current: &crate::core::simulation::GameModel,
+    current: &GameModel,
     destroyed_planets: &[PlanetId],
 ) -> Vec<PlanetId> {
     destroyed_planets
@@ -379,7 +380,7 @@ fn combat_planet_destructions(
 }
 
 fn battle_that_destroyed(
-    model: &crate::core::simulation::GameModel,
+    model: &GameModel,
     planet: PlanetId,
     unit: Unit,
 ) -> Option<&MissionReport> {
@@ -395,7 +396,7 @@ fn battle_that_destroyed(
 /// Announces public structures that appeared, or were destroyed in battle, this turn.
 fn public_structure_notifications(
     previous: Option<&Map>,
-    current: &crate::core::simulation::GameModel,
+    current: &GameModel,
     local_player_id: PlayerId,
 ) -> Vec<(PublicStructureChangeMsg, MessageMsg)> {
     let Some(previous) = previous else {
@@ -467,11 +468,11 @@ fn public_structure_notifications(
 
 /// Builds a local draft only when it belongs to the canonical turn being displayed.
 fn gameplay_draft_projection(
-    state: &crate::core::simulation::GameModel,
+    state: &GameModel,
     player_id: PlayerId,
     pending: &PendingTurnCommands,
     session: &MultiplayerSession,
-) -> Option<crate::core::simulation::GameModel> {
+) -> Option<GameModel> {
     let patrol_upkeep =
         state.missions.iter().any(|mission| mission.owner == player_id && mission.is_patrolling());
     let current_turn = pending.turn == state.turn;
@@ -509,7 +510,7 @@ pub(crate) fn refresh_turn_draft(
     mut commands: Commands,
     session: Res<MultiplayerSession>,
     pending: Res<PendingTurnCommands>,
-    mut messages: MessageWriter<crate::core::messages::MessageMsg>,
+    mut messages: MessageWriter<MessageMsg>,
 ) {
     if refresh.read().count() == 0 {
         return;
@@ -537,9 +538,7 @@ pub(crate) fn refresh_turn_draft(
         },
         Err(error) => {
             let error = session.error_with_player_names(&error.to_string());
-            messages.write(crate::core::messages::MessageMsg::error(format!(
-                "Could not restore turn orders: {error}"
-            )));
+            messages.write(MessageMsg::error(format!("Could not restore turn orders: {error}")));
         },
     }
 }

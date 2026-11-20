@@ -1,6 +1,14 @@
 use super::*;
-use crate::core::simulation::{GameModel, GameRules};
+
+use crate::core::audio::PlayAudioMsg;
+use crate::core::identity::{GameCode, GameId, UserId};
+use crate::core::messages::MessageMsg;
+use crate::core::mission_systems::send_mission;
+use crate::core::patrols::{valid_patrol_target, PatrolPhase};
+use crate::core::simulation::{GameModel, GameRules, PersistedGame, TurnCommand};
 use crate::core::ui::location_marker::LocationMarkerTarget;
+use crate::multiplayer::client::PendingTurnCommands;
+use crate::multiplayer::model::{GameMembership, GameRecord};
 
 fn patrol_setup() -> (GameModel, Player, UiState, Vec2) {
     let mut model = GameModel::new([73; 32], GameRules::default()).unwrap();
@@ -15,7 +23,7 @@ fn patrol_setup() -> (GameModel, Player, UiState, Vec2) {
         .map(|(x, y)| {
             model.map.rect.min + model.map.rect.size() * Vec2::new(x as f32 / 20.0, y as f32 / 20.0)
         })
-        .find(|point| crate::core::patrols::valid_patrol_target(&model.map, home, *point, None))
+        .find(|point| valid_patrol_target(&model.map, home, *point, None))
         .unwrap();
     let state = UiState {
         mission: true,
@@ -92,20 +100,24 @@ fn patrol_objective_is_next_to_deploy_for_friendly_worlds_and_space_drafts_only(
             Icon::Attack,
             Icon::Raid,
             Icon::Spy,
+            Icon::Sabotage,
             Icon::MissileStrike,
             Icon::Destroy,
         ]
     );
-    assert_eq!(draft_objectives(&player, enemy, Icon::Patrol), vec![Icon::Deploy, Icon::Patrol]);
+    assert_eq!(
+        draft_objectives(&player, enemy, Icon::Patrol),
+        vec![Icon::Deploy, Icon::Patrol, Icon::Expedition]
+    );
     assert_eq!(
         draft_objectives(&player, model.map.get(player.home_planet), Icon::Deploy),
-        vec![Icon::Deploy, Icon::Patrol]
+        vec![Icon::Deploy, Icon::Patrol, Icon::Expedition]
     );
     let controlled = model.map.get_mut(state.mission_info.destination);
     controlled.controlled = Some(player.id);
     assert_eq!(
         draft_objectives(&player, controlled, Icon::Deploy),
-        vec![Icon::Colonize, Icon::Deploy, Icon::Patrol]
+        vec![Icon::Colonize, Icon::Deploy, Icon::Patrol, Icon::Expedition]
     );
 }
 
@@ -367,7 +379,7 @@ fn reinforcement_selection_uses_the_owned_operating_patrol_center_and_keeps_the_
     assert!(!state.choose_patrol_reinforcement(&model.map, &player, 1, &target));
     assert!(state.selecting_patrol_zone);
     target.position = center;
-    target.patrol.as_mut().unwrap().phase = crate::core::patrols::PatrolPhase::OnStation;
+    target.patrol.as_mut().unwrap().phase = PatrolPhase::OnStation;
     target.owner = model.players[1].id;
     assert!(!state.choose_patrol_reinforcement(&model.map, &player, 1, &target));
     target.owner = player.id;
@@ -524,6 +536,7 @@ fn patrol_uses_the_normal_panel_and_send_action_in_small_windows() {
         (egui::vec2(520.0, 380.0), true, true),
         (egui::vec2(320.0, 280.0), true, true),
     ] {
+        let check_details = size.x >= 820.0;
         for enabled in [true, false] {
             let (mut model, mut player, mut state, center) = patrol_setup();
             assert!(state.choose_patrol_zone(&model.map, &player, 1, center));
@@ -531,8 +544,7 @@ fn patrol_uses_the_normal_panel_and_send_action_in_small_windows() {
                 let mut target = state.mission_info.clone();
                 target.id = state.mission_info.id.wrapping_add(1).max(1);
                 target.position = center;
-                target.patrol.as_mut().unwrap().phase =
-                    crate::core::patrols::PatrolPhase::OnStation;
+                target.patrol.as_mut().unwrap().phase = PatrolPhase::OnStation;
                 vec![target]
             } else {
                 vec![]
@@ -544,11 +556,31 @@ fn patrol_uses_the_normal_panel_and_send_action_in_small_windows() {
                 }
                 origin.army.insert(Unit::probe(), 3);
                 state.mission_info.army = Army::from([(Unit::probe(), 3)]);
+            } else if check_details {
+                // Use launch and upkeep costs wide enough to exercise the game font's wrapping.
+                let origin = model.map.get_mut(player.home_planet);
+                for unit in Unit::ships() {
+                    if unit != Unit::probe() && unit != Unit::colony_ship() {
+                        origin.army.insert(unit, 63);
+                        state.mission_info.army.insert(unit, 63);
+                    }
+                }
             }
             if !enabled {
                 player.resources.deuterium = 0;
             }
             let context = egui::Context::default();
+            if check_details {
+                context.set_global_style(NordDark.custom_style());
+                context.add_font(FontInsert::new(
+                    "firasans",
+                    FontData::from_static(include_bytes!("../../assets/fonts/FiraSans-Bold.ttf")),
+                    vec![InsertFontFamily {
+                        family: FontFamily::Proportional,
+                        priority: FontPriority::Highest,
+                    }],
+                ));
+            }
             let mut world = World::new();
             world.init_resource::<Messages<SendMissionMsg>>();
             world.init_resource::<Messages<MultiplayerRequest>>();
@@ -597,7 +629,7 @@ fn patrol_uses_the_normal_panel_and_send_action_in_small_windows() {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                if size.x >= 820.0 {
+                if check_details {
                     let destination = if reinforcing {
                         "Reinforce"
                     } else {
@@ -605,12 +637,23 @@ fn patrol_uses_the_normal_panel_and_send_action_in_small_windows() {
                     };
                     assert!(text.iter().any(|text| text.galley.text() == destination));
                     for prefix in ["⛽ Fuel consumption:", "Detection probability:"] {
-                        let row = text
+                        let (row, clip) = output
+                            .shapes
                             .iter()
-                            .find(|text| text.galley.text().starts_with(prefix))
+                            .find_map(|shape| {
+                                let egui::Shape::Text(text) = &shape.shape else {
+                                    return None;
+                                };
+                                text.galley
+                                    .text()
+                                    .starts_with(prefix)
+                                    .then_some((text, shape.clip_rect))
+                            })
                             .unwrap();
                         assert_eq!(row.galley.rows.len(), 1, "{prefix} should fit in one row");
-                        assert!(row.pos.x + row.galley.size().x <= size.x);
+                        assert!(!row.galley.elided);
+                        assert!(clip
+                            .contains_rect(egui::Rect::from_min_size(row.pos, row.galley.size())));
                     }
                 }
                 assert!(!text.iter().any(|text| matches!(
@@ -636,26 +679,23 @@ fn patrol_uses_the_normal_panel_and_send_action_in_small_windows() {
                 app.insert_resource(model.map)
                     .insert_resource(player)
                     .insert_resource(Missions(missions))
-                    .insert_resource(crate::multiplayer::client::PendingTurnCommands {
+                    .insert_resource(PendingTurnCommands {
                         turn: 1,
                         ..default()
                     })
                     .add_message::<SendMissionMsg>()
-                    .add_message::<crate::core::messages::MessageMsg>()
-                    .add_message::<crate::core::audio::PlayAudioMsg>()
+                    .add_message::<MessageMsg>()
+                    .add_message::<PlayAudioMsg>()
                     .add_message::<MultiplayerRequest>()
-                    .add_systems(Update, crate::core::mission_systems::send_mission);
+                    .add_systems(Update, send_mission);
                 app.world_mut().write_message(SendMissionMsg::new(sent[0].mission.clone()));
                 app.update();
                 assert!(app.world().resource::<Missions>().iter().any(|mission| {
                     mission.id == sent[0].mission.id && mission.army == sent[0].mission.army
                 }));
                 assert!(matches!(
-                    app.world()
-                        .resource::<crate::multiplayer::client::PendingTurnCommands>()
-                        .commands
-                        .as_slice(),
-                    [crate::core::simulation::TurnCommand::SendPatrol { .. }]
+                    app.world().resource::<PendingTurnCommands>().commands.as_slice(),
+                    [TurnCommand::SendPatrol { .. }]
                 ));
                 assert_eq!(
                     sent[0].mission.army.amount(&Unit::probe()),
@@ -713,7 +753,7 @@ fn selection_instruction_uses_the_right_notification_stack_and_escape_restores_t
                         let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
                         match text.galley.text() {
                             "Cancel" => cancel_button = bounds,
-                            "Click empty space for a patrol zone, or your active patrol to reinforce it." => {
+                            "Click empty space for a patrol zone, or an active patrol to reinforce it." => {
                                 text_bounds = bounds;
                             },
                             _ => {},
@@ -763,7 +803,7 @@ fn active_patrol_fixture() -> (Map, Player, Vec<Mission>) {
     let mut stationed = outbound.clone();
     stationed.id = 902;
     stationed.position = center;
-    stationed.patrol.as_mut().unwrap().phase = crate::core::patrols::PatrolPhase::OnStation;
+    stationed.patrol.as_mut().unwrap().phase = PatrolPhase::OnStation;
     let mut returning = stationed.clone();
     returning.id = 903;
     returning.return_patrol(&model.map, 1);
@@ -930,10 +970,6 @@ fn active_patrols_share_compact_rows_with_planet_missions_and_keep_foreign_origi
 
 #[test]
 fn two_player_patrols_replace_friendship_with_white_infinity_without_moving_the_row() {
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::{GameMembership, GameRecord};
-
     let (map, player, missions) = active_patrol_fixture();
     let protection_texture = egui::TextureId::User(920);
     let recall_texture = egui::TextureId::User(921);
@@ -1154,7 +1190,10 @@ fn active_mission_icons_share_the_animation_center_on_both_sides() {
                     .shapes
                     .iter()
                     .filter(|shape| match &shape.shape {
-                        egui::Shape::Mesh(mesh) => mesh.texture_id == icon_texture,
+                        egui::Shape::Mesh(mesh) => {
+                            mesh.texture_id == icon_texture
+                                && mesh.calc_bounds().width() >= MISSION_ROUTE_ICON_SIZE
+                        },
                         egui::Shape::Rect(rect) => {
                             rect.brush.is_some() && rect.fill_texture_id() == icon_texture
                         },
@@ -1272,7 +1311,7 @@ fn patrol_hover_shows_placeholders_on_station_and_travel_details_in_flight() {
         assert!(text.iter().any(|text| text.contains("Objective:")));
         assert_eq!(text.contains(&"Balanced fire"), mission.owner == player.id);
         let objective = if mission.owner == player.id {
-            mission.objective.to_name()
+            mission.return_objective.unwrap_or(mission.objective).to_name()
         } else if mission.is_returning() {
             "Unknown".to_owned()
         } else {
@@ -1574,7 +1613,7 @@ fn active_patrol_recall_uses_the_standard_control_and_deep_space_hovers_the_flee
                     },
                 );
                 output.textures_delta.clear();
-                let recall = output.shapes.iter().find_map(|shape| match &shape.shape {
+                let recall_icons = output.shapes.iter().filter_map(|shape| match &shape.shape {
                     egui::Shape::Mesh(mesh)
                         if matches!(mesh.texture_id, egui::TextureId::User(901 | 902)) =>
                     {
@@ -1582,12 +1621,14 @@ fn active_patrol_recall_uses_the_standard_control_and_deep_space_hovers_the_flee
                     },
                     _ => None,
                 });
+                let (controls, badges): (Vec<_>, Vec<_>) = recall_icons
+                    .partition(|rect| rect.size() == egui::Vec2::splat(MISSION_RECALL_BUTTON_SIZE));
                 if frame >= 2 {
-                    assert_eq!(recall.is_some(), can_recall);
+                    assert_eq!(controls.len(), usize::from(can_recall));
+                    assert_eq!(badges.len(), usize::from(mission.is_returning()));
                 }
-                if let Some(rect) = recall {
-                    recall_rect = rect;
-                    assert_eq!(rect.size(), egui::Vec2::splat(MISSION_RECALL_BUTTON_SIZE));
+                if let Some(rect) = controls.first() {
+                    recall_rect = *rect;
                 }
                 space_rect = output
                     .shapes

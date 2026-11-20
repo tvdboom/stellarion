@@ -2,6 +2,12 @@ use std::time::Duration;
 
 use super::*;
 
+use crate::core::map::icon::Icon;
+use crate::core::map::model::SolarCorner;
+use crate::core::map::planet::Planet;
+use crate::core::missions::BombingRaid;
+use crate::core::units::Unit;
+
 fn recall_animation_app() -> (App, Entity) {
     let mut app = App::new();
     app.init_resource::<Time>()
@@ -38,16 +44,11 @@ fn recall_animation_app() -> (App, Entity) {
 
 #[test]
 fn immediate_recall_faces_back_along_the_route_even_at_home() {
-    use crate::core::map::icon::Icon;
-    use crate::core::map::planet::Planet;
-    use crate::core::missions::BombingRaid;
-    use crate::core::units::Unit;
-
     let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
     let destination = Planet::new(1, "Destination".into(), Vec2::X * 500.0, false, 1.0);
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin.clone(), destination.clone()],
     };
     let mut mission = Mission::new_with_id(

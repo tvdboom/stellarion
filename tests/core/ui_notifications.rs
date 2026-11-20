@@ -1,9 +1,11 @@
 use super::*;
+use bevy_egui::{EguiContext, EguiPrimaryContextPass, EguiUserTextures, PrimaryEguiContext};
+
 use crate::core::audio::PlayAudioMsg;
-use crate::core::messages::MessagesPlugin;
+use crate::core::identity::GameId;
+use crate::core::messages::{notification_scale, MessagesPlugin};
 use crate::core::states::AppState;
 use crate::multiplayer::model::{TradeInvitation, TradeParticipant, TradeResponse};
-use bevy_egui::{EguiContext, EguiPrimaryContextPass, EguiUserTextures, PrimaryEguiContext};
 
 #[test]
 fn negotiation_toasts_are_shown_once_per_player_across_ui_rebuilds() {
@@ -88,7 +90,7 @@ fn negotiation_toasts_are_shown_once_per_player_across_ui_rebuilds() {
         1,
         NegotiationNotice::MissionCanceled(91)
     ));
-    session.active_game.as_mut().unwrap().id = crate::core::identity::GameId::new("another-game");
+    session.active_game.as_mut().unwrap().id = GameId::new("another-game");
     assert!(first_negotiation_notice(
         &context,
         &session,
@@ -100,7 +102,7 @@ fn negotiation_toasts_are_shown_once_per_player_across_ui_rebuilds() {
 #[test]
 fn mission_trade_and_rejection_toasts_keep_separate_padded_frames() {
     for size in [egui::vec2(1600.0, 900.0), egui::vec2(560.0, 460.0), egui::vec2(320.0, 640.0)] {
-        let toast_scale = crate::core::messages::notification_scale(size);
+        let toast_scale = notification_scale(size);
         let (mut model, player, mut state, mut invitation) = fixture();
         model.map.get_mut(invitation.destination).name = "Io".into();
         invitation.inviter = player.id;

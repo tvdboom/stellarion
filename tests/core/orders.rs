@@ -1,10 +1,13 @@
 use crate::core::combat::resolution::resolve_combat_with_rng;
 use crate::core::map::icon::Icon;
+use crate::core::map::planet::Planet;
 use crate::core::missions::{BombingRaid, Mission};
 use crate::core::orders::{conversion_output, purchase_limit, validate_mission, OrderError};
 use crate::core::random::DeterministicRngState;
+use crate::core::resources::{ResourceName, Resources};
 use crate::core::simulation::{resolve_turn, GameModel, GameRules, TurnCommand, TurnSubmission};
 use crate::core::units::buildings::Building;
+use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::{Amount, Army, Combat, Price, Unit};
 
@@ -42,7 +45,7 @@ fn purchase_errors_name_the_exact_blocker() {
 fn purchase_limit_distinguishes_prerequisites_queues_and_capacity() {
     let mut game = game();
     let home = game.players[0].home_planet;
-    game.players[0].resources = crate::core::resources::Resources::new(10_000, 10_000, 10_000);
+    game.players[0].resources = Resources::new(10_000, 10_000, 10_000);
     let player = &game.players[0];
     let planet = game.map.get_mut(home);
     planet.army.clear();
@@ -85,7 +88,7 @@ fn purchase_limit_distinguishes_prerequisites_queues_and_capacity() {
         purchase_limit(
             player,
             planet,
-            Unit::Defense(crate::core::units::defense::Defense::GaussCannon),
+            Unit::Defense(Defense::GaussCannon),
             Building::MAX_LEVEL,
             Default::default(),
         ),
@@ -117,12 +120,12 @@ fn purchase_limit_distinguishes_prerequisites_queues_and_capacity() {
     planet.buy.clear();
 
     planet.army.insert(Unit::Building(Building::Factory), 1);
-    planet.buy.extend([Unit::Defense(crate::core::units::defense::Defense::RocketLauncher); 5]);
+    planet.buy.extend([Unit::Defense(Defense::RocketLauncher); 5]);
     assert_eq!(
         purchase_limit(
             player,
             planet,
-            Unit::Defense(crate::core::units::defense::Defense::RocketLauncher),
+            Unit::Defense(Defense::RocketLauncher),
             Building::MAX_LEVEL,
             Default::default(),
         ),
@@ -145,10 +148,7 @@ fn purchase_limit_distinguishes_prerequisites_queues_and_capacity() {
 
 #[test]
 fn senate_has_a_capstone_building_price() {
-    assert_eq!(
-        Unit::Building(Building::Senate).price(),
-        crate::core::resources::Resources::new(1_000, 750, 500)
-    );
+    assert_eq!(Unit::Building(Building::Senate).price(), Resources::new(1_000, 750, 500));
 }
 
 #[test]
@@ -156,12 +156,9 @@ fn orbital_railgun_is_a_five_level_premium_over_the_jump_gate() {
     let jump_gate = Unit::Building(Building::JumpGate).price();
     let railgun = Unit::Building(Building::OrbitalRailgun).price();
 
-    assert_eq!(railgun, crate::core::resources::Resources::new(750, 500, 750));
+    assert_eq!(railgun, Resources::new(750, 500, 750));
     assert!(jump_gate < railgun);
-    assert_eq!(
-        railgun * Building::MAX_LEVEL,
-        crate::core::resources::Resources::new(3_750, 2_500, 3_750)
-    );
+    assert_eq!(railgun * Building::MAX_LEVEL, Resources::new(3_750, 2_500, 3_750));
 }
 
 #[test]
@@ -170,8 +167,8 @@ fn five_colonial_administration_levels_cost_less_than_one_space_dock() {
     let full_investment = administration * Building::MAX_LEVEL;
     let space_dock = Unit::space_dock().price();
 
-    assert_eq!(administration, crate::core::resources::Resources::new(200, 100, 50));
-    assert_eq!(full_investment, crate::core::resources::Resources::new(1_000, 500, 250));
+    assert_eq!(administration, Resources::new(200, 100, 50));
+    assert_eq!(full_investment, Resources::new(1_000, 500, 250));
     assert!(full_investment < space_dock);
 }
 
@@ -179,7 +176,7 @@ fn five_colonial_administration_levels_cost_less_than_one_space_dock() {
 fn senate_purchase_respects_the_match_level_limit() {
     let mut game = game();
     let home = game.players[0].home_planet;
-    game.players[0].resources = crate::core::resources::Resources::new(10_000, 10_000, 10_000);
+    game.players[0].resources = Resources::new(10_000, 10_000, 10_000);
     let player = &game.players[0];
     let planet = game.map.get_mut(home);
     let senate = Unit::Building(Building::Senate);
@@ -269,8 +266,7 @@ fn missiles_reach_targets_between_three_and_four_au_in_one_turn_without_fuel() {
     let destination_id = game.players[1].home_planet;
     game.map.get_mut(origin_id).position = bevy::math::Vec2::ZERO;
     // Arrival uses the distance to the planet's edge (center distance minus 0.7 AU).
-    game.map.get_mut(destination_id).position =
-        bevy::math::Vec2::X * crate::core::map::planet::Planet::SIZE * 4.5;
+    game.map.get_mut(destination_id).position = bevy::math::Vec2::X * Planet::SIZE * 4.5;
     let mut mission = Mission::new_with_id(
         1,
         1,
@@ -359,7 +355,7 @@ fn purchase_limit_includes_queued_missiles_of_both_types() {
 fn stationed_space_dock_adds_five_ship_production_slots() {
     let mut game = game();
     let home = game.players[0].home_planet;
-    game.players[0].resources = crate::core::resources::Resources::new(10_000, 10_000, 10_000);
+    game.players[0].resources = Resources::new(10_000, 10_000, 10_000);
     let planet = game.map.get_mut(home);
     planet.army.insert(Unit::Building(Building::Shipyard), 1);
 
@@ -388,7 +384,7 @@ fn stationed_space_dock_adds_five_ship_production_slots() {
 fn terraformer_specializes_resources_without_changing_unit_capacity() {
     let mut game = game();
     let home = game.players[0].home_planet;
-    game.players[0].resources = crate::core::resources::Resources::new(10_000, 10_000, 10_000);
+    game.players[0].resources = Resources::new(10_000, 10_000, 10_000);
     let player = &game.players[0];
     let planet = game.map.get_mut(home);
     planet.army.insert(Unit::Building(Building::Shipyard), 1);
@@ -397,13 +393,10 @@ fn terraformer_specializes_resources_without_changing_unit_capacity() {
     planet.army.insert(Unit::Building(Building::CrystalMine), 1);
     planet.army.insert(Unit::Building(Building::DeuteriumSynthesizer), 1);
     planet.army.insert(Unit::Building(Building::Terraformer), 3);
-    planet.resources = crate::core::resources::Resources::new(1_000, 1_000, 1_000);
-    planet.terraformer_focus = Some(crate::core::resources::ResourceName::Crystal);
+    planet.resources = Resources::new(1_000, 1_000, 1_000);
+    planet.terraformer_focus = Some(ResourceName::Crystal);
 
-    assert_eq!(
-        planet.resource_production(),
-        crate::core::resources::Resources::new(700, 1_300, 700)
-    );
+    assert_eq!(planet.resource_production(), Resources::new(700, 1_300, 700));
     assert_eq!(planet.max_fleet_production(), 5);
     assert_eq!(planet.max_battery_production(), 5);
     assert_eq!(
@@ -414,7 +407,7 @@ fn terraformer_specializes_resources_without_changing_unit_capacity() {
             Building::MAX_LEVEL,
             Default::default()
         ),
-        Err(crate::core::orders::OrderError::ShipyardLevel(3)),
+        Err(OrderError::ShipyardLevel(3)),
         "Terraforming must not replace Shipyard unlock levels"
     );
 
@@ -422,7 +415,7 @@ fn terraformer_specializes_resources_without_changing_unit_capacity() {
     planet.buy.push(Unit::Building(Building::Terraformer));
     assert_eq!(
         planet.resource_production(),
-        crate::core::resources::Resources::new(1_000, 1_000, 1_000),
+        Resources::new(1_000, 1_000, 1_000),
         "queued Terraformers are not operational"
     );
 
@@ -431,7 +424,7 @@ fn terraformer_specializes_resources_without_changing_unit_capacity() {
     planet.terraformer_focus = None;
     assert_eq!(
         planet.resource_production(),
-        crate::core::resources::Resources::new(1_000, 1_000, 1_000),
+        Resources::new(1_000, 1_000, 1_000),
         "a Terraformer with no focus is switched off"
     );
 }
@@ -465,7 +458,7 @@ fn planet_building_roster_includes_both_home_and_colony_capstones() {
 fn orbitals_require_their_production_level_in_completed_shipyards() {
     let mut game = game();
     let home = game.players[0].home_planet;
-    game.players[0].resources = crate::core::resources::Resources::new(10_000, 10_000, 10_000);
+    game.players[0].resources = Resources::new(10_000, 10_000, 10_000);
     let player = &game.players[0];
     let planet = game.map.get_mut(home);
     planet.army.remove(&Unit::Building(Building::Shipyard));
@@ -588,7 +581,7 @@ fn spy_missions_require_five_probes_but_can_reach_any_world() {
     let mut game = game();
     let origin_id = game.players[0].home_planet;
     let destination_id = game.players[1].home_planet;
-    let planet_size = crate::core::map::planet::Planet::SIZE;
+    let planet_size = Planet::SIZE;
 
     game.map.get_mut(origin_id).position = bevy::math::Vec2::ZERO;
     for planet in &mut game.map.planets {

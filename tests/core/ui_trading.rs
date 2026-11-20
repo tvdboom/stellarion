@@ -1,6 +1,10 @@
 use super::*;
-use crate::core::simulation::{GameModel, GameRules};
 use std::collections::BTreeMap;
+
+use crate::core::identity::{GameCode, GameId, UserId};
+use crate::core::messages::MessageLevel;
+use crate::core::simulation::{preview_commands, GameModel, GameRules, PersistedGame};
+use crate::multiplayer::model::{GameMembership, GameRecord};
 
 fn trading_context() -> egui::Context {
     let context = egui::Context::default();
@@ -282,7 +286,7 @@ fn owned_trading_post_opens_resource_hub_and_adds_a_fixed_term_loan() {
         }] if *planet_id == home && *resources == Resources::new(300, 200, 100)
     ));
     assert!(world.resource_mut::<Messages<MessageMsg>>().drain().any(|message| {
-        message.level == crate::core::messages::MessageLevel::Info
+        message.level == MessageLevel::Info
             && message.message == "Successfully borrowed 600 resources."
     }));
     assert_eq!(state.trading_post_open, None);
@@ -325,10 +329,6 @@ fn owned_trading_post_opens_resource_hub_and_adds_a_fixed_term_loan() {
 
 #[test]
 fn testing_boost_trading_post_opens_resource_hub_before_the_turn_is_saved() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::simulation::{preview_commands, PersistedGame};
-    use crate::multiplayer::model::GameRecord;
-
     let mut saved = trading_panel_game();
     saved.start().unwrap();
     let player_id = saved.players[0].id;
@@ -395,10 +395,6 @@ fn testing_boost_trading_post_opens_resource_hub_before_the_turn_is_saved() {
 
 #[test]
 fn active_post_loan_reopens_with_available_early_repayment() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = trading_panel_game();
     model.start().unwrap();
     model.turn = 2;
@@ -470,10 +466,6 @@ fn active_post_loan_reopens_with_available_early_repayment() {
 
 #[test]
 fn overdue_repayment_blocks_new_hub_loans_but_keeps_existing_agreement_accessible() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = trading_panel_game();
     model.start().unwrap();
     model.turn = 3;
@@ -956,7 +948,7 @@ fn confirmed_trades_close_the_matching_panel_and_emit_one_two_second_toast_for_e
             let notices = world.resource_mut::<Messages<MessageMsg>>().drain().collect::<Vec<_>>();
             assert_eq!(notices.len(), 1);
             assert_eq!(notices[0].message, format!("Trade with Player {other_player} successful."));
-            assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Info);
+            assert_eq!(notices[0].level, MessageLevel::Info);
             assert_eq!(notices[0].action, Some(MessageAction::OpenTrade(19)));
             assert_eq!(notices[0].display_duration, Some(std::time::Duration::from_secs(2)));
         }
@@ -995,7 +987,7 @@ fn rejected_trades_emit_one_normal_timed_notification_without_buttons() {
     let notices = cursor.read(messages).collect::<Vec<_>>();
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].message, "The trade with Player 2 was rejected.");
-    assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Info);
+    assert_eq!(notices[0].level, MessageLevel::Info);
     assert!(notices[0].action.is_none());
     assert!(notices[0].display_duration.is_none());
 }
@@ -1142,10 +1134,6 @@ fn assert_resource_art_is_full_brightness(output: &egui::FullOutput) {
 
 #[test]
 fn trade_headings_keep_the_sender_first_with_each_players_name_and_color() {
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::{GameMembership, GameRecord};
-
     for local_index in [0, 1] {
         let mut model = trading_panel_game();
         let trade = trade_invitation(&model);
@@ -1498,10 +1486,6 @@ fn trading_panel_game() -> GameModel {
 
 #[test]
 fn projected_trading_post_can_offer_before_it_exists_in_the_saved_turn() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = trading_panel_game();
     let enemy = model.players[1].home_planet;
     model.map.get_mut(enemy).position = Vec2::X * Planet::SIZE * 1.5;
@@ -1584,10 +1568,6 @@ fn projected_trading_post_can_offer_before_it_exists_in_the_saved_turn() {
 
 #[test]
 fn closing_an_unsent_trade_then_sending_a_new_offer_uses_only_the_new_draft() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = trading_panel_game();
     model.start().unwrap();
     let home = model.players[0].home_planet;
@@ -1691,10 +1671,6 @@ fn closing_an_unsent_trade_then_sending_a_new_offer_uses_only_the_new_draft() {
 
 #[test]
 fn any_visible_post_of_the_same_player_reopens_the_accepted_trade_until_the_turn_ends() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = trading_panel_game();
     model.start().unwrap();
     model.turn = 5;
@@ -1795,10 +1771,6 @@ fn any_visible_post_of_the_same_player_reopens_the_accepted_trade_until_the_turn
 
 #[test]
 fn submitted_projected_trade_route_panel_explains_and_closes_at_small_sizes() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::simulation::PersistedGame;
-    use crate::multiplayer::model::GameRecord;
-
     for size in [egui::vec2(1280.0, 800.0), egui::vec2(640.0, 480.0), egui::vec2(360.0, 640.0)] {
         let model = trading_panel_game();
         let enemy = model.players[1].home_planet;

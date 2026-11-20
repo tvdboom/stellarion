@@ -1,6 +1,11 @@
 use super::*;
-use crate::core::map::model::SolarCorner;
 use rand::SeedableRng;
+
+use crate::core::map::model::SolarCorner;
+#[cfg(feature = "app")]
+use crate::core::patrols::PatrolPhase;
+#[cfg(feature = "app")]
+use crate::core::turns::filter_missions;
 
 fn scanned_mission() -> (Map, Player, Mission) {
     let mut rng = rand_chacha::ChaCha8Rng::from_seed([51; 32]);
@@ -124,8 +129,6 @@ fn phalanx_uses_the_strongest_endpoint_scanner_that_covers_the_fleet() {
 #[cfg(feature = "app")]
 #[test]
 fn phalanx_keeps_recalled_enemy_fleets_in_the_visible_mission_projection() {
-    use crate::core::turns::filter_missions;
-
     let (map, player, mut mission) = scanned_mission();
     mission.recall(&map, 2);
     let visible = filter_missions(std::slice::from_ref(&mission), &map, &player);
@@ -139,9 +142,6 @@ fn phalanx_keeps_recalled_enemy_fleets_in_the_visible_mission_projection() {
 #[cfg(feature = "app")]
 #[test]
 fn radar_reveals_patrol_objectives_during_outbound_flight_and_on_station() {
-    use crate::core::patrols::PatrolPhase;
-    use crate::core::turns::filter_missions;
-
     let (mut map, player, enemy) = scanned_mission();
     let position = enemy.position;
     let center = position + Vec2::X * Planet::SIZE;

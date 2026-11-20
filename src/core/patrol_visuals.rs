@@ -9,12 +9,12 @@ use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 
 use crate::core::camera::MainCamera;
-use crate::core::constants::MISSION_Z;
+use crate::core::constants::{MISSION_Z, PATROL_RADIUS};
+use crate::core::expeditions::valid_expedition_target;
 use crate::core::map::icon::Icon;
 use crate::core::map::model::{Map, MapCmp};
 use crate::core::map::systems::MissionCmp;
 use crate::core::missions::{Mission, MissionId, Missions};
-use crate::core::patrols::{valid_patrol_target, PATROL_RADIUS};
 use crate::core::player::Player;
 use crate::core::ui::systems::UiState;
 use crate::multiplayer::client::MultiplayerSession;
@@ -305,18 +305,20 @@ pub(crate) fn update_patrol_zones(
             );
         }
     }
-    if state.selecting_patrol_zone || state.mission && state.mission_info.objective == Icon::Patrol
+    if state.selecting_patrol_zone
+        || state.mission && matches!(state.mission_info.objective, Icon::Patrol | Icon::Expedition)
     {
         let (camera, transform) = camera.into_inner();
-        let reinforcing_hover = state.selecting_patrol_zone
-            && !player.spectator
-            && state
-                .mission_hover
-                .and_then(|id| missions.get(id))
-                .is_some_and(|mission| mission.owner == player.id && mission.is_patrolling());
+        let expedition = state.mission_info.objective == Icon::Expedition;
+        let patrol_hover_hides_preview = state.selecting_patrol_zone
+            && state.mission_hover.and_then(|id| missions.get(id)).is_some_and(|mission| {
+                mission.is_patrolling()
+                    && (expedition || mission.owner == player.id && !player.spectator)
+            });
         let pointer_over_ui =
             contexts.ctx_mut().is_ok_and(|context| context.is_pointer_over_egui());
-        let center = if reinforcing_hover || state.selecting_patrol_zone && pointer_over_ui {
+        let center = if patrol_hover_hides_preview || state.selecting_patrol_zone && pointer_over_ui
+        {
             None
         } else if state.selecting_patrol_zone {
             window
@@ -325,16 +327,29 @@ pub(crate) fn update_patrol_zones(
         } else {
             // A selected reinforcement uses the existing zone's boundary as its preview.
             state.patrol_center.filter(|center| {
-                !missions.iter().any(|mission| {
-                    mission.owner == player.id
-                        && mission.is_patrolling()
-                        && mission.patrol.as_ref().is_some_and(|patrol| patrol.center == *center)
-                })
+                expedition
+                    || !missions.iter().any(|mission| {
+                        mission.owner == player.id
+                            && mission.is_patrolling()
+                            && mission
+                                .patrol
+                                .as_ref()
+                                .is_some_and(|patrol| patrol.center == *center)
+                    })
             })
         };
-        if let Some(center) = center
-            .filter(|center| valid_patrol_target(&map, state.mission_info.origin, *center, None))
-        {
+        let origin = state.mission_info.origin;
+        if let Some(center) = center.filter(|center| {
+            if expedition {
+                let origin = map
+                    .try_get(origin)
+                    .filter(|planet| planet.can_launch_mission(player.id))
+                    .map_or(player.home_planet, |planet| planet.id);
+                valid_expedition_target(&map, origin, *center)
+            } else {
+                map.valid_space_target(origin, *center)
+            }
+        }) {
             desired.insert(0, (center, player.color().color().with_alpha(0.7), false));
         }
     }

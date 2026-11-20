@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::core::identity::GameId;
 use crate::multiplayer::model::AuthSession;
+use crate::serialization::required_option;
 
 #[cfg(target_arch = "wasm32")]
 const STORAGE_PREFIX: &str = "stellarion.v1.";
@@ -18,7 +19,7 @@ const STORAGE_PREFIX: &str = "stellarion.v1.";
 #[serde(deny_unknown_fields)]
 pub struct ClientProfile {
     /// Restorable anonymous authentication session.
-    #[serde(deserialize_with = "crate::serialization::required_option")]
+    #[serde(deserialize_with = "required_option")]
     pub session: Option<AuthSession>,
     /// Recently opened game identifiers used only as a convenience hint.
     pub recent_games: Vec<GameId>,

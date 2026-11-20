@@ -6,7 +6,8 @@ use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-use crate::core::units::{Army, Combat, Description, Unit};
+use crate::core::units::{Amount, Army, Combat, Description, Unit};
+use SpaceFauna::*;
 
 /// Visual and audio family used when a creature attacks during combat playback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +68,28 @@ pub enum SpaceFauna {
 }
 
 impl SpaceFauna {
+    /// Compact creature name for labels and encounter titles; asset keys use the stable variant.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::AetherRay => "Skimmer",
+            Self::IonWisp => "Wisp",
+            Self::VoidManta => "Manta",
+            Self::VoidMantaCalf => "Mantling",
+            Self::CrystalLeviathan => "Leviathan",
+            Self::CrystalShardling => "Shardling",
+            Self::Gravemaw => "Gravemaw",
+            Self::StarKraken => "Kraken",
+            Self::StarKrakenSpawn => "Krakling",
+            Self::NebulaGrazer => "Grazer",
+            Self::NebulaGrazerCalf => "Fawn",
+            Self::RiftSerpent => "Serpent",
+            Self::SolarRoc => "Roc",
+            Self::ElderStarDragon => "Dragon",
+            Self::StarDragonWyrmling => "Wyrmling",
+            Self::NullstarBehemoth => "Behemoth",
+        }
+    }
+
     /// Relative combat-value tier used in report strength bars.
     pub const fn production(self) -> usize {
         match self {
@@ -218,8 +241,6 @@ impl Combat for SpaceFauna {
 /// Light Fighter. Apex creatures consume most of the capped budget so late encounters can include
 /// their related fauna without multiplying the apex itself.
 pub(crate) const fn encounter_threat(creature: SpaceFauna) -> usize {
-    use SpaceFauna::*;
-
     match creature {
         AetherRay => 2,
         IonWisp | VoidMantaCalf => 3,
@@ -265,73 +286,52 @@ pub(crate) const fn encounter_threat_budget(turn: usize) -> usize {
     }
 }
 
-fn encounter_name(reinforcement_pattern: &[SpaceFauna], army: &Army) -> String {
-    use SpaceFauna::*;
-
-    let total = army.values().copied().sum::<usize>();
-    let primary = reinforcement_pattern
-        .iter()
-        .copied()
-        .find(|creature| army.contains_key(&Unit::Fauna(*creature)))
-        .or_else(|| {
-            army.keys().find_map(|unit| match unit {
-                Unit::Fauna(creature) => Some(*creature),
-                _ => None,
-            })
-        });
-    let Some(primary) = primary else {
-        return "Deep-Space Encounter".to_string();
-    };
-    let primary_name = Unit::Fauna(primary).to_name();
+/// Uses the main species and a short group descriptor to keep report titles compact.
+pub(crate) fn encounter_name(army: &Army) -> Option<&'static str> {
+    let primary = army
+        .keys()
+        .filter_map(|unit| match unit {
+            Unit::Fauna(creature) => Some(*creature),
+            _ => None,
+        })
+        .max_by_key(|creature| encounter_threat(*creature))?;
+    let total = army.values().fold(0_usize, |total, count| total.saturating_add(*count));
     if total == 1 {
-        return format!("Lone {primary_name}");
+        return Some(primary.name());
     }
-
-    let amount = |creature| army.get(&Unit::Fauna(creature)).copied().unwrap_or(0);
-    let related = |adult, young| amount(adult).saturating_add(amount(young));
-    match primary {
-        AetherRay => {
-            if total <= 4 {
-                "Aether Ray Shoal".to_string()
-            } else {
-                "Aether Ray Swarm".to_string()
+    Some(match primary {
+        AetherRay if total <= 4 => "Skimmer Shoal",
+        AetherRay => "Skimmer Swarm",
+        IonWisp if total <= 4 => "Wisp Drift",
+        IonWisp => "Wisp Storm",
+        VoidManta => "Manta Nursery",
+        VoidMantaCalf => "Mantling Shoal",
+        CrystalLeviathan => "Leviathan Cluster",
+        CrystalShardling => "Shardling Swarm",
+        Gravemaw => "Gravemaw Pack",
+        StarKraken => "Kraken Brood",
+        StarKrakenSpawn => "Krakling Brood",
+        NebulaGrazer => {
+            let grazers = army
+                .amount(&Unit::Fauna(NebulaGrazer))
+                .saturating_add(army.amount(&Unit::Fauna(NebulaGrazerCalf)));
+            match grazers {
+                2..=3 => "Grazer Family",
+                4..=6 => "Grazer Herd",
+                _ => "Grazer Migration",
             }
         },
-        IonWisp => {
-            if total <= 4 {
-                "Ion Wisp Drift".to_string()
-            } else {
-                "Ion Storm".to_string()
-            }
-        },
-        VoidManta | VoidMantaCalf => "Void Manta Nursery".to_string(),
-        CrystalLeviathan | CrystalShardling => "Crystal Leviathan Cluster".to_string(),
-        StarKraken | StarKrakenSpawn => "Star Kraken Brood".to_string(),
-        NebulaGrazer | NebulaGrazerCalf => {
-            let grazers = related(NebulaGrazer, NebulaGrazerCalf);
-            if grazers == 1 {
-                "Nebula Grazer Migration".to_string()
-            } else if grazers <= 3 {
-                "Nebula Grazer Family".to_string()
-            } else if grazers <= 6 {
-                "Nebula Grazer Herd".to_string()
-            } else {
-                "Nebula Grazer Migration".to_string()
-            }
-        },
-        ElderStarDragon => "Star Dragon Brood".to_string(),
-        StarDragonWyrmling => "Rogue Star Dragon Wyrmling".to_string(),
-        Gravemaw => "Gravemaw Hunting Pack".to_string(),
-        RiftSerpent => "Rift Serpent Procession".to_string(),
-        SolarRoc => "Solar Roc Aerie".to_string(),
-        NullstarBehemoth => "Lone Nullstar Behemoth".to_string(),
-    }
+        NebulaGrazerCalf => "Fawn Herd",
+        RiftSerpent => "Serpent Coil",
+        SolarRoc => "Roc Aerie",
+        ElderStarDragon => "Dragon Brood",
+        StarDragonWyrmling => "Wyrmling Pack",
+        NullstarBehemoth => "Behemoth",
+    })
 }
 
 /// Builds a turn-scaled, deterministic creature group and its report title.
 pub(crate) fn encounter_formation<R: Rng + ?Sized>(turn: usize, rng: &mut R) -> (String, Army) {
-    use SpaceFauna::*;
-
     let target = encounter_threat_budget(turn);
     let candidates: &[&[SpaceFauna]] = match turn {
         0..=4 => &[&[AetherRay], &[IonWisp, AetherRay]],
@@ -381,7 +381,7 @@ pub(crate) fn encounter_formation<R: Rng + ?Sized>(turn: usize, rng: &mut R) -> 
     let reinforcement_pattern = eligible[selected];
     if reinforcement_pattern == [NullstarBehemoth] {
         return (
-            "Lone Nullstar Behemoth".to_string(),
+            NullstarBehemoth.name().to_owned(),
             Army::from([(Unit::Fauna(NullstarBehemoth), 1)]),
         );
     }
@@ -411,5 +411,5 @@ pub(crate) fn encounter_formation<R: Rng + ?Sized>(turn: usize, rng: &mut R) -> 
         }
     }
 
-    (encounter_name(reinforcement_pattern, &army), army)
+    (encounter_name(&army).unwrap_or("Fauna").to_owned(), army)
 }

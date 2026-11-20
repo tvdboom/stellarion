@@ -1,5 +1,22 @@
 use super::*;
 
+use crate::core::combat::cinematic_ui::CombatView;
+use crate::core::combat::plan::{BattlePlan, ProtectionPosture, TargetPriority};
+use crate::core::combat::report::CombatReport;
+use crate::core::identity::{GameCode, GameId, UserId};
+use crate::core::map::model::SolarCorner;
+use crate::core::map::planet::{IndependentPopulation, ShieldOverloadState};
+use crate::core::messages::MessageLevel;
+use crate::core::missions::JointAttackMission;
+use crate::core::player::PlayerColor;
+use crate::core::recycling::{RECYCLER_ASTEROID_OUTPUT_MAX, RECYCLER_ASTEROID_OUTPUT_MIN};
+use crate::core::resources::Resources;
+use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+use crate::core::units::operations::SenateSupport;
+use crate::core::units::ships::Ship;
+use crate::multiplayer::model::{GameMembership, GameRecord};
+use crate::test_support::empty_report;
+
 #[path = "ui_operations.rs"]
 mod operations;
 
@@ -30,7 +47,7 @@ fn combat_details_header_stays_inside_the_panel_at_every_viewport_scale() {
     destination.image = PlanetKind::Water.indices()[0];
     destination.owned = Some(2);
     destination.controlled = Some(2);
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission {
             owner: 1,
             origin: 0,
@@ -41,13 +58,13 @@ fn combat_details_header_stays_inside_the_panel_at_every_viewport_scale() {
         destination.clone(),
     );
     report.id = 42;
-    report.combat_report = Some(crate::core::combat::report::CombatReport {
+    report.combat_report = Some(CombatReport {
         rounds: vec![RoundReport::default()],
         ..default()
     });
     let map = Map {
         rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![origin.clone(), destination.clone()],
     };
     let mut player = Player::new(1, 0);
@@ -118,6 +135,117 @@ fn combat_details_header_stays_inside_the_panel_at_every_viewport_scale() {
                     "{label} outside panel at {viewport:?}: {text:?} vs {inset:?}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn space_fauna_names_fit_combat_headers_without_overlapping_total_controls() {
+    let mut names = HashSet::new();
+    for (creature, count) in
+        SpaceFauna::iter().flat_map(|creature| [1, 3, 5, 8].map(move |count| (creature, count)))
+    {
+        let unit = Unit::Fauna(creature);
+        let unit_name = unit.to_name();
+        assert!(unit_name.len() <= 9 && !unit_name.contains(char::is_whitespace));
+        if count == 1 {
+            assert!(names.insert(unit_name), "creature names must be distinct");
+        }
+        assert_eq!(
+            unit.to_lowername(),
+            creature.to_lowername(),
+            "display names must preserve asset keys"
+        );
+        let origin = Planet::new(0, "Kaelis".into(), Vec2::ZERO, false, 1.0);
+        let mut encounter = Planet::new(1, "Nebula Grazer Family".into(), Vec2::X, false, 1.0);
+        encounter.army.insert(unit, count);
+        let mut report = empty_report(
+            Mission {
+                owner: 1,
+                origin: 0,
+                destination: 1,
+                objective: Icon::Raid,
+                ..default()
+            },
+            encounter.clone(),
+        );
+        let name = report.space_fauna_name().unwrap().to_owned();
+        report.id = 42;
+        report.combat_report = Some(CombatReport {
+            rounds: vec![RoundReport::default()],
+            ..default()
+        });
+        let mut player = Player::new(1, 0);
+        player.reports.push(report);
+        let map = Map {
+            rect: Rect::default(),
+            solar_corner: SolarCorner::BottomLeft,
+            planets: vec![origin, encounter],
+        };
+        let images = ImageIds(HashMap::from([
+            ("deep space".to_owned(), egui::TextureId::User(1)),
+            ("panel".to_owned(), egui::TextureId::User(2)),
+        ]));
+        for viewport in
+            [egui::vec2(1600.0, 900.0), egui::vec2(1024.0, 768.0), egui::vec2(640.0, 480.0)]
+        {
+            let context = egui::Context::default();
+            context.set_global_style(NordDark.custom_style());
+            let mut state = UiState {
+                combat_report: Some(42),
+                ..default()
+            };
+            let size = egui::vec2(1070.0, 700.0);
+            let scale = game_panel_scale(viewport)
+                .min((viewport.x - 16.0) / size.x)
+                .min((viewport.y - 16.0) / size.y);
+            let mut output = egui::FullOutput::default();
+            for _ in 0..3 {
+                output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, viewport)),
+                        ..default()
+                    },
+                    |context| {
+                        draw_panel_on_context(
+                            context,
+                            "combat report",
+                            "panel",
+                            (
+                                viewport.x * 0.5 - size.x * scale * 0.5,
+                                viewport.y * 0.9 - size.y * scale,
+                            ),
+                            (size.x, size.y),
+                            0.0,
+                            scale,
+                            &images,
+                            |ui| {
+                                draw_combat_report(
+                                    ui,
+                                    &mut state,
+                                    &map,
+                                    &player,
+                                    &MultiplayerSession::default(),
+                                    &images,
+                                )
+                            },
+                        );
+                    },
+                );
+                output.textures_delta.clear();
+            }
+            let label = text_rect(&output.shapes, &name);
+            let destination = image_rect(&output.shapes, egui::TextureId::User(1)).unwrap();
+            let controls = text_rect(&output.shapes, "Total:");
+            assert!(
+                label.right() <= destination.left(),
+                "{name} overlaps the encounter image at {viewport:?}"
+            );
+            assert!(
+                destination.right() < controls.left(),
+                "{name} overlaps Total controls at {viewport:?}"
+            );
+            assert!(!has_text(&output.shapes, "Nebula Grazer Family"));
         }
     }
 }
@@ -298,7 +426,7 @@ fn combat_detail_participants_keep_defender_controller_first_and_match_strength_
     planet.controlled = Some(2);
     planet.army.insert(fighter, 9);
     planet.army.dock_protector(1, Army::from([(fighter, 1)]));
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission {
             owner: 3,
             army: Army::from([(fighter, 10)]),
@@ -321,7 +449,7 @@ fn combat_detail_participants_keep_defender_controller_first_and_match_strength_
     assert_eq!(attackers.len(), 1);
     assert_eq!(combat_strength_ranges(&[attackers[0].strength]), vec![(0.0, 1.0)]);
 
-    report.mission.joint_attack = Some(crate::core::missions::JointAttackMission {
+    report.mission.joint_attack = Some(JointAttackMission {
         attackers: [(1, Army::from([(fighter, 1)])), (3, Army::from([(fighter, 9)]))].into(),
         ..default()
     });
@@ -342,9 +470,9 @@ fn combat_detail_participants_keep_defender_controller_first_and_match_strength_
 fn independent_population_uses_its_planet_name_and_neutral_gray_in_combat() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let mut planet = Planet::new(0, "Darian".into(), Vec2::ZERO, false, 1.0);
-    planet.independent_population = crate::core::map::planet::IndependentPopulation::Inhabited;
+    planet.independent_population = IndependentPopulation::Inhabited;
     planet.army.insert(fighter, 4);
-    let report = crate::test_support::empty_report(
+    let report = empty_report(
         Mission {
             owner: 1,
             army: Army::from([(fighter, 2)]),
@@ -373,9 +501,9 @@ fn defeated_independent_population_attack_uses_normal_returning_probe_visibility
     let heavy_laser = Unit::Defense(Defense::HeavyLaser);
     let gauss = Unit::Defense(Defense::GaussCannon);
     let mut planet = Planet::new(0, "Darian".into(), Vec2::ZERO, false, 1.0);
-    planet.independent_population = crate::core::map::planet::IndependentPopulation::Inhabited;
+    planet.independent_population = IndependentPopulation::Inhabited;
     planet.army = Army::from([(rocket, 8), (heavy_laser, 4), (gauss, 2)]).into();
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission {
             owner,
             objective: Icon::Attack,
@@ -388,7 +516,7 @@ fn defeated_independent_population_attack_uses_normal_returning_probe_visibility
     report.scout_probes = 6;
     report.surviving_attacker = Army::from([(Unit::probe(), 6)]);
     report.surviving_defender = report.planet.army.clone();
-    report.combat_report = Some(crate::core::combat::report::CombatReport {
+    report.combat_report = Some(CombatReport {
         rounds: vec![RoundReport::default()],
         ..default()
     });
@@ -407,7 +535,7 @@ fn defeated_independent_population_attack_uses_normal_returning_probe_visibility
 fn deep_space_selection_uses_a_generic_title_and_gray_enemy_name() {
     let mut planet = Planet::new(0, "Void Manta Nursery".into(), Vec2::ZERO, false, 1.0);
     planet.army.insert(Unit::Fauna(SpaceFauna::VoidManta), 1);
-    let report = crate::test_support::empty_report(
+    let report = empty_report(
         Mission {
             owner: 1,
             ..default()
@@ -416,7 +544,7 @@ fn deep_space_selection_uses_a_generic_title_and_gray_enemy_name() {
     );
     let map = Map {
         rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![report.planet.clone()],
     };
     let session = MultiplayerSession::default();
@@ -429,11 +557,11 @@ fn deep_space_selection_uses_a_generic_title_and_gray_enemy_name() {
 
     let defenders = combat_side_participants(&report, &Side::Defender, &session);
     assert_eq!(defenders.len(), 1);
-    assert_eq!(defenders[0].name, "Void Manta Nursery");
+    assert_eq!(defenders[0].name, "Manta");
     assert_eq!(defenders[0].color, neutral);
 
     let matchup = combat_selection_matchup(&report, &session);
-    assert_eq!(matchup.text, "Player 1 vs Void Manta Nursery");
+    assert_eq!(matchup.text, "Player 1 vs Manta");
     assert_eq!(matchup.sections.last().unwrap().format.color, neutral);
 }
 
@@ -443,7 +571,7 @@ fn combat_report_orders_space_fauna_from_weakest_to_strongest() {
     planet.army.insert(Unit::Fauna(SpaceFauna::StarKraken), 1);
     planet.army.insert(Unit::Fauna(SpaceFauna::AetherRay), 2);
     planet.army.insert(Unit::Fauna(SpaceFauna::StarKrakenSpawn), 3);
-    let report = crate::test_support::empty_report(Mission::default(), planet);
+    let report = empty_report(Mission::default(), planet);
 
     assert_eq!(
         combat_report_fauna_units(&report),
@@ -464,10 +592,10 @@ fn mission_report_strength_bar_uses_every_attacking_players_color_and_share() {
     let mut target = Planet::new(0, "Target".into(), Vec2::ZERO, false, 1.0);
     target.controlled = Some(defender);
     target.army.insert(fighter, 5);
-    let report = crate::test_support::empty_report(
+    let report = empty_report(
         Mission {
             owner,
-            joint_attack: Some(crate::core::missions::JointAttackMission {
+            joint_attack: Some(JointAttackMission {
                 attackers: [
                     (owner, Army::from([(fighter, 7)])),
                     (allies[0], Army::from([(fighter, 2)])),
@@ -525,7 +653,7 @@ fn mission_report_strength_bar_hides_an_unknown_attackers_color() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let owner = 3;
     let viewer = 1;
-    let report = crate::test_support::empty_report(
+    let report = empty_report(
         Mission {
             owner,
             objective: Icon::Spy,
@@ -557,10 +685,73 @@ fn mission_report_strength_bar_hides_an_unknown_attackers_color() {
 }
 
 #[test]
+fn mission_report_strength_bar_keeps_the_destination_color_without_stationed_ships() {
+    let owner = 3;
+    let fighter = Unit::Ship(Ship::LightFighter);
+    let session = MultiplayerSession::default();
+    for objective in [Icon::Patrol, Icon::Expedition] {
+        for controller in [Some(owner), None, Some(2)] {
+            for infrastructure in [
+                Army::new(),
+                Army::from([
+                    (Unit::Building(Building::MetalMine), 9),
+                    (Unit::Defense(Defense::RocketLauncher), 9),
+                ]),
+            ] {
+                let mut target = Planet::new(0, "Home".into(), Vec2::ZERO, false, 1.0);
+                target.owned = Some(owner);
+                target.controlled = controller;
+                target.army = infrastructure.into();
+                let report = empty_report(
+                    Mission {
+                        owner,
+                        objective: Icon::Deploy,
+                        return_objective: Some(objective),
+                        army: Army::from([(fighter, 1)]),
+                        ..default()
+                    },
+                    target,
+                );
+                let color = session.player_color(controller.unwrap_or(owner)).color().to_color32();
+                for width in [400.0, 700.0] {
+                    let context = egui::Context::default();
+                    let mut defender_width = 0.0;
+                    let mut output = context.run_ui(Default::default(), |ui| {
+                        ui.set_width(width);
+                        ui.horizontal(|ui| {
+                            defender_width =
+                                ui.available_width() - 140.0 - ui.spacing().item_spacing.x;
+                            draw_mission_report_strength_bars(ui, &report, &session, owner, 140.0);
+                        });
+                    });
+                    output.textures_delta.clear();
+                    let bar = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Rect(rect)
+                                if (rect.rect.width() - defender_width).abs() < 0.1
+                                    && rect.rect.height() == 6.0 =>
+                            {
+                                Some(rect)
+                            },
+                            _ => None,
+                        })
+                        .expect(
+                            "destination bar must fill its column even without stationed ships",
+                        );
+                    assert_eq!(bar.fill, color, "{objective:?}, controller {controller:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn mission_report_strength_bar_marks_an_empty_planet_in_neutral_gray() {
     let fighter = Unit::Ship(Ship::LightFighter);
     let owner = 3;
-    let report = crate::test_support::empty_report(
+    let report = empty_report(
         Mission {
             owner,
             objective: Icon::Attack,
@@ -602,10 +793,10 @@ fn combat_selection_names_both_sides_in_player_colors_and_keeps_planet_clear() {
     let mut planet = Planet::new(0, "Target".into(), Vec2::ZERO, false, 1.0);
     planet.controlled = Some(2);
     planet.army.dock_protector(4, Army::from([(fighter, 1)]));
-    let report = crate::test_support::empty_report(
+    let report = empty_report(
         Mission {
             owner: 3,
-            joint_attack: Some(crate::core::missions::JointAttackMission {
+            joint_attack: Some(JointAttackMission {
                 attackers: [(1, Army::from([(fighter, 1)])), (3, Army::from([(fighter, 1)]))]
                     .into(),
                 ..default()
@@ -655,12 +846,10 @@ fn combat_selection_places_planet_before_text_with_compact_gap() {
 
 #[test]
 fn battle_selection_starts_the_chosen_report_without_changing_replay_mode() {
-    use crate::core::combat::cinematic_ui::CombatView;
-
     let map = Map::new(1, 0);
     let mut planet = map.get(0).clone();
     planet.controlled = Some(2);
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission {
             owner: 1,
             destination: 0,
@@ -669,7 +858,7 @@ fn battle_selection_starts_the_chosen_report_without_changing_replay_mode() {
         planet,
     );
     report.id = 42;
-    report.combat_report = Some(crate::core::combat::report::CombatReport {
+    report.combat_report = Some(CombatReport {
         rounds: vec![RoundReport::default()],
         ..default()
     });
@@ -799,7 +988,7 @@ fn planetary_shield_label_toggles_overload_but_not_cooldown() {
         }]
     ));
 
-    planet.shield_overload = crate::core::map::planet::ShieldOverloadState::Cooldown;
+    planet.shield_overload = ShieldOverloadState::Cooldown;
     pending.commands.clear();
     let mut output = context.run_ui(egui::RawInput::default(), |context| {
         egui::CentralPanel::default().show(context, |ui| {
@@ -811,7 +1000,7 @@ fn planetary_shield_label_toggles_overload_but_not_cooldown() {
     click_text(&context, "Shield cooling down:", |ui| {
         shop::draw_planetary_shield_overload(ui, &mut planet, &mut pending, 5);
     });
-    assert_eq!(planet.shield_overload, crate::core::map::planet::ShieldOverloadState::Cooldown);
+    assert_eq!(planet.shield_overload, ShieldOverloadState::Cooldown);
     assert!(pending.commands.is_empty());
 }
 
@@ -1077,14 +1266,13 @@ fn complete_building_catalog_keeps_both_world_specific_government_buildings() {
     assert_eq!(catalog, expected);
     assert_eq!(Unit::all_valid(false)[0], expected);
 }
-use crate::core::units::ships::Ship;
 
 #[test]
 fn laboratory_conversion_uses_a_sounding_information_toast_with_the_gained_resource() {
     let notification = shop::conversion_success_message(12_345, ResourceName::Metal);
 
     assert_eq!(notification.message, "Gained 12.345 Metal.");
-    assert_eq!(notification.level, crate::core::messages::MessageLevel::Info);
+    assert_eq!(notification.level, MessageLevel::Info);
     assert!(!notification.silent);
 }
 
@@ -1097,7 +1285,7 @@ fn combat_selection_uses_prebattle_planet_artwork() {
         turn: 1,
         planet_destroyed: true,
         raid_loot: Default::default(),
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission {
                 destination: destination.id,
                 ..default()
@@ -1119,7 +1307,7 @@ fn combat_details_put_the_space_dock_above_the_planetary_shield() {
     let report = MissionReport {
         id: 1,
         turn: 1,
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission {
                 destination: planet.id,
                 objective: Icon::Attack,
@@ -1177,7 +1365,7 @@ fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() 
         destination_owned: Some(2),
         destination_controlled: Some(2),
         combat_report: Some(Default::default()),
-        ..crate::test_support::empty_report(
+        ..empty_report(
             Mission {
                 owner: 1,
                 destination: planet.id,
@@ -1210,9 +1398,8 @@ fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() 
             Layout::left_to_right(Align::Center),
             |ui| {
                 body_font_size = TextStyle::Body.resolve(ui.style()).size;
-                assert!(
-                    draw_combat_resource_gains(ui, &report, &Player::new(2, 0), &images).is_some()
-                );
+                assert!(draw_combat_defender_salvage(ui, &report, &Player::new(2, 0), &images)
+                    .is_some());
             },
         );
     });
@@ -1234,17 +1421,17 @@ fn crawler_salvage_summary_shows_each_recovered_resource_only_to_the_defender() 
          label={label_center_y}, amount={amount_center_y}"
     );
     let mut attacker_output = context.run_ui(input(), |ui| {
-        assert!(draw_combat_resource_gains(ui, &report, &Player::new(1, 0), &images).is_none());
+        assert!(draw_combat_defender_salvage(ui, &report, &Player::new(1, 0), &images).is_none());
     });
     attacker_output.textures_delta.clear();
     assert!(!has_text(&attacker_output.shapes, "Recovered:"));
 }
 
 #[test]
-fn raid_combat_details_reuse_resource_icons_and_show_seized_cargo_to_both_sides() {
+fn raid_combat_details_do_not_repeat_seized_resources_for_either_side() {
     let mut planet = Planet::new(1, "Raid target".into(), Vec2::ZERO, false, 1.0);
     planet.colonize(2);
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission {
             owner: 1,
             objective: Icon::Raid,
@@ -1266,19 +1453,18 @@ fn raid_combat_details_reuse_resource_icons_and_show_seized_cargo_to_both_sides(
                     ..default()
                 },
                 |ui| {
-                    assert!(draw_combat_resource_gains(
+                    assert!(draw_combat_defender_salvage(
                         ui,
                         &report,
                         &Player::new(viewer, 0),
                         &images
                     )
-                    .is_some());
+                    .is_none());
                 },
             );
             output.textures_delta.clear();
             for text in ["Raided:", "125", "43", "7"] {
-                assert!(has_text(&output.shapes, text));
-                assert!(text_rect(&output.shapes, text).right() <= width);
+                assert!(!has_text(&output.shapes, text));
             }
             assert!(!has_text(&output.shapes, "Recovered:"));
         }
@@ -1296,7 +1482,7 @@ fn crawler_salvage_is_shown_only_for_totals_or_the_last_round() {
 
 #[test]
 fn world_shortcuts_follow_acquisition_order_with_home_first() {
-    let model = crate::core::simulation::GameModel::new([12; 32], Default::default()).unwrap();
+    let model = GameModel::new([12; 32], Default::default()).unwrap();
     let mut player = model.players[0].clone();
     let mut worlds = model
         .map
@@ -1321,7 +1507,7 @@ fn world_shortcuts_follow_acquisition_order_with_home_first() {
 
 #[test]
 fn enemy_counts_use_visible_intelligence_not_hidden_ownership() {
-    let mut model = crate::core::simulation::GameModel::new([12; 32], Default::default()).unwrap();
+    let mut model = GameModel::new([12; 32], Default::default()).unwrap();
     let player = model.players[0].clone();
     let enemy_home = model.players[1].home_planet;
     let hidden =
@@ -1365,7 +1551,7 @@ fn enemy_counts_use_visible_intelligence_not_hidden_ownership() {
 
 #[test]
 fn adjacent_trading_posts_reveal_enemy_owner_counts_without_mission_intelligence() {
-    let mut model = crate::core::simulation::GameModel::new([13; 32], Default::default()).unwrap();
+    let mut model = GameModel::new([13; 32], Default::default()).unwrap();
     let player = model.players[0].clone();
     let enemy = model.players[1].home_planet;
     let home_position = model.map.get(player.home_planet).position;
@@ -1389,7 +1575,7 @@ fn adjacent_trading_posts_reveal_enemy_owner_counts_without_mission_intelligence
 
 #[test]
 fn public_strategic_structures_reveal_and_extend_known_enemy_owner_counts() {
-    let mut model = crate::core::simulation::GameModel::new([13; 32], Default::default()).unwrap();
+    let mut model = GameModel::new([13; 32], Default::default()).unwrap();
     let player = model.players[0].clone();
     let enemy_id = model.players[1].id;
     let enemy_home = model.players[1].home_planet;
@@ -1496,7 +1682,7 @@ fn spy_reports_reveal_buildings_and_orbitals_one_intelligence_tier_at_a_time() {
             surviving_defender: target.army.clone(),
             destination_owned: target.owned,
             destination_controlled: target.controlled,
-            ..crate::test_support::empty_report(mission, target.clone())
+            ..empty_report(mission, target.clone())
         });
 
         let known = player.last_info(&target, &[]).expect("Spy report should create intelligence");
@@ -1531,7 +1717,7 @@ fn spy_railgun_level_requires_twenty_one_returning_probes() {
                 surviving_defender: target.army.clone(),
                 destination_owned: target.owned,
                 destination_controlled: target.controlled,
-                ..crate::test_support::empty_report(
+                ..empty_report(
                     Mission {
                         owner: player.id,
                         origin: player.home_planet,
@@ -1713,9 +1899,6 @@ fn intelligence_stat_leaves_space_before_the_next_section() {
 
 #[test]
 fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
-    use crate::multiplayer::model::{GameMembership, GameRecord};
     let mut model = GameModel::new([21; 32], Default::default()).unwrap();
     let player = model.players[0].clone();
     model
@@ -1798,10 +1981,6 @@ fn enemy_progress_fits_beside_long_names_and_disconnected_status() {
 
 #[test]
 fn eliminated_player_shows_zero_progress_and_a_struck_name() {
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
-    use crate::multiplayer::model::{GameMembership, GameRecord};
-
     let mut model = GameModel::new(
         [24; 32],
         GameRules {
@@ -1867,10 +2046,6 @@ fn eliminated_player_shows_zero_progress_and_a_struck_name() {
 
 #[test]
 fn finished_game_winner_keeps_progress_and_unstruck_name_while_spectating() {
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
-    use crate::multiplayer::model::{GameMembership, GameRecord};
-
     let mut model = GameModel::new(
         [25; 32],
         GameRules {
@@ -1943,10 +2118,6 @@ fn finished_game_winner_keeps_progress_and_unstruck_name_while_spectating() {
 
 #[test]
 fn players_panel_width_follows_the_longest_name_and_keeps_its_left_inset() {
-    use crate::core::identity::{GameCode, GameId, UserId};
-    use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
-    use crate::multiplayer::model::{GameMembership, GameRecord};
-
     let model = GameModel::new([22; 32], Default::default()).unwrap();
     let player = model.players[0].clone();
     let id = GameId::new("matching-hud-panels");
@@ -2547,11 +2718,6 @@ fn world_shortcut_centers_the_name_and_only_shows_a_fleet_icon_for_a_fleet() {
 
 #[test]
 fn world_shortcut_shows_a_protecting_fleet_in_its_players_selected_color() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::player::PlayerColor;
-    use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = GameModel::new([31; 32], Default::default()).unwrap();
     let protector_color = PlayerColor::new(4).unwrap();
     model.players[1].color = protector_color;
@@ -2725,11 +2891,6 @@ fn world_groups_use_separate_headings_with_matching_count_sizes() {
 
 #[test]
 fn owned_worlds_panel_expands_to_fit_full_names_and_every_fleet_icon() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::player::PlayerColor;
-    use crate::core::simulation::{GameModel, MatchStatus, PersistedGame};
-    use crate::multiplayer::model::GameRecord;
-
     let mut model = GameModel::new([41; 32], Default::default()).unwrap();
     model.players[1].color = PlayerColor::new(4).unwrap();
     let mut session = MultiplayerSession::default();
@@ -2761,7 +2922,7 @@ fn owned_worlds_panel_expands_to_fit_full_names_and_every_fleet_icon() {
     ]));
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![planet],
     };
     let player = Player::new(1, 0);
@@ -2809,10 +2970,6 @@ fn owned_worlds_panel_expands_to_fit_full_names_and_every_fleet_icon() {
 
 #[test]
 fn protected_worlds_show_the_controller_and_every_protecting_fleet() {
-    use crate::core::identity::{GameCode, GameId};
-    use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
-    use crate::multiplayer::model::GameRecord;
-
     let model = GameModel::new(
         [42; 32],
         GameRules {
@@ -2853,7 +3010,7 @@ fn protected_worlds_show_the_controller_and_every_protecting_fleet() {
     ]));
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![planet],
     };
     let context = egui::Context::default();
@@ -2918,7 +3075,7 @@ fn world_list_shows_ownership_limit_and_previews_hovered_worlds_without_selectin
         ImageIds(planets.iter().map(|planet| (planet.image(), egui::TextureId::User(1))).collect());
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets,
     };
     let player = Player::new(1, 0);
@@ -3005,7 +3162,7 @@ fn owned_worlds_highlight_the_selected_planet_or_moon() {
     );
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![planet, moon],
     };
 
@@ -3020,7 +3177,7 @@ fn owned_worlds_highlight_the_selected_planet_or_moon() {
         };
         let mut settings = Settings::default();
         let mut player = Player::new(1, 1);
-        player.color = crate::core::player::PlayerColor::new(color_index).unwrap();
+        player.color = PlayerColor::new(color_index).unwrap();
         let player_color = player.color().color().to_color32();
         let input = || egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -3110,7 +3267,7 @@ fn owned_worlds_panel_grows_with_the_number_of_planets() {
         );
         let map = Map {
             rect: Rect::default(),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets,
         };
         let player = Player::new(1, 0);
@@ -3212,12 +3369,12 @@ fn owned_worlds_panel_expands_after_worlds_are_acquired() {
         ImageIds(planets.iter().map(|planet| (planet.image(), egui::TextureId::User(1))).collect());
     let small_map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: planets[..1].to_vec(),
     };
     let expanded_map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets,
     };
     let context = egui::Context::default();
@@ -3253,7 +3410,7 @@ fn owned_worlds_panel_scrolls_before_reaching_the_reserved_lower_panel_space() {
         ImageIds(planets.iter().map(|planet| (planet.image(), egui::TextureId::User(1))).collect());
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets,
     };
     let player = Player::new(1, 0);
@@ -3316,7 +3473,7 @@ fn owned_worlds_panel_uses_the_compact_screen_edge_inset_below_the_resource_pane
     context.set_global_style(NordDark.custom_style());
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: Vec::new(),
     };
     let player = Player::new(1, 0);
@@ -3366,7 +3523,7 @@ fn spectator_has_no_owned_worlds_panel() {
             context,
             &Map {
                 rect: Rect::default(),
-                solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+                solar_corner: SolarCorner::BottomLeft,
                 planets: Vec::new(),
             },
             &player,
@@ -3402,7 +3559,7 @@ fn strategic_hud_panels_scale_with_viewports() {
         ]));
         let map = Map {
             rect: Rect::default(),
-            solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+            solar_corner: SolarCorner::BottomLeft,
             planets: vec![planet],
         };
         let player = Player::new(1, 0);
@@ -3507,7 +3664,7 @@ fn resource_bar_uses_the_shared_hud_frame_without_an_image_texture() {
     ]));
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: Vec::new(),
     };
     let player = Player::default();
@@ -3652,7 +3809,7 @@ fn queued_construction_immediately_changes_the_top_bar_energy_balance() {
         ("deuterium".to_string(), egui::TextureId::User(5)),
         ("energy".to_string(), egui::TextureId::User(6)),
     ]));
-    let mut model = crate::core::simulation::GameModel::new([47; 32], Default::default()).unwrap();
+    let mut model = GameModel::new([47; 32], Default::default()).unwrap();
     let home_planet = model.players[0].home_planet;
     model.map.get_mut(home_planet).buy.push(Unit::Building(Building::MetalMine));
     let player = &model.players[0];
@@ -3692,7 +3849,7 @@ fn committed_railguns_immediately_reduce_top_bar_energy_until_the_draft_resets()
         ("deuterium".to_string(), egui::TextureId::User(5)),
         ("energy".to_string(), egui::TextureId::User(6)),
     ]));
-    let mut model = crate::core::simulation::GameModel::new([49; 32], Default::default()).unwrap();
+    let mut model = GameModel::new([49; 32], Default::default()).unwrap();
     let player_id = model.players[0].id;
     let first = model.players[0].home_planet;
     let worlds = model
@@ -3744,7 +3901,7 @@ fn committed_railguns_immediately_reduce_top_bar_energy_until_the_draft_resets()
 
 #[test]
 fn production_hover_breakdowns_exclude_controlled_planets_and_empty_moons() {
-    let mut model = crate::core::simulation::GameModel::new([46; 32], Default::default()).unwrap();
+    let mut model = GameModel::new([46; 32], Default::default()).unwrap();
     let mut player = model.players[0].clone();
     for world in &mut model.map.planets {
         world.owned = None;
@@ -3814,7 +3971,7 @@ fn energy_tooltip_shows_only_the_next_turn_net_balance() {
         default(),
     );
     let images = ImageIds(HashMap::from([("energy".to_string(), texture.id())]));
-    let mut model = crate::core::simulation::GameModel::new([48; 32], Default::default()).unwrap();
+    let mut model = GameModel::new([48; 32], Default::default()).unwrap();
     let home_planet = model.players[0].home_planet;
     model.map.get_mut(home_planet).buy.push(Unit::Building(Building::MetalMine));
     let player = &model.players[0];
@@ -3846,7 +4003,7 @@ fn hovering_energy_production_lists_planets_before_railgun_fire() {
     unpowered.army.insert(Unit::Building(Building::MetalMine), 3);
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![planet, unpowered],
     };
     let player = Player::new(0, 0);
@@ -3895,7 +4052,7 @@ fn buying_a_building_that_crosses_below_zero_warns_about_next_turn() {
     )
     .unwrap();
     assert_eq!(warning.message, "Next turn: Energy shortage.");
-    assert_eq!(warning.level, crate::core::messages::MessageLevel::Warning);
+    assert_eq!(warning.level, MessageLevel::Warning);
 
     assert!(shop::energy_shortage_warning(
         EnergyGrid {
@@ -4009,12 +4166,12 @@ fn resource_tooltip_shows_queued_production_as_production() {
     let images = ImageIds(HashMap::from([("metal".to_string(), metal_texture)]));
     let mut planet = Planet::new(0, "Foundry".into(), Vec2::ZERO, false, 1.0);
     planet.owned = Some(0);
-    planet.resources = crate::core::resources::Resources::new(10, 0, 0);
+    planet.resources = Resources::new(10, 0, 0);
     planet.army.insert(Unit::Building(Building::MetalMine), 1);
     planet.buy.push(Unit::Building(Building::MetalMine));
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![planet],
     };
     let player = Player::new(0, 0);
@@ -4076,7 +4233,7 @@ fn brief_space_dock_hover_keeps_cost_and_mode_controls_without_description_or_st
     planet.army.insert(Unit::space_dock(), 1);
     let mut player = Player::new(0, 0);
     let mut state = UiState::default();
-    let mut senate = crate::core::units::operations::SenateSupport::default();
+    let mut senate = SenateSupport::default();
     let mut pending = PendingTurnCommands::default();
     let images = ImageIds::default();
     let mut render = |brief| {
@@ -4137,7 +4294,7 @@ fn brief_ship_hover_hides_combat_movement_and_rapid_fire_sections() {
     planet.controlled = Some(0);
     let mut player = Player::new(0, 0);
     let mut state = UiState::default();
-    let mut senate = crate::core::units::operations::SenateSupport::default();
+    let mut senate = SenateSupport::default();
     let mut pending = PendingTurnCommands::default();
     let unit = Unit::Ship(Ship::WarSun);
     let images = ImageIds::default();
@@ -4199,7 +4356,7 @@ fn brief_ship_hover_hides_combat_movement_and_rapid_fire_sections() {
 fn hovering_production_expands_the_next_turn_planet_breakdown() {
     let mut planet = Planet::new(0, "Focused".into(), Vec2::ZERO, false, 1.0);
     planet.owned = Some(0);
-    planet.resources = crate::core::resources::Resources::new(10, 0, 0);
+    planet.resources = Resources::new(10, 0, 0);
     planet.army.insert(Unit::Building(Building::MetalMine), 1);
     planet.army.insert(Unit::Building(Building::Reactor), 2);
     planet.army.insert(Unit::Building(Building::Terraformer), 1);
@@ -4207,7 +4364,7 @@ fn hovering_production_expands_the_next_turn_planet_breakdown() {
     planet.terraformer_focus = Some(ResourceName::Metal);
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![planet],
     };
     let player = Player::new(0, 0);
@@ -4257,9 +4414,6 @@ fn hovering_production_expands_the_next_turn_planet_breakdown() {
 
 #[test]
 fn resource_production_hover_folds_recycler_mean_and_half_range_into_white_totals() {
-    use crate::core::recycling::{RECYCLER_ASTEROID_OUTPUT_MAX, RECYCLER_ASTEROID_OUTPUT_MIN};
-    use crate::core::simulation::GameModel;
-
     let mut model = GameModel::new([29; 32], Default::default()).unwrap();
     let player_id = model.players[0].id;
     let target = recycler_sources(&model.map, &BTreeMap::new())
@@ -4349,7 +4503,7 @@ fn resource_production_hover_folds_recycler_mean_and_half_range_into_white_total
 fn resource_breakdown_colors_each_planets_terraformer_modifier() {
     let mut focused = Planet::new(0, "Focused".into(), Vec2::ZERO, false, 1.0);
     focused.owned = Some(0);
-    focused.resources = crate::core::resources::Resources::new(10, 10, 0);
+    focused.resources = Resources::new(10, 10, 0);
     focused.army.insert(Unit::Building(Building::MetalMine), 1);
     focused.army.insert(Unit::Building(Building::CrystalMine), 1);
     focused.army.insert(Unit::Building(Building::Reactor), 2);
@@ -4358,7 +4512,7 @@ fn resource_breakdown_colors_each_planets_terraformer_modifier() {
     focused.terraformer_focus = Some(ResourceName::Metal);
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![focused],
     };
     let player = Player::new(0, 0);
@@ -4394,12 +4548,12 @@ fn resource_breakdown_colors_each_planets_terraformer_modifier() {
 fn resource_breakdown_hides_terraformers_without_an_active_modifier() {
     let mut planet = Planet::new(0, "Quiet World".into(), Vec2::ZERO, false, 1.0);
     planet.owned = Some(0);
-    planet.resources = crate::core::resources::Resources::new(10, 0, 0);
+    planet.resources = Resources::new(10, 0, 0);
     planet.army.insert(Unit::Building(Building::MetalMine), 1);
     planet.army.insert(Unit::Building(Building::Terraformer), 5);
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![planet],
     };
     let player = Player::new(0, 0);
@@ -4429,7 +4583,7 @@ fn controlled_world_shortcut_keeps_the_world_selected_as_a_mission_origin() {
     let images = ImageIds(HashMap::from([(planet.image(), egui::TextureId::User(1))]));
     let map = Map {
         rect: Rect::default(),
-        solar_corner: crate::core::map::model::SolarCorner::BottomLeft,
+        solar_corner: SolarCorner::BottomLeft,
         planets: vec![planet],
     };
     let player = Player::new(1, 0);
@@ -4825,7 +4979,7 @@ fn mission_hover_panels_reverse_immediately_after_pointer_out() {
 
 #[test]
 fn mission_fleet_hover_replaces_the_mission_label_with_fleet_strength() {
-    let model = crate::core::simulation::GameModel::new([71; 32], Default::default()).unwrap();
+    let model = GameModel::new([71; 32], Default::default()).unwrap();
     let player = model.players[0].clone();
     let mut mission = Mission {
         owner: player.id,
@@ -4980,10 +5134,10 @@ fn allied_mission_hover_lists_every_contingent_owner_first_in_fixed_columns() {
         origin,
         destination,
         objective: Icon::Attack,
-        battle_plan: crate::core::combat::plan::BattlePlan {
+        battle_plan: BattlePlan {
             automatic_tactic: false,
-            target_priority: crate::core::combat::plan::TargetPriority::LightTargets,
-            protection: crate::core::combat::plan::ProtectionPosture::Vanguard,
+            target_priority: TargetPriority::LightTargets,
+            protection: ProtectionPosture::Vanguard,
             ..default()
         },
         army: hovered_army.clone(),

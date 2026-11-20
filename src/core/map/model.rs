@@ -205,6 +205,23 @@ impl Map {
         solar_star_position(self.rect, self.solar_corner)
     }
 
+    /// Checks that a new space destination clears the Sun as well as planets and moons.
+    pub(crate) fn valid_space_target(&self, origin: PlanetId, center: Vec2) -> bool {
+        center.distance_squared(self.solar_star_position()) > (SOLAR_STAR_SIZE * 0.5).powi(2)
+            && self.valid_space_coordinates(origin, center)
+    }
+
+    /// Checks the origin, map bounds, and clearance from planets and moons for a space mission.
+    pub(crate) fn valid_space_coordinates(&self, origin: PlanetId, center: Vec2) -> bool {
+        center.is_finite()
+            && self.rect.contains(center)
+            && self.try_get(origin).is_some()
+            && self
+                .planets
+                .iter()
+                .all(|planet| center.distance(planet.position) > planet.size() * 0.7)
+    }
+
     /// Returns the relative solar band for a non-moon planet.
     pub fn solar_band(&self, planet_id: PlanetId) -> Option<SolarBand> {
         let planet = self.try_get(planet_id)?;

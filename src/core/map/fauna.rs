@@ -20,6 +20,7 @@ use crate::core::states::GameState;
 use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::Unit;
 use crate::utils::NameFromEnum;
+use SpaceFauna::*;
 
 pub(super) const FAUNA_ACTION_SECONDS: f32 = 7.5;
 pub(super) const FAUNA_AFTERMATH_SECONDS: f32 =
@@ -165,7 +166,6 @@ impl Creature {
 /// Mouth anchors are measured on each actual map sprite in normalized, Y-up coordinates.
 /// Keeping the jaw fixed while deforming the rest of the mesh also pins its weapon muzzle.
 fn anatomy(fauna: SpaceFauna) -> (Vec2, Vec2) {
-    use SpaceFauna::*;
     let (mouth, forward) = match fauna {
         AetherRay => (Vec2::new(0.29, -0.10), Vec2::new(1.0, -0.32)),
         IonWisp => (Vec2::new(0.33, 0.08), Vec2::new(1.0, 0.32)),
@@ -188,7 +188,6 @@ fn anatomy(fauna: SpaceFauna) -> (Vec2, Vec2) {
 }
 
 fn deform(fauna: SpaceFauna, point: Vec2, elapsed: f32) -> Vec2 {
-    use SpaceFauna::*;
     let (mouth, forward) = anatomy(fauna);
     let normal = Vec2::new(-forward.y, forward.x);
     let relative = point - mouth;

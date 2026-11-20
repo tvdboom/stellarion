@@ -1,5 +1,11 @@
 use super::*;
+
 use crate::core::combat::plan::{CombatTactic, ProtectionPosture, TargetPriority};
+use crate::core::combat::report::Side;
+use crate::core::combat::resolution::resolve_combat_with_rng;
+use crate::core::map::planet::{Garrison, Planet};
+use crate::core::missions::BattleFleet;
+use crate::core::units::defense::Defense;
 
 fn siege_plan() -> BattlePlan {
     BattlePlan {
@@ -110,7 +116,6 @@ fn strongest_original_fleet_wins_in_every_merge_order_even_against_accumulated_g
 
 #[test]
 fn docking_inherits_the_stronger_same_players_plan_including_auto_intent() {
-    use crate::core::map::planet::{Garrison, Planet};
     let fighters = Army::from([(Unit::Ship(Ship::LightFighter), 4)]);
     let bomber = Army::from([(Unit::Ship(Ship::Bomber), 1)]);
     let unrelated = Army::from([(Unit::war_sun(), 100)]);
@@ -177,11 +182,10 @@ fn docking_inherits_the_stronger_same_players_plan_including_auto_intent() {
 
 #[test]
 fn docking_ties_keep_stationed_orders_and_defenses_do_not_vote() {
-    use crate::core::map::planet::Planet;
     let mut world = Planet::new(0, "World".into(), Vec2::ZERO, false, 1.0);
     world.controlled = Some(1);
     world.army.insert(Unit::Ship(Ship::LightFighter), 3);
-    world.army.insert(Unit::Defense(crate::core::units::defense::Defense::PlasmaTurret), 1_000);
+    world.army.insert(Unit::Defense(Defense::PlasmaTurret), 1_000);
     world.battle_plan = siege_plan();
     world.dock_with_battle_plan(Army::from([(Unit::Ship(Ship::Bomber), 1)]), BattlePlan::default());
     assert_eq!(world.battle_plan, siege_plan(), "equal production keeps standing orders");
@@ -202,13 +206,11 @@ fn docking_ties_keep_stationed_orders_and_defenses_do_not_vote() {
 
 #[test]
 fn merged_source_fleets_share_the_strongest_plan_through_combat_and_draw_returns() {
-    use crate::core::combat::resolution::resolve_combat_with_rng;
-    let mut origin =
-        crate::core::map::planet::Planet::new(0, "Home".into(), Vec2::ZERO, false, 1.0);
+    let mut origin = Planet::new(0, "Home".into(), Vec2::ZERO, false, 1.0);
     origin.controlled = Some(1);
-    let mut target = crate::core::map::planet::Planet::new(1, "Target".into(), Vec2::X, false, 1.0);
+    let mut target = Planet::new(1, "Target".into(), Vec2::X, false, 1.0);
     target.controlled = Some(2);
-    target.army.insert(Unit::Defense(crate::core::units::defense::Defense::RocketLauncher), 1);
+    target.army.insert(Unit::Defense(Defense::RocketLauncher), 1);
     target.army.insert(Unit::planetary_shield(), 100);
     let mut first = Mission::new_with_id(
         41,
@@ -242,7 +244,7 @@ fn merged_source_fleets_share_the_strongest_plan_through_combat_and_draw_returns
         assert!([41, 42].contains(&ship.fleet_id));
         assert_eq!(ship.battle_plan, siege_plan());
     }
-    let plans = report.battle_plan_fleets(&crate::core::combat::report::Side::Attacker);
+    let plans = report.battle_plan_fleets(&Side::Attacker);
     assert_eq!(plans.len(), 1, "one plan and combined affinity per commander");
     assert_eq!(plans[0].2, siege_plan());
     assert_eq!(plans[0].3, first.army);
@@ -258,7 +260,7 @@ fn merged_source_fleets_share_the_strongest_plan_through_combat_and_draw_returns
 fn source_fleet_identity_and_composition_are_validated_and_explicit_orders_reform_them() {
     let mut model = started_model(2);
     let fighter = Unit::Ship(Ship::LightFighter);
-    let source = crate::core::missions::BattleFleet {
+    let source = BattleFleet {
         id: 901,
         army: Army::from([(fighter, 2)]),
         battle_plan: siege_plan(),
@@ -434,6 +436,7 @@ fn dispatch_freezes_selected_orders_and_draft_copy_preserves_them() {
         chosen,
         false,
         false,
+        None,
     )
     .unwrap();
     apply_battle_plan(&mut model, 1, origin, BattlePlan::default()).unwrap();

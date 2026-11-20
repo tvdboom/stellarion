@@ -1,16 +1,29 @@
 use rand::SeedableRng;
 
 use super::*;
-use crate::core::combat::report::CombatReport;
+use bevy::ecs::system::RunSystemOnce;
+
+use crate::core::combat::report::{CombatReport, Side};
+use crate::core::combat::resolution::resolve_combat_with_rng;
+use crate::core::identity::{GameCode, GameId, UserId};
+use crate::core::loading::{
+    refresh_gameplay_projection, refresh_turn_draft, PublicStructureChangeMsg,
+};
+use crate::core::map::icon::Icon;
 use crate::core::messages::MessageLevel;
-use crate::core::missions::BombingRaid;
-use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame};
+use crate::core::missions::{BombingRaid, JointAttackMission};
+use crate::core::resources::Resources;
+use crate::core::simulation::{GameModel, GameRules, MatchStatus, PersistedGame, TurnCommand};
+use crate::core::systems::testing_boost_keys;
 use crate::core::trading::{ResourceLoan, ResourceLoanTerm};
+use crate::core::units::buildings::Building;
+use crate::core::units::fauna::SpaceFauna;
 use crate::core::units::ships::Ship;
-use crate::core::units::Army;
+use crate::core::units::{Amount, Army};
+use crate::multiplayer::client::tests::{local_practice_app, settle_local_practice};
 use crate::multiplayer::client::MultiplayerSession;
 use crate::multiplayer::model::{GameMembership, GameRecord};
-use bevy::ecs::system::RunSystemOnce;
+use crate::test_support::empty_report;
 
 #[test]
 fn resource_hub_repayment_reminder_aggregates_loans_due_next_turn() {
@@ -33,7 +46,7 @@ fn resource_hub_repayment_reminder_aggregates_loans_due_next_turn() {
             planet_id: posts[0],
             issued_turn: 2,
             due_turn: 5,
-            principal: crate::core::resources::Resources::new(100, 200, 0),
+            principal: Resources::new(100, 200, 0),
             term: ResourceLoanTerm::Long,
         },
         ResourceLoan {
@@ -41,7 +54,7 @@ fn resource_hub_repayment_reminder_aggregates_loans_due_next_turn() {
             planet_id: posts[1],
             issued_turn: 3,
             due_turn: 5,
-            principal: crate::core::resources::Resources::new(0, 0, 1_000),
+            principal: Resources::new(0, 0, 1_000),
             term: ResourceLoanTerm::Medium,
         },
         ResourceLoan {
@@ -49,7 +62,7 @@ fn resource_hub_repayment_reminder_aggregates_loans_due_next_turn() {
             planet_id: posts[2],
             issued_turn: 3,
             due_turn: 6,
-            principal: crate::core::resources::Resources::new(9_999, 0, 0),
+            principal: Resources::new(9_999, 0, 0),
             term: ResourceLoanTerm::Long,
         },
         ResourceLoan {
@@ -57,7 +70,7 @@ fn resource_hub_repayment_reminder_aggregates_loans_due_next_turn() {
             planet_id: posts[3],
             issued_turn: 3,
             due_turn: 5,
-            principal: crate::core::resources::Resources::new(8_888, 0, 0),
+            principal: Resources::new(8_888, 0, 0),
             term: ResourceLoanTerm::Medium,
         },
     ];
@@ -74,13 +87,6 @@ fn resource_hub_repayment_reminder_aggregates_loans_due_next_turn() {
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 #[test]
 fn local_practice_end_turn_advances_the_displayed_game_after_testing_shortcuts() {
-    use crate::core::loading::{
-        refresh_gameplay_projection, refresh_turn_draft, PublicStructureChangeMsg,
-    };
-    use crate::core::simulation::{MatchStatus, TurnCommand};
-    use crate::core::systems::testing_boost_keys;
-    use crate::multiplayer::client::tests::{local_practice_app, settle_local_practice};
-    use crate::multiplayer::client::MultiplayerSession;
     use bevy::ecs::system::RunSystemOnce;
 
     let mut app = local_practice_app();
@@ -135,7 +141,6 @@ fn local_practice_end_turn_advances_the_displayed_game_after_testing_shortcuts()
         assert!(pending.is_editable());
         assert_eq!(pending.turn, model.turn);
         if turn >= 2 {
-            use crate::core::units::Amount;
             assert_eq!(
                 app.world()
                     .resource::<Map>()
@@ -233,7 +238,7 @@ fn protected_player_sees_the_complete_fleet_without_scanner_coverage() {
         protector.id,
         origin,
         destination,
-        crate::core::map::icon::Icon::Protect,
+        Icon::Protect,
         fleet.clone(),
         BombingRaid::None,
         false,
@@ -250,10 +255,6 @@ fn protected_player_sees_the_complete_fleet_without_scanner_coverage() {
 
 #[test]
 fn joint_attack_does_not_reveal_an_allies_route_without_scanner_coverage() {
-    use crate::core::map::icon::Icon;
-    use crate::core::missions::JointAttackMission;
-    use crate::core::units::buildings::Building;
-
     let mut map = Map::new_with_rng(3, 100, &mut rand_chacha::ChaCha8Rng::from_seed([41; 32]));
     let worlds = map
         .planets
@@ -321,9 +322,7 @@ fn joint_attack_does_not_reveal_an_allies_route_without_scanner_coverage() {
 }
 
 #[test]
-fn returning_probes_create_a_reports_panel_toast() {
-    use crate::core::combat::resolution::resolve_combat_with_rng;
-
+fn returning_probes_create_a_visible_report_and_direct_report_toast() {
     let mut model = GameModel::new(
         [7; 32],
         GameRules {
@@ -360,7 +359,8 @@ fn returning_probes_create_a_reports_panel_toast() {
     .with_return_objective(Icon::Spy);
     let mut rng = rand_chacha::ChaCha8Rng::from_seed([4; 32]);
     let report = resolve_combat_with_rng(turn, &mission, &destination, &mut rng);
-    assert!(report.hidden, "return arrivals stay out of the visible report list");
+    assert!(!report.hidden, "return arrivals remain visible in the report list");
+    let report_id = report.id;
     model.players[0].push_report(report);
 
     let origin_name = origin.name;
@@ -393,13 +393,11 @@ fn returning_probes_create_a_reports_panel_toast() {
         .find(|toast| toast.message.contains("returned from"))
         .expect("the completed return trip should be announced");
     assert_eq!(returned.message, format!("Probes returned from planet {origin_name}."));
-    assert_eq!(returned.action, Some(MessageAction::OpenMissionReports));
+    assert_eq!(returned.action, Some(MessageAction::OpenMissionReport(report_id)));
 }
 
 #[test]
 fn known_enemy_one_planet_from_victory_creates_a_warning() {
-    use crate::core::identity::{GameCode, GameId, UserId};
-
     let mut model = GameModel::new([29; 32], GameRules::default()).unwrap();
     model.start().unwrap();
     let local_player = model.players[0].clone();
@@ -555,7 +553,7 @@ fn protection_fleet_receives_a_victory_notification_when_the_defending_team_wins
         destination_owned: destination.owned,
         destination_controlled: destination.controlled,
         combat_report: Some(CombatReport::default()),
-        ..crate::test_support::empty_report(mission, destination.clone())
+        ..empty_report(mission, destination.clone())
     };
 
     let notification = report_notification(&report, &protector, &origin, &destination);
@@ -566,9 +564,6 @@ fn protection_fleet_receives_a_victory_notification_when_the_defending_team_wins
 #[test]
 fn all_joint_attackers_see_the_same_winning_battle_result() {
     use std::collections::BTreeMap;
-
-    use crate::core::combat::report::Side;
-    use crate::core::missions::JointAttackMission;
 
     let mut model = GameModel::new([55; 32], GameRules::default()).unwrap();
     model.start().unwrap();
@@ -596,7 +591,7 @@ fn all_joint_attackers_see_the_same_winning_battle_result() {
     let mut report = MissionReport {
         surviving_attacker: fleet,
         combat_report: Some(CombatReport::default()),
-        ..crate::test_support::empty_report(mission, destination.clone())
+        ..empty_report(mission, destination.clone())
     };
     assert_eq!(report.winner(), Some(1));
 
@@ -650,6 +645,31 @@ fn war_sun_fleets_use_the_destroy_icon_with_their_visible_route_treatment() {
 }
 
 #[test]
+fn returning_patrol_notification_opens_its_visible_docking_report() {
+    let mut model = GameModel::new([73; 32], GameRules::default()).unwrap();
+    model.start().unwrap();
+    let player = &model.players[0];
+    let home = model.map.get(player.home_planet);
+    let mut mission = Mission::new_patrol(
+        700,
+        1,
+        player.id,
+        home,
+        model.map.rect.center(),
+        Army::from([(Unit::Ship(Ship::Cruiser), 3)]),
+        None,
+    );
+    mission.return_patrol(&model.map, 2);
+    let mut rng = rand_chacha::ChaCha8Rng::from_seed([4; 32]);
+    let report = resolve_combat_with_rng(3, &mission, home, &mut rng);
+    assert!(!report.hidden);
+    let notification = report_notification(&report, player, home, home);
+    assert_eq!(notification.message, format!("Patrol returned to planet {}.", home.name));
+    assert_eq!(notification.level, MessageLevel::Info);
+    assert_eq!(notification.action, Some(MessageAction::OpenMissionReport(report.id)));
+}
+
+#[test]
 fn friendly_patrol_contact_notification_opens_the_report_without_claiming_a_battle() {
     let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
     let mut target = Planet::new(1, "Friendly fleet contact".into(), Vec2::X, false, 1.0);
@@ -664,7 +684,7 @@ fn friendly_patrol_contact_notification_opens_the_report_without_claiming_a_batt
         None,
     );
     mission.patrol.as_mut().unwrap().friendly_players.insert(2);
-    let mut report = crate::test_support::empty_report(mission, target.clone());
+    let mut report = empty_report(mission, target.clone());
     report.id = 99;
     report.destination_controlled = Some(2);
     let notification = report_notification(&report, &Player::new(1, origin.id), &origin, &target);
@@ -678,9 +698,9 @@ fn deep_space_notifications_do_not_disclose_the_fauna_formation_name() {
     let player = Player::default();
     let origin = Planet::new(0, "Origin".into(), Vec2::ZERO, false, 1.0);
     let mut encounter = Planet::new(1, "Rift Serpent Procession".into(), Vec2::X, false, 1.0);
-    let fauna = Unit::Fauna(crate::core::units::fauna::SpaceFauna::RiftSerpent);
+    let fauna = Unit::Fauna(SpaceFauna::RiftSerpent);
     encounter.army.insert(fauna, 1);
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission {
             id: 27,
             owner: player.id,
@@ -776,7 +796,7 @@ fn planet_destruction_animation_only_starts_for_a_public_transition() {
         planet_destroyed: true,
         raid_loot: Default::default(),
         combat_report: Some(CombatReport::default()),
-        ..crate::test_support::empty_report(mission, destination.clone())
+        ..empty_report(mission, destination.clone())
     };
     let mut destroyed = destination;
     destroyed.destroy();

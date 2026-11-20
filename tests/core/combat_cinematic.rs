@@ -1,11 +1,19 @@
 use super::*;
+
+use crate::core::assets::CINEMATIC_PLANET_IMAGE_NAMES;
+use crate::core::combat::cinematic_timeline::CinematicRepair;
 use crate::core::combat::report::{CombatReport, DefenderRetreat, RoundReport};
-use crate::core::combat::resolution::CombatUnit;
+use crate::core::combat::resolution::{CombatUnit, ShotReport};
 use crate::core::map::planet::Planet;
-use crate::core::missions::Mission;
+use crate::core::map::utils::{MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH};
+use crate::core::missions::{FleetCombatOrders, JointAttackMission, Mission};
+use crate::core::raids::ship_cargo_capacity;
+use crate::core::resources::Resources;
+use crate::core::units::{orbitals, Combat};
+use crate::test_support::empty_report;
 
 pub(super) fn replay() -> CinematicPlayback {
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
@@ -154,10 +162,7 @@ fn arrivals_curve_bank_independently_and_join_continuous_maneuvers() {
 
 #[test]
 fn missile_strike_is_one_straight_descent_and_hides_defending_ships() {
-    use crate::core::combat::resolution::ShotReport;
-    use crate::core::units::Combat;
-
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
@@ -462,7 +467,7 @@ fn resizing_preserves_ship_scale_and_ground_attachment() {
 
 #[test]
 fn immediate_withdrawal_starts_visible_then_flies_out_without_exploding() {
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
@@ -493,10 +498,9 @@ fn immediate_withdrawal_starts_visible_then_flies_out_without_exploding() {
 
 #[test]
 fn map_shield_filaments_animate_with_playback_and_disappear_on_recorded_collapse() {
-    use crate::core::combat::resolution::ShotReport;
     use bevy_egui::egui;
 
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
@@ -617,7 +621,6 @@ fn cinematic_weapon_meshes_preserve_distinct_barrels_masks_and_shared_colors() {
 
 #[test]
 fn cinematic_raid_pickups_pulse_a_survivor_and_show_only_nonzero_loot_at_the_end() {
-    use crate::core::resources::Resources;
     let mut report = bombing_report();
     report.mission.objective = Icon::Raid;
     report.raid_loot = Resources::new(12, 0, 14);
@@ -681,7 +684,6 @@ fn cinematic_raid_pickups_pulse_a_survivor_and_show_only_nonzero_loot_at_the_end
 
 #[test]
 fn cinematic_raid_distributes_recorded_loot_across_surviving_ships_only() {
-    use crate::core::resources::Resources;
     let mut report = bombing_report();
     report.mission.objective = Icon::Raid;
     report.raid_loot = Resources::new(12, 9, 9);
@@ -698,7 +700,7 @@ fn cinematic_raid_distributes_recorded_loot_across_surviving_ships_only() {
     let mut total = Resources::default();
     for (index, actor) in movie.timeline.actors.iter().enumerate() {
         let share = pickups.resources_for(index);
-        let capacity = crate::core::raids::ship_cargo_capacity(actor.unit);
+        let capacity = ship_cargo_capacity(actor.unit);
         if capacity == 0 {
             assert!(share.is_empty());
         }
@@ -747,8 +749,7 @@ fn bombing_replay() -> CinematicPlayback {
 }
 
 pub(super) fn bombing_report() -> MissionReport {
-    use crate::core::combat::resolution::ShotReport;
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
@@ -801,7 +802,6 @@ pub(super) fn bombing_report() -> MissionReport {
 
 #[test]
 fn relevant_buildings_fit_above_exit_and_bombs_land_on_the_recorded_roof() {
-    use crate::core::map::utils::{MAIN_BUTTON_RIGHT, MAIN_BUTTON_WIDTH};
     let movie = bombing_replay();
     for size in [vec2(1440.0, 900.0), vec2(640.0, 480.0), vec2(640.0, 360.0), vec2(450.0, 700.0)] {
         let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, size));
@@ -855,8 +855,6 @@ fn relevant_buildings_fit_above_exit_and_bombs_land_on_the_recorded_roof() {
 
 #[test]
 fn raid_visibility_keeps_defenses_and_docks_hides_other_orbitals_and_respects_joint_orders() {
-    use crate::core::missions::{FleetCombatOrders, JointAttackMission};
-    use crate::core::units::orbitals;
     let mut report = bombing_report();
     for orbital in orbitals::ALL {
         report.planet.army.insert(orbital, 2);
@@ -1006,7 +1004,6 @@ fn space_dock_orbits_smoothly_then_eases_into_combat_drift_without_wiggling() {
 
 #[test]
 fn surface_counterfire_uses_raised_guns_and_hits_the_recorded_attacking_ship() {
-    use crate::core::combat::resolution::ShotReport;
     use bevy_egui::egui;
     let mut report = bombing_report();
     let round = &mut report.combat_report.as_mut().unwrap().rounds[0];
@@ -1122,7 +1119,7 @@ fn every_planet_kind_uses_two_stable_large_globes() {
         let second = cinematic_planet_image(&planet);
         assert_ne!(first, second);
         for name in [first, second] {
-            assert!(crate::core::assets::CINEMATIC_PLANET_IMAGE_NAMES.contains(&name.as_str()));
+            assert!(CINEMATIC_PLANET_IMAGE_NAMES.contains(&name.as_str()));
         }
     }
 }
@@ -1243,7 +1240,7 @@ fn loss_captions_are_readable_separated_seekable_and_absent_for_misses() {
 }
 
 pub(super) fn planet_strike_replay(destroyed: bool) -> CinematicPlayback {
-    let mut report = crate::test_support::empty_report(
+    let mut report = empty_report(
         Mission::default(),
         Planet::new(1, "Target".into(), bevy::math::Vec2::ZERO, false, 1.0),
     );
@@ -1515,7 +1512,6 @@ fn both_fleets_clear_the_whole_planet_without_an_active_shield() {
 
 #[test]
 fn repair_trucks_drive_to_recorded_jobs_and_hold_position_while_working() {
-    use crate::core::combat::cinematic_timeline::CinematicRepair;
     let mut movie = replay();
     let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
     movie.gas_planet = false;
@@ -1595,7 +1591,6 @@ fn planet_texture_swap_is_hidden_by_opaque_blast_cover_and_rewinds_exactly() {
 
 #[test]
 fn trucks_face_the_road_keep_their_heading_when_parked_and_never_teleport_between_tight_jobs() {
-    use crate::core::combat::cinematic_timeline::CinematicRepair;
     let mut movie = replay();
     let scene = Scene::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)));
     let truck = 24;

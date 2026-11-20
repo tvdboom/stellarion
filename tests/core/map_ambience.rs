@@ -1,4 +1,6 @@
 use super::*;
+
+use crate::core::basis_texture::BasisTexturePlugin;
 use crate::core::simulation::{GameModel, GameRules};
 
 fn model() -> GameModel {
@@ -49,9 +51,9 @@ fn atmospheric_overlays_exclude_airless_and_destroyed_worlds_and_never_intercept
             0
         } else {
             match planet.kind {
-                PlanetKind::Ice => 5,
-                PlanetKind::Gas => 4,
-                PlanetKind::Water | PlanetKind::Dry => 3,
+                PlanetKind::Ice => 6,
+                PlanetKind::Gas => 5,
+                PlanetKind::Water | PlanetKind::Dry => 4,
                 _ => 0,
             }
         };
@@ -60,23 +62,26 @@ fn atmospheric_overlays_exclude_airless_and_destroyed_worlds_and_never_intercept
 }
 
 #[test]
-fn atmosphere_rim_fades_evenly_at_every_angle() {
-    let alpha_at = |point| pixel(TextureKind::Rim, point, 0.0)[3];
-    for radius in [0.85, 0.89, 0.93] {
-        let expected = alpha_at(Vec2::X * radius);
-        assert!(expected > 0);
-        for step in 1..16 {
+fn atmosphere_shimmer_keeps_a_stable_limb_and_fades_at_every_angle() {
+    for phase in [0.0, 0.4, 1.8, 4.1] {
+        let alpha_at = |point| pixel(TextureKind::Rim, point, phase)[3];
+        for step in 0..16 {
             let angle = step as f32 / 16.0 * TAU;
-            assert_eq!(alpha_at(Vec2::from_angle(angle) * radius), expected);
+            let direction = Vec2::from_angle(angle);
+            let peak = alpha_at(direction * 0.89);
+            assert!(peak > 0);
+            for radius in [0.85, 0.93] {
+                let faded = alpha_at(direction * radius);
+                assert!(faded > 0 && faded < peak);
+            }
+            assert_eq!(alpha_at(direction), 0);
         }
     }
-    assert!(alpha_at(Vec2::X * 0.93) < alpha_at(Vec2::X * 0.89));
-    assert_eq!(alpha_at(Vec2::X), 0);
 }
 
 #[test]
 fn clouds_and_weather_remain_inside_the_globe_and_loop_without_a_seam() {
-    for kind in [TextureKind::Clouds, TextureKind::Bands, TextureKind::Aurora] {
+    for kind in [TextureKind::Rim, TextureKind::Clouds, TextureKind::Bands, TextureKind::Aurora] {
         for phase in [0.0, 0.4, 1.8, 4.1] {
             for point in [Vec2::ONE, Vec2::new(-0.75, 0.75), Vec2::new(0.0, 1.0)] {
                 assert_eq!(pixel(kind, point, phase)[3], 0);
@@ -85,9 +90,11 @@ fn clouds_and_weather_remain_inside_the_globe_and_loop_without_a_seam() {
         for x in -8..=8 {
             for y in -8..=8 {
                 let point = Vec2::new(x as f32, y as f32) / 10.0;
-                let start = pixel(kind, point, 0.0)[3];
-                let end = pixel(kind, point, TAU)[3];
-                assert!(start.abs_diff(end) <= 1);
+                let start = pixel(kind, point, 0.0);
+                let end = pixel(kind, point, TAU);
+                for (start, end) in start.into_iter().zip(end) {
+                    assert!(start.abs_diff(end) <= 1);
+                }
             }
         }
     }
@@ -169,7 +176,7 @@ fn animation_pauses_hides_during_combat_and_removes_destroyed_weather_without_to
         .world_mut()
         .query::<(&WeatherLayer, &Visibility)>()
         .iter(app.world())
-        .filter(|(layer, _)| !matches!(layer, WeatherLayer::Rim))
+        .filter(|(layer, _)| !matches!(layer, WeatherLayer::Rim(_)))
         .all(|(_, visibility)| *visibility == Visibility::Hidden));
 }
 
@@ -177,7 +184,6 @@ fn animation_pauses_hides_during_combat_and_removes_destroyed_weather_without_to
 #[test]
 #[ignore = "opens a native render fixture; requires a GPU and generated runtime assets"]
 fn render_planet_atmospheres_and_weather() {
-    use crate::core::basis_texture::BasisTexturePlugin;
     use bevy::app::AppExit;
     use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
     use bevy::winit::WinitPlugin;

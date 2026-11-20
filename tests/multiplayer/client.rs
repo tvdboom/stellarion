@@ -1,10 +1,24 @@
-use crate::core::simulation::{TurnCommand, MAX_COMMANDS_PER_SUBMISSION};
 use std::collections::{BTreeMap, HashSet};
 
 use super::*;
-use crate::core::simulation::resolve_turn;
-use crate::core::simulation::MatchStatus;
+
+use crate::core::identity::UserId;
+use crate::core::map::icon::Icon;
+use crate::core::map::planet::PlanetKind;
+use crate::core::messages::MessageLevel;
+use crate::core::missions::BombingRaid;
+use crate::core::settings::{CombatView, Settings};
+use crate::core::simulation::{
+    resolve_turn, JointAttackContribution, MatchStatus, TurnCommand, MAX_COMMANDS_PER_SUBMISSION,
+};
+use crate::core::states::AudioState;
+use crate::core::units::ships::Ship;
+use crate::core::units::{Amount, Army, Unit};
 use crate::multiplayer::authority::recolored_lobby_snapshot;
+use crate::multiplayer::model::{
+    BackendEvent, GameSync, JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
+};
+use crate::platform::storage::save_profile;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
@@ -37,7 +51,7 @@ fn saved_ready_orders_can_be_continued_edited_and_finished_through_client_tasks(
             .unwrap();
     let order = TurnCommand::BuyUnits {
         planet_id: active.persisted.state.players[0].home_planet,
-        unit: crate::core::units::Unit::probe(),
+        unit: Unit::probe(),
         count: 1,
     };
     block_on(backend.submit_turn(
@@ -206,7 +220,7 @@ fn manual_save_reports_success_and_failure() {
     )
     .unwrap();
     assert_eq!(success.message, "Game saved.");
-    assert_eq!(success.level, crate::core::messages::MessageLevel::Info);
+    assert_eq!(success.level, MessageLevel::Info);
 
     let error = BackendError::Offline("test outage".to_string());
     let failure = operation_notification(
@@ -215,7 +229,7 @@ fn manual_save_reports_success_and_failure() {
     )
     .unwrap();
     assert_eq!(failure.message, "Backend is offline: test outage");
-    assert_eq!(failure.level, crate::core::messages::MessageLevel::Error);
+    assert_eq!(failure.level, MessageLevel::Error);
 }
 
 #[test]
@@ -229,7 +243,7 @@ fn rejected_turn_orders_are_visible_while_normal_waiting_stays_quiet() {
             &MultiplayerSession::default(),
         )
         .unwrap();
-        assert_eq!(notification.level, crate::core::messages::MessageLevel::Error);
+        assert_eq!(notification.level, MessageLevel::Error);
         assert!(notification.message.contains("Could not end turn"));
         assert!(notification.message.contains("Required production level is unavailable."));
     }
@@ -291,7 +305,7 @@ fn connected_enemy_becoming_disconnected_creates_one_warning_toast() {
             notifications[0].message,
             format!("Player {} disconnected.", current.members[remote].display_name)
         );
-        assert_eq!(notifications[0].level, crate::core::messages::MessageLevel::Warning);
+        assert_eq!(notifications[0].level, MessageLevel::Warning);
 
         let disconnected = next.clone();
         session.active_game = Some(disconnected.clone());
@@ -306,7 +320,7 @@ fn connected_enemy_becoming_disconnected_creates_one_warning_toast() {
             notifications[0].message,
             format!("Player {} reconnected.", current.members[remote].display_name)
         );
-        assert_eq!(notifications[0].level, crate::core::messages::MessageLevel::Warning);
+        assert_eq!(notifications[0].level, MessageLevel::Warning);
 
         session.active_game = Some(current.clone());
         next.members[local].connected = false;
@@ -329,8 +343,6 @@ fn connected_enemy_becoming_disconnected_creates_one_warning_toast() {
 
 #[test]
 fn protection_changes_notify_the_affected_player_and_focus_the_world() {
-    use crate::core::map::planet::PlanetKind;
-
     for (kind, world) in [(PlanetKind::Dry, "planet"), (PlanetKind::Gray, "moon")] {
         let mut current = record("protection", 4, 7, MatchStatus::Active);
         let protected = current.persisted.state.players[0].home_planet;
@@ -347,7 +359,7 @@ fn protection_changes_notify_the_affected_player_and_focus_the_world() {
         let output = BackendOutput::Record(Operation::Load, granted.clone());
         let notices = protection_permission_notifications(&output, &session);
         assert_eq!(notices.len(), 1);
-        assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Info);
+        assert_eq!(notices[0].level, MessageLevel::Info);
         assert_eq!(
             notices[0].message,
             format!("You now have protection rights on {world} {name}.")
@@ -363,18 +375,18 @@ fn protection_changes_notify_the_affected_player_and_focus_the_world() {
             &session,
         );
         assert_eq!(notices.len(), 1);
-        assert_eq!(notices[0].level, crate::core::messages::MessageLevel::Warning);
+        assert_eq!(notices[0].level, MessageLevel::Warning);
         assert!(notices[0].message.contains(&format!("{world} {name} was revoked")));
         assert_eq!(notices[0].action, Some(MessageAction::FocusPlanet(protected)));
 
         let mut with_fleet = revoked;
-        with_fleet.persisted.state.map.get_mut(protected).army.dock_protector(
-            2,
-            crate::core::units::Army::from([(
-                crate::core::units::Unit::Ship(crate::core::units::ships::Ship::LightFighter),
-                1,
-            )]),
-        );
+        with_fleet
+            .persisted
+            .state
+            .map
+            .get_mut(protected)
+            .army
+            .dock_protector(2, Army::from([(Unit::Ship(Ship::LightFighter), 1)]));
         assert!(protection_permission_notifications(
             &BackendOutput::Record(Operation::Load, with_fleet),
             &session,
@@ -385,8 +397,6 @@ fn protection_changes_notify_the_affected_player_and_focus_the_world() {
 
 #[test]
 fn conquered_worlds_reset_protection_without_a_revocation_toast() {
-    use crate::core::map::planet::PlanetKind;
-
     for kind in [PlanetKind::Dry, PlanetKind::Gray] {
         let mut current = record("protection", 4, 7, MatchStatus::Active);
         let protected = current.persisted.state.players[0].home_planet;
@@ -591,8 +601,6 @@ fn local_practice_switching_preserves_each_players_draft() {
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 #[test]
 fn local_practice_next_turn_resolves_every_players_draft_at_once() {
-    use crate::core::units::{Amount, Unit};
-
     let mut app = local_practice_app_with_players(2);
     settle_local_practice(&mut app);
     assert!(app.world_mut().resource_mut::<PendingTurnCommands>().push(TurnCommand::PracticeBoost));
@@ -670,13 +678,6 @@ fn local_practice_next_turn_resolves_every_players_draft_at_once() {
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 #[test]
 fn local_practice_publishes_allied_fleets_before_switching_or_ending_turn() {
-    use crate::core::map::icon::Icon;
-    use crate::core::missions::BombingRaid;
-    use crate::core::simulation::JointAttackContribution;
-    use crate::core::units::{Amount, Army, Unit};
-    use crate::multiplayer::model::{
-        JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
-    };
     let mut app = local_practice_app_with_players(3);
     settle_local_practice(&mut app);
     for player in [1, 2] {
@@ -830,13 +831,6 @@ fn local_practice_publishes_allied_fleets_before_switching_or_ending_turn() {
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 #[test]
 fn local_practice_end_turn_closes_other_players_missions_even_after_a_failed_attempt() {
-    use crate::core::map::icon::Icon;
-    use crate::core::simulation::JointAttackContribution;
-    use crate::core::units::{ships::Ship, Army, Unit};
-    use crate::multiplayer::model::{
-        JointAttackInvitation, JointAttackParticipant, JointAttackResponse,
-    };
-
     let mut app = local_practice_app_with_players(3);
     settle_local_practice(&mut app);
     let runtime = app.world().resource::<ClientRuntime>();
@@ -1058,7 +1052,7 @@ fn membership(
     GameMembership {
         game_id: game_id.clone(),
         player_id,
-        user_id: crate::core::identity::UserId::new(format!("user-{player_id}")),
+        user_id: UserId::new(format!("user-{player_id}")),
         display_name: display_name.to_string(),
         is_creator: player_id == 1,
         identity_version: 1,
@@ -1111,7 +1105,7 @@ fn manual_save_persists_the_exact_editable_turn_draft_without_advancing_the_worl
             .unwrap();
     let command = TurnCommand::BuyUnits {
         planet_id: active.persisted.state.players[0].home_planet,
-        unit: crate::core::units::Unit::probe(),
+        unit: Unit::probe(),
         count: 1,
     };
     let mut app = App::new();
@@ -1155,10 +1149,10 @@ fn manual_save_persists_the_exact_editable_turn_draft_without_advancing_the_worl
         combat_speed: 8.0,
         combat_volley_fire: true,
         combat_individual_units: true,
-        combat_view: crate::core::settings::CombatView::Cinematic,
+        combat_view: CombatView::Cinematic,
         ..default()
     };
-    let mut settings = crate::core::settings::Settings::default();
+    let mut settings = Settings::default();
     settings.apply_game_preferences(preferences.clone());
     app.insert_resource(settings);
     app.world_mut().write_message(MultiplayerRequest::SaveGame);
@@ -1193,7 +1187,7 @@ fn manual_save_persists_the_exact_editable_turn_draft_without_advancing_the_worl
     assert_eq!(block_on(backend.load_game_preferences(&guest, &active.id)).unwrap(), None);
 
     // A fresh program begins with defaults, then loading restores the saved game's choices.
-    app.insert_resource(crate::core::settings::Settings::default());
+    app.insert_resource(Settings::default());
     let output =
         block_on(load_game_for_resume(backend, host, active.id, "0123-4567-89AB-CDEF".into()));
     spawn_backend_task(&mut app.world_mut().resource_mut::<BackendTasks>(), async move { output });
@@ -1205,17 +1199,12 @@ fn manual_save_persists_the_exact_editable_turn_draft_without_advancing_the_worl
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(app.world().resource::<BackendTasks>().0.is_empty());
-    assert_eq!(
-        app.world().resource::<crate::core::settings::Settings>().game_preferences(),
-        preferences
-    );
+    assert_eq!(app.world().resource::<Settings>().game_preferences(), preferences);
 }
 
 #[test]
 /// Small roster and readiness events update projections without downloading the world snapshot.
 fn semantic_events_only_reload_for_a_new_canonical_state() {
-    use crate::multiplayer::model::BackendEvent;
-
     let game = record("game-a", 4, 7, MatchStatus::Active);
     let mut runtime = ClientRuntime {
         backend: None,
@@ -1502,7 +1491,7 @@ fn created_player_name_is_available_for_later_joins() {
         false,
     );
     assert_eq!(form.saved_display_name.as_deref(), Some("Nova"));
-    crate::platform::storage::save_profile(runtime.storage.as_ref(), &runtime.profile).unwrap();
+    save_profile(runtime.storage.as_ref(), &runtime.profile).unwrap();
     runtime.profile = load_profile(runtime.storage.as_ref()).unwrap();
     assert_eq!(runtime.profile.display_name, "Nova");
 
@@ -1529,7 +1518,6 @@ fn created_player_name_is_available_for_later_joins() {
 
 #[test]
 fn new_games_inherit_session_settings_and_a_fresh_program_uses_defaults() {
-    use crate::core::settings::{CombatView, Settings};
     let mut app = App::new();
     app.add_plugins(bevy::state::app::StatesPlugin)
         .init_state::<AppState>()
@@ -1542,7 +1530,7 @@ fn new_games_inherit_session_settings_and_a_fresh_program_uses_defaults() {
         settings.show_info = true;
         settings.brief_hover_info = true;
         settings.show_menu = false;
-        settings.set_audio_mode(crate::core::states::AudioState::Sound);
+        settings.set_audio_mode(AudioState::Sound);
         settings.set_volume(0.35);
         settings.combat_speed = 8.0;
         settings.combat_volley_fire = true;
@@ -1578,7 +1566,7 @@ fn selected_lobby_is_not_saved_until_started() {
         membership: Some(GameMembership {
             game_id: lobby.id.clone(),
             player_id: 1,
-            user_id: crate::core::identity::UserId::new("host"),
+            user_id: UserId::new("host"),
             display_name: "Host".to_string(),
             is_creator: true,
             identity_version: 1,
@@ -1623,7 +1611,7 @@ fn lobby_departure_clears_guests_and_local_history() {
                 } else {
                     2
                 },
-                user_id: crate::core::identity::UserId::new("local-player"),
+                user_id: UserId::new("local-player"),
                 display_name: "Player".to_string(),
                 is_creator: host,
                 identity_version: 1,
@@ -1662,7 +1650,7 @@ fn lobby_departure_clears_guests_and_local_history() {
         if !host {
             let notification = notification.unwrap();
             assert_eq!(notification.message, "The host closed the lobby.");
-            assert_eq!(notification.level, crate::core::messages::MessageLevel::Info);
+            assert_eq!(notification.level, MessageLevel::Info);
             assert_eq!(notification.display_duration, Some(Duration::from_secs(2)));
             assert_eq!(session.notice.as_deref(), Some("The host closed the lobby."));
             assert!(session.menu_error.is_none());
@@ -1727,7 +1715,7 @@ fn selected_player_is_optimistically_connected() {
     let membership = GameMembership {
         game_id: game.id.clone(),
         player_id: 1,
-        user_id: crate::core::identity::UserId::new("host"),
+        user_id: UserId::new("host"),
         display_name: "Host".to_string(),
         is_creator: true,
         identity_version: 1,
@@ -1904,7 +1892,7 @@ fn sync_applies_roster_and_requests_replay_gap_reload_without_an_extra_heartbeat
         practice_players: Vec::new(),
     };
     let members = vec![membership(&game.id, 1, "Host", true)];
-    let update = crate::multiplayer::model::GameSync {
+    let update = GameSync {
         batch: EventBatch {
             events: Vec::new(),
             cursor: 300,
@@ -1948,7 +1936,7 @@ fn start_snapshot_uses_current_members() {
         .map(|player_id| GameMembership {
             game_id: id.clone(),
             player_id,
-            user_id: crate::core::identity::UserId::new(format!("user-{player_id}")),
+            user_id: UserId::new(format!("user-{player_id}")),
             display_name: format!("Player {player_id}"),
             is_creator: player_id == 1,
             identity_version: 1,
@@ -1983,7 +1971,7 @@ fn lobby_colors_remain_unique() {
         .map(|player_id| GameMembership {
             game_id: lobby.id.clone(),
             player_id,
-            user_id: crate::core::identity::UserId::new(format!("user-{player_id}")),
+            user_id: UserId::new(format!("user-{player_id}")),
             display_name: format!("Player {player_id}"),
             is_creator: player_id == 1,
             identity_version: 1,

@@ -12,7 +12,10 @@ use super::cinematic_camera::CinematicCamera;
 use super::cinematic_timeline::{
     CinematicActor, CinematicShot, CinematicTimeline, LEVEL_LOSS_INTERVAL,
 };
-use super::effects::{particle_envelope, weapon_trail, Weapon, WeaponFlight, WeaponTrail};
+use super::effects::{
+    death_ray_beam_layers, particle_envelope, sustained_envelope, weapon_trail, Weapon,
+    WeaponFlight, WeaponTrail, DEATH_RAY_FOCUS_AT,
+};
 use super::report::{MissionReport, Side};
 use crate::core::identity::PlayerId;
 use crate::core::map::icon::Icon;
@@ -24,14 +27,12 @@ use crate::core::ui::utils::ImageIds;
 use crate::core::units::defense::Defense;
 use crate::core::units::ships::Ship;
 use crate::core::units::Unit;
+use sprites::{firing_sheet, FiringSheet};
 
 const FULL_UV: Rect = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
 const BLUE: Color32 = Color32::from_rgb(104, 210, 255);
 const GOLD: Color32 = Color32::from_rgb(255, 177, 90);
 const GREEN: Color32 = Color32::from_rgb(102, 255, 182);
-#[path = "cinematic_sprites.rs"]
-mod sprites;
-use sprites::{firing_sheet, FiringSheet};
 #[path = "cinematic_damage.rs"]
 mod damage;
 #[path = "cinematic_environment.rs"]
@@ -42,6 +43,8 @@ mod formation;
 mod motion;
 #[path = "cinematic_rewards.rs"]
 mod rewards;
+#[path = "cinematic_sprites.rs"]
+mod sprites;
 /// Planet-sized blasts linger longer than ship wrecks; soundtrack peaks use the same clock.
 pub(crate) const PLANET_BLAST_TIME_SCALE: f32 = 1.25;
 /// The texture swap occurs inside the opaque core of the planet's detonation.
@@ -1716,7 +1719,6 @@ impl CinematicPlayback {
     }
 
     fn paint_planet_attacks(&self, painter: &Painter, scene: Scene, images: &ImageIds) {
-        use super::effects::{death_ray_beam_layers, sustained_envelope, DEATH_RAY_FOCUS_AT};
         for attack in &self.timeline.planet_attacks {
             if self.elapsed < attack.start_at || self.elapsed > attack.end_at + 3.8 {
                 continue;
